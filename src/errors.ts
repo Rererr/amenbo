@@ -106,3 +106,15 @@ export class ExtractionError extends AmenboError {
     super(`本文抽出に失敗しました: ${url} (${reason})`);
   }
 }
+
+/** outlineモードで得られたsection IDが、対象ページの見出し構成上に見つからなかった。 */
+export class SectionNotFoundError extends AmenboError {
+  readonly code = "SECTION_NOT_FOUND";
+
+  constructor(
+    readonly url: string,
+    readonly sectionId: string,
+  ) {
+    super(`指定されたsectionが見つかりません: ${url} (section=${sectionId})`);
+  }
+}
