@@ -30,7 +30,8 @@
     "build": "tsc",
     "dev": "tsx src/server.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "playwright install chromium"
   },
   "dependencies": {
     "@joplin/turndown-plugin-gfm": "^1.0.67",
@@ -44,6 +45,7 @@
     "playwright": "^1.61.1",
     "robots-parser": "^3.0.1",
     "turndown": "^7.2.4",
+    "undici": "^8.7.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

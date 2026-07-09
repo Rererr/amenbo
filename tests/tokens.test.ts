@@ -83,4 +83,23 @@ describe("paginateMarkdown", () => {
     const result = paginateMarkdown(markdown, 15, 1);
     expect(result.content).not.toContain("# 次のセクション");
   });
+
+  describe("N6: exceededBudget(単一ブロックがmax_tokens予算を超過した場合のフラグ)", () => {
+    it("予算内に収まる通常の応答ではexceededBudgetはfalse", () => {
+      const result = paginateMarkdown("# 見出し\n\n本文です。", 1000, 1);
+      expect(result.exceededBudget).toBe(false);
+    });
+
+    it("単一ブロック(巨大なコードブロック)が予算を超える場合はexceededBudgetがtrueになる", () => {
+      const bigCode = "```\n" + "x = 1;\n".repeat(200) + "```";
+      const result = paginateMarkdown(bigCode, 20, 1);
+      expect(result.tokens).toBeGreaterThan(20);
+      expect(result.exceededBudget).toBe(true);
+    });
+
+    it("空文字列の場合はexceededBudgetはfalse", () => {
+      const result = paginateMarkdown("", 1000, 1);
+      expect(result.exceededBudget).toBe(false);
+    });
+  });
 });

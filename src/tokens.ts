@@ -106,6 +106,8 @@ export interface PaginatedResult {
   totalPages: number;
   /** このページの概算トークン数。 */
   tokens: number;
+  /** N6: 単一ブロックがmax_tokens予算を超過しており、分割できずそのまま返した場合true。 */
+  exceededBudget: boolean;
 }
 
 const MIN_TOKENS_PER_PAGE = 1;
@@ -128,7 +130,7 @@ export function paginateMarkdown(markdown: string, maxTokens: number, page: numb
   const blocks = splitIntoBlocks(markdown);
 
   if (blocks.length === 0) {
-    return { content: "", page: 1, totalPages: 1, tokens: 0 };
+    return { content: "", page: 1, totalPages: 1, tokens: 0, exceededBudget: false };
   }
 
   const pages: string[][] = [];
@@ -158,11 +160,15 @@ export function paginateMarkdown(markdown: string, maxTokens: number, page: numb
   const clampedPage = Math.min(Math.max(1, page), totalPages);
   const selected = pages[clampedPage - 1] ?? [];
   const content = selected.join("\n\n");
+  const tokens = estimateTokens(content);
 
   return {
     content,
     page: clampedPage,
     totalPages,
-    tokens: estimateTokens(content),
+    tokens,
+    // N6: 単一ブロックが予算超過でもページを割らずそのまま返す(paginateMarkdownの仕様)ため、
+    // その場合はここでtokens > budgetとなる。呼び出し側(server.ts)が明示的にユーザーへ伝える。
+    exceededBudget: tokens > budget,
   };
 }

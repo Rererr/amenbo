@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeTiles } from "../src/screenshot.js";
+import { computeTiles, isTileCaptureTruncated } from "../src/screenshot.js";
 
 describe("computeTiles", () => {
   it("ページ高さがタイル高さ以下なら1タイルになる", () => {
@@ -39,5 +39,24 @@ describe("computeTiles", () => {
     const tiles = computeTiles(1280, 0, 1280, 1080);
     expect(tiles).toHaveLength(1);
     expect(tiles[0]?.height).toBeGreaterThan(0);
+  });
+});
+
+describe("isTileCaptureTruncated(N7: MAX_TILES切り捨ての明示)", () => {
+  it("ページが短くタイル枚数が十分な場合はfalse", () => {
+    expect(isTileCaptureTruncated(800, computeTiles(1280, 800, 1280, 1080).length, 1080)).toBe(false);
+  });
+
+  it("MAX_TILES(10)で切り捨てられる長さのページではtrueになる", () => {
+    const pageHeight = 1_000_000;
+    const tiles = computeTiles(1280, pageHeight, 1280, 1080);
+    expect(tiles.length).toBeLessThanOrEqual(10);
+    expect(isTileCaptureTruncated(pageHeight, tiles.length, 1080)).toBe(true);
+  });
+
+  it("ちょうどタイル高さの倍数で切り捨てが発生しない場合はfalse", () => {
+    const pageHeight = 1080 * 3;
+    const tiles = computeTiles(1280, pageHeight, 1280, 1080);
+    expect(isTileCaptureTruncated(pageHeight, tiles.length, 1080)).toBe(false);
   });
 });

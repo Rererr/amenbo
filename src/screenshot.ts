@@ -1,13 +1,14 @@
 /**
  * screenshot.ts — 品質スコア自動切替(mode: auto)/screenshotツール共通のタイル撮影。
  *
- * Playwright共有インスタンス(fetcher/browser.ts)を利用し、フルページを
- * 幅1280px×高さ約1080px毎のタイルへclipで分割して撮影する(sharp等の画像処理ライブラリは使わない)。
+ * Playwright共有インスタンス(fetcher/browser.ts)を利用し、フルページのスクリーンショットを
+ * 1回だけ撮影し、@napi-rs/canvasで幅1280px×高さ約1080px毎のタイルへクロップして分割する
+ * (N2: 以前はタイル毎にfullPageスクリーンショットを撮り直しており無駄が大きかった)。
  * scaleはPlaywrightのdeviceScaleFactorとして働き、1未満にすると出力解像度(=画像バイト数
  * ≒ トークン消費量)を圧縮できるレバーになる。
  */
-import { FetchTimeoutError } from "./errors.js";
-import { getBrowser, hideConsentBanners } from "./fetcher/browser.js";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
+import { getBrowser, hideConsentBanners, navigateSafely } from "./fetcher/browser.js";
 import { USER_AGENT } from "./fetcher/http.js";
 
 export interface TileGeometry {
@@ -44,6 +45,12 @@ export function computeTiles(
   return tiles.length > 0 ? tiles : [{ x: 0, y: 0, width, height: Math.min(tileHeight, totalHeight) }];
 }
 
+/** N7: computeTilesがMAX_TILES枚で切り捨てを行ったかどうかを判定する(純関数)。 */
+export function isTileCaptureTruncated(pageHeight: number, tileCount: number, tileHeight: number = DEFAULT_TILE_HEIGHT): boolean {
+  const tilesNeeded = Math.ceil(Math.max(pageHeight, 1) / tileHeight);
+  return tilesNeeded > tileCount;
+}
+
 export interface ScreenshotOptions {
   /** 既定true。falseの場合は最初のビューポート分(1タイル)のみ撮影する。 */
   fullPage?: boolean;
@@ -64,6 +71,8 @@ export interface CaptureResult {
   pageWidth: number;
   pageHeight: number;
   tiles: ScreenshotTile[];
+  /** N7: MAX_TILES枚を超えるページで切り捨てが発生した場合true。 */
+  truncated: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -91,14 +100,8 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
 
   try {
     const page = await context.newPage();
-    try {
-      await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
-    } catch (cause) {
-      if (cause instanceof Error && /timeout/i.test(cause.message)) {
-        throw new FetchTimeoutError(url, timeoutMs);
-      }
-      throw cause;
-    }
+    // C1: SSRF/スキーム検証(guardPublicAddress)+リダイレクト再検証込みのナビゲーション
+    await navigateSafely(page, url, timeoutMs);
 
     // J8: 撮影前にCookie同意バナー/アプリ誘導オーバーレイを隠す(視覚的な妨げを除く)
     await hideConsentBanners(page).catch(() => {
@@ -112,17 +115,27 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
 
     const captureHeight = fullPage ? dimensions.height : Math.min(dimensions.height, DEFAULT_TILE_HEIGHT);
     const geometries = computeTiles(dimensions.width, captureHeight, width, DEFAULT_TILE_HEIGHT);
+    const truncated = isTileCaptureTruncated(captureHeight, geometries.length);
 
-    const tiles: ScreenshotTile[] = [];
-    for (const geometry of geometries) {
-      // clipで現在のビューポート外(スクロール未表示領域)を切り出すには、Playwrightの仕様上
-      // fullPage: true を併用してページ全体をキャプチャした上でclip領域を抜き出す必要がある
-      // (fullPage無しのclipは現在のビューポート内にしか適用されず、範囲外だとエラーになる)。
-      const png = await page.screenshot({ clip: geometry, fullPage: true, type: "png" });
-      tiles.push({ geometry, png });
-    }
+    // N2: タイル毎にfullPageスクリーンショットを撮り直すのではなく、1回だけ撮影して
+    // @napi-rs/canvasでタイル領域をクロップする(deviceScaleFactor分、座標をscale倍する)。
+    const fullPagePng = await page.screenshot({ type: "png", fullPage: true });
+    const image = await loadImage(fullPagePng);
 
-    return { finalUrl: page.url(), pageWidth: dimensions.width, pageHeight: dimensions.height, tiles };
+    const tiles: ScreenshotTile[] = geometries.map((geometry) => {
+      const sx = Math.min(Math.round(geometry.x * scale), Math.max(image.width - 1, 0));
+      const sy = Math.min(Math.round(geometry.y * scale), Math.max(image.height - 1, 0));
+      const sw = Math.max(1, Math.min(Math.round(geometry.width * scale), image.width - sx));
+      const sh = Math.max(1, Math.min(Math.round(geometry.height * scale), image.height - sy));
+
+      const canvas = createCanvas(sw, sh);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
+
+      return { geometry, png: canvas.toBuffer("image/png") };
+    });
+
+    return { finalUrl: page.url(), pageWidth: dimensions.width, pageHeight: dimensions.height, tiles, truncated };
   } finally {
     await context.close();
   }
