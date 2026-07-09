@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>日本語記事のテスト</title>
+</head>
+<body>
+  <header>
+    <nav>
+      <ul>
+        <li><a href="/">ホーム</a></li>
+        <li><a href="/about">概要</a></li>
+      </ul>
+    </nav>
+  </header>
+  <aside>
+    <div class="ranking">人気記事ランキング広告枠</div>
+  </aside>
+  <article>
+    <h1>日本語<ruby>技術<rt>ぎじゅつ</rt></ruby>記事のサンプル</h1>
+    <p>
+      これはamenboのテストのために用意した日本語記事のサンプル本文です。
+      Readabilityによる本文抽出とTurndownによるMarkdown変換、そしてJ1からJ3の
+      日本語正規化処理が正しく機能するかどうかを確認するための十分な長さの文章を
+      ここに記述しています。段落を跨ぐ内容や強調表現、リンクなども含めて
+      実際のWebページに近い構造を再現します。
+    </p>
+    <p>
+      二段落目です。<strong>強調されたテキスト</strong>や<a href="https://example.com">リンク</a>を
+      含む文章も、CJK文字間の不要な空白が生まれないことを確認します。
+      もっと長く。もっと長く。もっと長く。もっと長く。もっと長く。もっと長く。
+    </p>
+    <table>
+      <thead>
+        <tr><th>項目</th><th>値</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>名前</td><td>アメンボ</td></tr>
+        <tr><td>種別</td><td>MCPサーバー</td></tr>
+      </tbody>
+    </table>
+    <pre><code class="language-ts">const greeting: string = "こんにちは";
+console.log(greeting);</code></pre>
+    <p>
+      表とコードブロックの後にもう一段落用意して、抽出範囲がarticle全体に
+      及ぶことを確認します。もっと長く。もっと長く。もっと長く。もっと長く。
+    </p>
+  </article>
+  <footer>
+    <p>フッターのコピーライト表記です。</p>
+  </footer>
+</body>
+</html>

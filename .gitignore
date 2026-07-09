@@ -1,0 +1,12 @@
+# 戦略ドキュメント(ローカルのみ・非公開)
+/private-docs/
+
+node_modules/
+dist/
+coverage/
+*.log
+.env
+.env.*
+*.sqlite
+*.sqlite-journal
+.DS_Store
