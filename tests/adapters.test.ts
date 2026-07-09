@@ -1,0 +1,45 @@
+import { describe, expect, it } from "vitest";
+import { findAdapter, SITE_ADAPTERS } from "../src/adapters/index.js";
+
+describe("findAdapter", () => {
+  it("qiita.comにマッチする", () => {
+    expect(findAdapter("qiita.com")?.name).toBe("qiita");
+  });
+
+  it("zenn.devにマッチする", () => {
+    expect(findAdapter("zenn.dev")?.name).toBe("zenn");
+  });
+
+  it("note.comにマッチする", () => {
+    expect(findAdapter("note.com")?.name).toBe("note");
+  });
+
+  it("*.hatenablog.comにマッチする", () => {
+    expect(findAdapter("staff.hatenablog.com")?.name).toBe("hatenablog");
+    expect(findAdapter("example.hateblo.jp")?.name).toBe("hatenablog");
+  });
+
+  it("news.yahoo.co.jpにマッチする", () => {
+    expect(findAdapter("news.yahoo.co.jp")?.name).toBe("yahoo-news");
+  });
+
+  it("prtimes.jpにマッチする", () => {
+    expect(findAdapter("prtimes.jp")?.name).toBe("prtimes");
+  });
+
+  it("サブドメイン無しの完全一致にもマッチする(境界を跨がない)", () => {
+    expect(findAdapter("qiita.com")).not.toBeNull();
+    expect(findAdapter("notqiita.com")).toBeNull();
+    expect(findAdapter("qiita.com.evil.example")).toBeNull();
+  });
+
+  it("未知のホストはnullを返す", () => {
+    expect(findAdapter("example.com")).toBeNull();
+  });
+
+  it("全アダプタがcontentSelectorsを1つ以上持つ", () => {
+    for (const adapter of SITE_ADAPTERS) {
+      expect(adapter.contentSelectors.length).toBeGreaterThan(0);
+    }
+  });
+});

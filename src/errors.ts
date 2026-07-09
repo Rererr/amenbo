@@ -118,3 +118,16 @@ export class SectionNotFoundError extends AmenboError {
     super(`指定されたsectionが見つかりません: ${url} (section=${sectionId})`);
   }
 }
+
+/** ダウンロード対象(PDF等)がサイズ上限を超えている。 */
+export class PayloadTooLargeError extends AmenboError {
+  readonly code = "PAYLOAD_TOO_LARGE";
+
+  constructor(
+    readonly url: string,
+    readonly byteLength: number,
+    readonly maxBytes: number,
+  ) {
+    super(`サイズ上限(${maxBytes}バイト)を超えています: ${url} (${byteLength}バイト)`);
+  }
+}

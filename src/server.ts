@@ -2,28 +2,42 @@
 /**
  * server.ts — amenbo MCP stdioサーバー。
  *
- * ツール:
- *   - fetch: politeness(robots+レート制御) → cache(fresh/revalidated/miss判定)
- *     → 二段フェッチ(fetcher/index.ts) → J4 fit-pruning + Markdown抽出(extract/markdown.ts)
- *     → mode別出力(markdown/outline/section切り出し/品質スコアによるscreenshot自動切替)
- *   - screenshot: 明示的な視覚確認用。Playwrightでタイル分割スクリーンショットを撮影する。
+ * ツール(3個で確定。plan.md §3-6のツール数最小化方針):
+ *   - fetch: politeness → cache(fresh/revalidated/unchanged/diff/miss) → 二段フェッチ
+ *     → J4 pruning・J7アダプタ・J8バナー除去 込みのMarkdown抽出 → mode別出力
+ *     (markdown/outline/section/screenshot)。PDFはURL判定で別経路。
+ *   - links: sitemap/RSS優先のリンク列挙。
+ *   - screenshot: 明示的な視覚確認用のタイル分割スクリーンショット。
  */
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { computeScreenshotCacheKey, PageCache, type CacheStatus, type ScreenshotCacheStatus } from "./cache.js";
+import { diffMarkdown, type SectionDiff } from "./diff.js";
 import { AmenboError, SectionNotFoundError } from "./errors.js";
 import { extractMarkdown } from "./extract/markdown.js";
 import { buildOutline, extractSection, type OutlineResult } from "./extract/outline.js";
+import { DEFAULT_PDF_MAX_BYTES, extractPdfText, looksLikePdf, markdownFromPdfText, renderPdfPages } from "./extract/pdf.js";
 import { evaluateQuality } from "./extract/qualityScore.js";
 import { fetchPage, type FetchTier } from "./fetcher/index.js";
+import { httpGetBinary } from "./fetcher/http.js";
+import { discoverLinks, type LinksResult } from "./links.js";
 import { PolitenessManager } from "./politeness.js";
 import { captureTiledScreenshot, DEFAULT_TILE_WIDTH } from "./screenshot.js";
 import { paginateMarkdown, type PaginatedResult } from "./tokens.js";
 
+/** キャッシュTTL(ミリ秒)。運用/検証時の調整用に環境変数で上書きできる(既定はcache.tsの15分)。 */
+function resolveCacheTtlMs(): number | undefined {
+  const raw = process.env.AMENBO_CACHE_TTL_MS;
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+const cacheTtlMs = resolveCacheTtlMs();
 const politeness = new PolitenessManager();
-const cache = new PageCache();
+const cache = new PageCache(cacheTtlMs !== undefined ? { ttlMs: cacheTtlMs } : {});
 
 process.once("exit", () => {
   cache.close();
@@ -54,11 +68,12 @@ interface ExtractedPage {
   lowQuality: boolean;
   qualityReason: string | null;
   prunedBlockCount: number;
+  adapterName: string | null;
 }
 
 type FetchAndExtractResult = { status: "not_modified" } | ExtractedPage;
 
-/** URLとselectorの組から、新規取得・変換したMarkdownと品質スコア/pruning結果を作る。 */
+/** URLとselectorの組から、新規取得・変換したMarkdownと品質スコア/pruning/アダプタ結果を作る。 */
 async function fetchAndExtract(
   url: string,
   selector: string | undefined,
@@ -86,6 +101,7 @@ async function fetchAndExtract(
     lowQuality: quality.lowQuality,
     qualityReason: quality.reason,
     prunedBlockCount: extracted.prunedBlockCount,
+    adapterName: extracted.adapterName,
   };
 }
 
@@ -98,6 +114,9 @@ interface ResolvedPage {
   lowQuality: boolean;
   qualityReason: string | null;
   prunedBlockCount: number;
+  adapterName: string | null;
+  /** 新規フェッチ(cacheStatus==='miss')の場合のみ、上書き前の旧キャッシュ内容(§3-3差分応答用)。 */
+  previousMarkdown: string | null;
 }
 
 function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, cacheStatus: CacheStatus): ResolvedPage {
@@ -111,13 +130,15 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
     lowQuality: Boolean(metadata.lowQuality),
     qualityReason: (metadata.qualityReason as string | null) ?? null,
     prunedBlockCount: Number(metadata.prunedBlockCount ?? 0),
+    adapterName: (metadata.adapterName as string | null) ?? null,
+    previousMarkdown: null,
   };
 }
 
 /**
  * URL(+selector)からMarkdownを解決する。selector指定時はURL単位のキャッシュを使わない
- * (同一URLでも抽出結果がselector毎に変わるため)。品質スコア判定結果もキャッシュメタデータへ
- * 保存し、'fresh'なキャッシュ応答時にもブラウザ再レンダー無しでmode:autoの判定を再現できるようにする。
+ * (同一URLでも抽出結果がselector毎に変わるため)。品質スコア/アダプタ判定結果もキャッシュ
+ * メタデータへ保存し、'fresh'なキャッシュ応答時にも再フェッチ無しでmode:autoの判定を再現する。
  */
 async function resolvePage(url: string, selector: string | undefined): Promise<ResolvedPage> {
   if (selector) {
@@ -134,6 +155,8 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
       lowQuality: result.lowQuality,
       qualityReason: result.qualityReason,
       prunedBlockCount: result.prunedBlockCount,
+      adapterName: result.adapterName,
+      previousMarkdown: null,
     };
   }
 
@@ -154,6 +177,8 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
     return pageFromCacheEntry(url, cached, "revalidated");
   }
 
+  const previousMarkdown = cached?.markdown ?? null;
+
   cache.set({
     url,
     etag: result.etag,
@@ -166,6 +191,7 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
       lowQuality: result.lowQuality,
       qualityReason: result.qualityReason,
       prunedBlockCount: result.prunedBlockCount,
+      adapterName: result.adapterName,
     },
   });
 
@@ -178,6 +204,8 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
     lowQuality: result.lowQuality,
     qualityReason: result.qualityReason,
     prunedBlockCount: result.prunedBlockCount,
+    adapterName: result.adapterName,
+    previousMarkdown,
   };
 }
 
@@ -239,6 +267,10 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
 type TextBlock = { type: "text"; text: string };
 type ImageBlock = { type: "image"; data: string; mimeType: string };
 
+function adapterLine(adapterName: string | null): string[] {
+  return adapterName ? [`adapter: ${adapterName}`] : [];
+}
+
 function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, sectionId: string | null): string {
   const header = [
     `title: ${page.title ?? "(なし)"}`,
@@ -250,8 +282,45 @@ function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, 
     `page: ${paginated.page} of ${paginated.totalPages}`,
     `fetch_tier: ${page.tier}`,
     `pruned_blocks: ${page.prunedBlockCount}`,
+    ...adapterLine(page.adapterName),
   ].join("\n");
   return `${header}\n\n${paginated.content}`;
+}
+
+/** §3-3 差分応答: 本文ハッシュ一致(約10トークンの短文応答)。 */
+function formatUnchangedResponse(page: ResolvedPage): string {
+  return [`url: ${page.finalUrl}`, `mode_used: markdown`, `cache: unchanged`].join("\n");
+}
+
+function formatSectionDiffBlock(diff: SectionDiff): string {
+  const label = diff.type === "added" ? "追加" : diff.type === "removed" ? "削除" : "変更";
+  if (diff.type === "removed") {
+    return `${"#".repeat(diff.level)} ${diff.heading} [${label}]`;
+  }
+  const lines = diff.content.split("\n");
+  if (lines.length > 0 && /^#{1,6}\s/.test(lines[0] ?? "")) {
+    lines[0] = `${lines[0]} [${label}]`;
+    return lines.join("\n");
+  }
+  return `${"#".repeat(diff.level)} ${diff.heading} [${label}]\n\n${diff.content}`;
+}
+
+/** §3-3 差分応答: 変更・追加・削除された節のみ返却。 */
+function formatDiffResponse(page: ResolvedPage, sections: SectionDiff[]): string {
+  const counts = { added: 0, changed: 0, removed: 0 };
+  for (const section of sections) counts[section.type]++;
+
+  const header = [
+    `title: ${page.title ?? "(なし)"}`,
+    `url: ${page.finalUrl}`,
+    `mode_used: markdown`,
+    `cache: diff`,
+    `changed_sections: ${sections.length}(追加${counts.added}/変更${counts.changed}/削除${counts.removed})`,
+    `fetch_tier: ${page.tier}`,
+    ...adapterLine(page.adapterName),
+  ].join("\n");
+
+  return `${header}\n\n${sections.map(formatSectionDiffBlock).join("\n\n")}`;
 }
 
 function formatOutlineResponse(page: ResolvedPage, outline: OutlineResult): string {
@@ -262,7 +331,7 @@ function formatOutlineResponse(page: ResolvedPage, outline: OutlineResult): stri
     `cache: ${page.cacheStatus}`,
     `total_tokens: ${outline.totalTokens}`,
     `fetch_tier: ${page.tier}`,
-    `pruned_blocks: ${page.prunedBlockCount}`,
+    ...adapterLine(page.adapterName),
   ].join("\n");
 
   const body =
@@ -295,6 +364,72 @@ function buildScreenshotContent(
   ];
 }
 
+function formatLinksResponse(url: string, result: LinksResult): string {
+  const header = [`url: ${url}`, `source: ${result.source}`, `count: ${result.links.length}${result.truncated ? " (truncated)" : ""}`].join("\n");
+  const body = result.links.map((link) => (link.title ? `- ${link.title} — ${link.url}` : `- ${link.url}`)).join("\n");
+  return `${header}\n\n${body || "(リンクが見つかりませんでした)"}`;
+}
+
+// ---- PDF対応(URL判定で独立経路。mode/selector/section等は適用しない) ----
+
+function formatPdfTextResponse(title: string | null, finalUrl: string, cacheStatus: "fresh" | "miss", pdfPageCount: number, paginated: PaginatedResult): string {
+  const header = [
+    `title: ${title ?? "(なし)"}`,
+    `url: ${finalUrl}`,
+    `mode_used: markdown`,
+    `cache: ${cacheStatus}`,
+    `tokens: ${paginated.tokens}`,
+    `page: ${paginated.page} of ${paginated.totalPages}`,
+    `fetch_tier: pdf`,
+    `pdf_pages: ${pdfPageCount}`,
+  ].join("\n");
+  return `${header}\n\n${paginated.content}`;
+}
+
+/** PDFはキャッシュ層(§3-3等)を流用しつつ独立した経路で扱う。テキスト層があればMarkdown、無ければ画像タイル。 */
+async function handlePdfFetch(url: string, page: number, maxTokens: number): Promise<Array<TextBlock | ImageBlock>> {
+  const cached = cache.get(url);
+  if (cached && cache.isFresh(cached)) {
+    const paginated = paginateMarkdown(cached.markdown, maxTokens, page);
+    const title = (cached.metadata.title as string | null) ?? null;
+    const finalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
+    const pdfPageCount = Number(cached.metadata.pdfPageCount ?? 0);
+    return [{ type: "text", text: formatPdfTextResponse(title, finalUrl, "fresh", pdfPageCount, paginated) }];
+  }
+
+  const binary = await httpGetBinary(url, { maxBytes: DEFAULT_PDF_MAX_BYTES });
+  const textResult = await extractPdfText(binary.bytes);
+
+  if (textResult.hasTextLayer) {
+    const markdown = markdownFromPdfText(textResult);
+    cache.set({
+      url,
+      etag: binary.headers.get("etag"),
+      lastModified: binary.headers.get("last-modified"),
+      markdown,
+      metadata: { title: textResult.title, finalUrl: binary.finalUrl, pdfPageCount: textResult.pageCount },
+    });
+    const paginated = paginateMarkdown(markdown, maxTokens, page);
+    return [{ type: "text", text: formatPdfTextResponse(textResult.title, binary.finalUrl, "miss", textResult.pageCount, paginated) }];
+  }
+
+  // テキスト層が実質無い(スキャンPDF): 先頭ページから画像タイルとして返す(キャッシュ非対象)
+  const images = await renderPdfPages(binary.bytes);
+  const header = [
+    `title: ${textResult.title ?? "(なし)"}`,
+    `url: ${binary.finalUrl}`,
+    `mode_used: screenshot`,
+    `cache: miss`,
+    `reason: PDFにテキスト層がありません(スキャンPDFの可能性。全${textResult.pageCount}ページ中先頭${images.length}ページを画像化)`,
+    `tiles: ${images.length}`,
+    `fetch_tier: pdf`,
+  ].join("\n");
+  return [
+    { type: "text", text: header },
+    ...images.map((image) => ({ type: "image" as const, data: image.png.toString("base64"), mimeType: "image/png" })),
+  ];
+}
+
 // ---- fetchツール ----
 
 interface FetchToolInput {
@@ -304,21 +439,28 @@ interface FetchToolInput {
   section?: string | undefined;
   page?: number | undefined;
   max_tokens?: number | undefined;
+  force_full?: boolean | undefined;
 }
 
 async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock | ImageBlock>> {
   const mode = input.mode ?? "auto";
+  const page = input.page ?? DEFAULT_PAGE;
+  const maxTokens = input.max_tokens ?? DEFAULT_MAX_TOKENS;
   await politeness.guard(input.url);
+
+  if (looksLikePdf(input.url, null)) {
+    return handlePdfFetch(input.url, page, maxTokens);
+  }
 
   const resolved = await resolvePage(input.url, input.selector);
 
-  // sectionが指定された場合は、mode指定に関わらずその節のMarkdownのみを返す
+  // sectionが指定された場合は、mode指定に関わらずその節のMarkdownのみを返す(差分応答は適用しない)
   if (input.section) {
     const sectionMarkdown = extractSection(resolved.markdown, input.section);
     if (sectionMarkdown === null) {
       throw new SectionNotFoundError(input.url, input.section);
     }
-    const paginated = paginateMarkdown(sectionMarkdown, input.max_tokens ?? DEFAULT_MAX_TOKENS, input.page ?? DEFAULT_PAGE);
+    const paginated = paginateMarkdown(sectionMarkdown, maxTokens, page);
     return [{ type: "text", text: formatMarkdownResponse(resolved, paginated, input.section) }];
   }
 
@@ -337,41 +479,73 @@ async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock |
     return buildScreenshotContent(resolved, screenshot, mode === "screenshot" ? null : resolved.qualityReason);
   }
 
-  const paginated = paginateMarkdown(resolved.markdown, input.max_tokens ?? DEFAULT_MAX_TOKENS, input.page ?? DEFAULT_PAGE);
+  // §3-3 差分応答: selector無し・force_full無し・新規フェッチ(cacheStatus==='miss')かつ旧キャッシュがある場合のみ
+  const diffEligible = !input.selector && !input.force_full && resolved.cacheStatus === "miss" && resolved.previousMarkdown !== null;
+  if (diffEligible) {
+    if (resolved.previousMarkdown === resolved.markdown) {
+      return [{ type: "text", text: formatUnchangedResponse(resolved) }];
+    }
+    const diff = diffMarkdown(resolved.previousMarkdown ?? "", resolved.markdown);
+    if (diff.sections.length > 0 && !diff.allSectionsChanged) {
+      return [{ type: "text", text: formatDiffResponse(resolved, diff.sections) }];
+    }
+    // 全節変更、または差分検出不能な場合は通常の全文応答へフォールバックする
+  }
+
+  const paginated = paginateMarkdown(resolved.markdown, maxTokens, page);
   return [{ type: "text", text: formatMarkdownResponse(resolved, paginated, null) }];
 }
 
 // ---- MCPサーバー本体 ----
 
-const server = new McpServer({ name: "amenbo", version: "0.2.0" });
+const server = new McpServer({ name: "amenbo", version: "0.3.0" });
 
 server.registerTool(
   "fetch",
   {
     title: "Fetch a web page as Markdown",
     description:
-      "日本語Webページを低負荷・省トークンで取得する。robots.txt/レート制御/キャッシュを内蔵し、" +
-      "modeでMarkdown全文/見出しアウトライン/特定セクション/スクリーンショットを選べる。" +
-      "mode:autoは品質スコアに応じてMarkdownとスクリーンショットを自動切替する。",
+      "日本語Webページを低負荷・省トークンで取得(robots.txt/レート制御/キャッシュ内蔵)。" +
+      "mode: auto(既定,品質スコアでMarkdown/screenshot自動切替)/markdown/outline(見出し要約)/screenshot。" +
+      "再取得時はcache: unchanged(無変更)/diff(変更節のみ)で省トークン応答。PDFはURLで自動判定。",
     inputSchema: {
-      url: z.string().url().describe("取得対象のURL(http/httpsのみ)"),
-      mode: z
-        .enum(["auto", "markdown", "outline", "screenshot"])
-        .optional()
-        .describe(
-          "取得モード(既定: auto)。auto=品質スコアで自動判定/markdown=常にMarkdown/" +
-            "outline=見出しツリーと概算トークン数のみ/screenshot=常にスクリーンショット",
-        ),
-      selector: z.string().optional().describe("抽出前にDOMへ適用するCSSセレクタ"),
-      section: z.string().optional().describe("outlineモードで得たsection ID(例: 's2')。指定時はmodeに関わらずその節のMarkdownのみ取得する"),
-      page: z.number().int().positive().optional().describe("ページ番号(既定: 1)"),
-      max_tokens: z.number().int().positive().optional().describe("1ページあたりの概算トークン上限(既定: 8000)"),
+      url: z.string().url().describe("取得対象URL(http/httpsのみ。PDFも可)"),
+      mode: z.enum(["auto", "markdown", "outline", "screenshot"]).optional().describe("既定auto"),
+      selector: z.string().optional().describe("本文を絞り込むCSSセレクタ"),
+      section: z.string().optional().describe("outlineで得たsection ID。指定時はその節のMarkdownのみ返す"),
+      page: z.number().int().positive().optional().describe("ページ番号(既定1)"),
+      max_tokens: z.number().int().positive().optional().describe("1ページの概算トークン上限(既定8000)"),
+      force_full: z.boolean().optional().describe("既定false。trueで差分応答(unchanged/diff)を無効化し常に全文を返す"),
     },
   },
-  async ({ url, mode, selector, section, page, max_tokens: maxTokens }) => {
+  async ({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull }) => {
     try {
-      const content = await handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens });
+      const content = await handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull });
       return { content };
+    } catch (error) {
+      const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
+      if (!(error instanceof AmenboError)) {
+        console.error(error);
+      }
+      return { content: [{ type: "text" as const, text: message }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "links",
+  {
+    title: "List links from a page (sitemap/RSS-first)",
+    description: "sitemap.xml/RSS・Atomフィードがあれば優先し、無ければページ内リンクを抽出する低負荷なリンク列挙。",
+    inputSchema: {
+      url: z.string().url().describe("起点URL"),
+      filter: z.string().optional().describe("URL/リンクテキストの部分一致、または*を使ったglob"),
+    },
+  },
+  async ({ url, filter }) => {
+    try {
+      const result = await discoverLinks(url, politeness, filter ? { filter } : {});
+      return { content: [{ type: "text" as const, text: formatLinksResponse(url, result) }] };
     } catch (error) {
       const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
       if (!(error instanceof AmenboError)) {

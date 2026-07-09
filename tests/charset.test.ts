@@ -1,4 +1,4 @@
-import * as Encoding from "encoding-japanese";
+import Encoding from "encoding-japanese";
 import { describe, expect, it } from "vitest";
 import { decodeHtmlBytes } from "../src/fetcher/http.js";
 

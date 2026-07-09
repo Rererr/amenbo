@@ -81,6 +81,12 @@ export class PolitenessManager {
     }
   }
 
+  /** robots.txtが宣言するSitemap URLの一覧を返す(linksツールのsitemap優先探索用)。 */
+  async getSitemaps(url: string): Promise<string[]> {
+    const robots = await this.getRobots(url);
+    return robots?.getSitemaps() ?? [];
+  }
+
   /** ドメイン毎の直列キュー+最小間隔(robots.txtのCrawl-Delay考慮)を適用して順番を待つ。 */
   async waitTurn(url: string): Promise<void> {
     const host = new URL(url).host;

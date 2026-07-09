@@ -124,3 +124,25 @@ describe("PolitenessManager - checkRobotsAllowed / guard", () => {
     expect(httpGetMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("PolitenessManager - getSitemaps(linksツールのsitemap優先探索用)", () => {
+  it("robots.txtのSitemap宣言を返す", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow:\nSitemap: https://example.com/sitemap.xml\n");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+    const sitemaps = await pm.getSitemaps("http://example.com/a");
+    expect(sitemaps).toEqual(["https://example.com/sitemap.xml"]);
+  });
+
+  it("複数のSitemap宣言を全て返す", async () => {
+    mockRobotsResponse("Sitemap: https://example.com/sitemap-news.xml\nSitemap: https://example.com/sitemap-pages.xml\n");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+    const sitemaps = await pm.getSitemaps("http://example.com/a");
+    expect(sitemaps).toEqual(["https://example.com/sitemap-news.xml", "https://example.com/sitemap-pages.xml"]);
+  });
+
+  it("Sitemap宣言が無い場合は空配列を返す", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow:\n");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+    expect(await pm.getSitemaps("http://example.com/a")).toEqual([]);
+  });
+});
