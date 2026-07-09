@@ -1,0 +1,56 @@
+{
+  "name": "amenbo",
+  "version": "0.1.0",
+  "description": "Skims the web without making waves — a Japanese-web-native MCP server for low-impact, token-efficient web collection",
+  "type": "module",
+  "license": "MIT",
+  "author": "Rererr",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rererr/amenbo.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "web",
+    "japanese",
+    "markdown",
+    "llm"
+  ],
+  "bin": {
+    "amenbo": "dist/server.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@joplin/turndown-plugin-gfm": "^1.0.67",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@mozilla/readability": "^0.6.0",
+    "better-sqlite3": "^12.11.1",
+    "encoding-japanese": "^2.2.0",
+    "linkedom": "^0.18.13",
+    "playwright": "^1.61.1",
+    "robots-parser": "^3.0.1",
+    "turndown": "^7.2.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/encoding-japanese": "^2.2.1",
+    "@types/node": "^26.1.1",
+    "@types/turndown": "^5.0.6",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
