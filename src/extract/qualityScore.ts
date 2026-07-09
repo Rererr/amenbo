@@ -1,11 +1,12 @@
 /**
  * extract/qualityScore.ts — 品質スコアによるMarkdown/ピクセル自動切替の判定。
  *
- * plan.md §3-4「ハイブリッド自動切替」(Phase 2)+ J6画像文字検知(Phase 3)。
- * 実際のピクセル/ジオメトリ計測(bounding box等)はPhase 4スコープのため、
- * ここではDOM構造から得られる安価な近似指標を用いる:
+ * plan.md §3-4「ハイブリッド自動切替」(Phase 2)+ J6画像文字検知(Phase 3)+
+ * Phase 4: ブラウザ昇格時は実ジオメトリ(bounding box)から視覚要素占有率を計算する。
+ * HTTP tier(静的HTML)は引き続きDOM構造から得られる安価な近似指標を用いる:
  *   - 抽出テキスト密度 = 抽出Markdown文字数 / レンダリング可視テキスト文字数
- *   - 視覚要素占有率 = (表セル+canvas+svg要素数) / 全「内容を持ちうる」要素数
+ *   - 視覚要素占有率 = (表セル+canvas+svg要素数) / 全「内容を持ちうる」要素数(近似)
+ *     ブラウザ昇格時は実bounding boxの面積比(realVisualAreaRatio)で置き換える(Phase 4)
  *   - J6 画像文字検知 = img面積占有率(width/height属性からの近似) と alt欠落率
  *     (「バナー/画像化料金表」等、画像で情報を出しているページの検知)
  * いずれかが閾値を割れば/超えればMarkdown抽出で情報が失われていると判断し、
@@ -31,6 +32,11 @@ export interface QualityScoreInput {
   imgMissingAltCount: number;
   /** img要素のwidth/height属性から見積もった合計面積 / 基準ページ面積(0-1、J6)。 */
   imgAreaRatio: number;
+  /**
+   * Phase 4: ブラウザ昇格時のみ、実ジオメトリ(bounding box)から計算した
+   * 表/canvas/svgの面積占有率(0-1)。指定時はDOM要素数ベースの近似より優先する。
+   */
+  realVisualAreaRatio?: number;
 }
 
 export interface QualityScoreResult {
@@ -53,10 +59,10 @@ const IMG_MISSING_ALT_RATIO_THRESHOLD = 0.5;
 /** 品質スコアを評価し、Markdown抽出で情報が失われていないかを判定する。 */
 export function evaluateQuality(input: QualityScoreInput): QualityScoreResult {
   const density = input.visibleTextLength > 0 ? input.extractedTextLength / input.visibleTextLength : 1;
+  // Phase 4: ブラウザ昇格時は実ジオメトリの面積比を優先し、無ければDOM要素数ベースの近似を使う
   const visualOccupancyRatio =
-    input.totalLeafElementCount > 0
-      ? (input.tableCellCount + input.canvasCount + input.svgCount) / input.totalLeafElementCount
-      : 0;
+    input.realVisualAreaRatio ??
+    (input.totalLeafElementCount > 0 ? (input.tableCellCount + input.canvasCount + input.svgCount) / input.totalLeafElementCount : 0);
   const imgMissingAltRatio = input.imgCount > 0 ? input.imgMissingAltCount / input.imgCount : 0;
 
   if (density < DENSITY_THRESHOLD) {

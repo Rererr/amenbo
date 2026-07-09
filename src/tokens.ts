@@ -55,7 +55,7 @@ export function estimateTokens(text: string): number {
 }
 
 /** Markdownの1ブロック(見出し/段落/リスト項目/表/コードフェンス等)。 */
-interface Block {
+export interface Block {
   text: string;
   isHeading: boolean;
 }
@@ -63,8 +63,9 @@ interface Block {
 /**
  * Markdownをブロック単位(空行区切り)に分割する。
  * フェンスコードブロック(```)内の空行はブロック境界として扱わない。
+ * templateLearning.ts(Phase 4定型ブロック除去)からも再利用される共通処理。
  */
-function splitIntoBlocks(markdown: string): Block[] {
+export function splitIntoBlocks(markdown: string): Block[] {
   const lines = markdown.split("\n");
   const blocks: Block[] = [];
   let current: string[] = [];

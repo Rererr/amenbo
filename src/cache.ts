@@ -11,6 +11,10 @@
  * SQLiteにはそのパスのみを保存する(DBの肥大化を避けるため)。
  * 画像はレンダリング結果でありETag等の安価な再検証手段が無いため、TTLベースの
  * fresh/miss判定のみとする(revalidatedは無い)。
+ *
+ * Phase 4 テンプレート学習: ドメイン毎に直近ページのブロックハッシュ集合を domain_pages に
+ * 記録し、直近N ページ全てに共通して出現したハッシュを定型ブロック(ヘッダ/フッタ/定型ナビ等)
+ * と判定する(getTemplateBlockHashes)。除去処理自体はtemplateLearning.tsが行う。
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -41,6 +45,8 @@ export interface CacheWriteInput {
 }
 
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15分
+/** Phase 4テンプレート学習: 定型ブロック判定に使う「直近ページ数」の既定値。 */
+const DEFAULT_TEMPLATE_RECENT_PAGES = 3;
 
 function resolveCacheDir(): string {
   const dir = process.env.AMENBO_CACHE_DIR ?? join(homedir(), ".cache", "amenbo");
@@ -66,6 +72,13 @@ interface ScreenshotRow {
   tile_paths: string;
   metadata: string;
   fetched_at: number;
+}
+
+interface DomainPageRow {
+  domain: string;
+  url: string;
+  fetched_at: number;
+  block_hashes: string;
 }
 
 export function hashContent(content: string): string {
@@ -127,6 +140,16 @@ export class PageCache {
         fetched_at INTEGER NOT NULL
       )
     `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS domain_pages (
+        domain TEXT NOT NULL,
+        url TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL,
+        block_hashes TEXT NOT NULL,
+        PRIMARY KEY (domain, url)
+      )
+    `);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_domain_pages_domain_fetched_at ON domain_pages (domain, fetched_at DESC)`);
   }
 
   /** 保存済みエントリを取得する(TTL判定は行わない。判定は isFresh を使う)。 */
@@ -233,6 +256,46 @@ export class PageCache {
   /** 304再検証成功時: 本文は変えず取得時刻のみ更新する(再変換しない)。 */
   touch(url: string): void {
     this.db.prepare("UPDATE pages SET fetched_at = ? WHERE url = ?").run(this.now(), url);
+  }
+
+  /** Phase 4テンプレート学習: このページの(除去前・全)ブロックハッシュ集合をドメイン別に記録する。 */
+  recordDomainPageBlocks(domain: string, url: string, blockHashes: string[]): void {
+    this.db
+      .prepare(
+        `INSERT INTO domain_pages (domain, url, fetched_at, block_hashes)
+         VALUES (@domain, @url, @fetchedAt, @blockHashes)
+         ON CONFLICT(domain, url) DO UPDATE SET
+           fetched_at = excluded.fetched_at,
+           block_hashes = excluded.block_hashes`,
+      )
+      .run({ domain, url, fetchedAt: this.now(), blockHashes: JSON.stringify(blockHashes) });
+  }
+
+  /**
+   * 直近recentPages件のページ全てに共通して出現したブロックハッシュを定型ブロック
+   * (ヘッダ/フッタ/定型ナビ等)とみなして返す。まだrecentPages件分のページ履歴が
+   * 無い場合(コールドスタート)は誤除去を避けるため空集合を返す。
+   */
+  getTemplateBlockHashes(domain: string, recentPages: number = DEFAULT_TEMPLATE_RECENT_PAGES): Set<string> {
+    const rows = this.db
+      .prepare<[string, number], DomainPageRow>("SELECT * FROM domain_pages WHERE domain = ? ORDER BY fetched_at DESC LIMIT ?")
+      .all(domain, recentPages);
+
+    if (rows.length < recentPages) return new Set();
+
+    const occurrenceCount = new Map<string, number>();
+    for (const row of rows) {
+      const hashes = JSON.parse(row.block_hashes) as string[];
+      for (const hash of hashes) {
+        occurrenceCount.set(hash, (occurrenceCount.get(hash) ?? 0) + 1);
+      }
+    }
+
+    const templateHashes = new Set<string>();
+    for (const [hash, count] of occurrenceCount) {
+      if (count >= recentPages) templateHashes.add(hash);
+    }
+    return templateHashes;
   }
 
   close(): void {

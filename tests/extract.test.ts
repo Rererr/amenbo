@@ -58,6 +58,93 @@ describe("extractMarkdown", () => {
     const result = extractMarkdown(articleHtml, { url: "https://example.com/article" });
     expect(result.adapterName).toBeNull();
   });
+
+  it("extractionMethodはReadability成功時'readability'になる", () => {
+    const result = extractMarkdown(articleHtml, { url: "https://example.com/article" });
+    expect(result.extractionMethod).toBe("readability");
+  });
+
+  it("selector指定時はextractionMethod='selector'になる", () => {
+    const result = extractMarkdown(articleHtml, { url: "https://example.com/article", selector: "table" });
+    expect(result.extractionMethod).toBe("selector");
+  });
+});
+
+describe("extractMarkdown - Phase 4 ジオメトリ抽出", () => {
+  // Readabilityが本文を特定できない(全体で31文字しかなくMIN_READABILITY_TEXT_LENGTH未満)、
+  // 最小限のdiv soupページ。data-amenbo-gid付きの要素はブラウザ側が実際に付与するのと同じ形。
+  const minimalHtml = `<!DOCTYPE html><html lang="ja"><head><title>会社案内</title></head><body>
+    <div>短い。</div>
+    <div data-amenbo-gid="1">段落1のテキストです。</div>
+    <div data-amenbo-gid="2">段落2のテキストです。</div>
+  </body></html>`;
+
+  it("geometry未指定時はReadability失敗後body全体にフォールバックする(既存挙動)", () => {
+    const result = extractMarkdown(minimalHtml, { url: "https://example.com/old-site" });
+    expect(result.extractionMethod).toBe("body-fallback");
+    expect(result.markdown).toContain("段落1のテキストです");
+    expect(result.markdown).toContain("段落2のテキストです");
+  });
+
+  it("geometry指定時、Readability失敗時はクラスタ化された領域を抽出する(extraction: geometry)", () => {
+    const geometry = {
+      textBlocks: [
+        { id: 1, x: 100, y: 0, width: 400, height: 20, textLength: 150 },
+        { id: 2, x: 100, y: 30, width: 400, height: 20, textLength: 150 },
+      ],
+      visualElements: [],
+      pageWidth: 1280,
+      pageHeight: 800,
+    };
+    const result = extractMarkdown(minimalHtml, { url: "https://example.com/old-site", geometry });
+    expect(result.extractionMethod).toBe("geometry");
+    expect(result.markdown).toContain("段落1のテキストです");
+    expect(result.markdown).toContain("段落2のテキストです");
+    // クラスタ外(タグ付けされていない)要素の内容は含まれない
+    expect(result.markdown).not.toContain("短い。");
+  });
+
+  it("geometryが指定されてもクラスタの合計テキスト量が閾値未満ならbody-fallbackする", () => {
+    const geometry = {
+      textBlocks: [
+        { id: 1, x: 100, y: 0, width: 400, height: 20, textLength: 5 },
+        { id: 2, x: 100, y: 30, width: 400, height: 20, textLength: 5 },
+      ],
+      visualElements: [],
+      pageWidth: 1280,
+      pageHeight: 800,
+    };
+    const result = extractMarkdown(minimalHtml, { url: "https://example.com/old-site", geometry });
+    expect(result.extractionMethod).toBe("body-fallback");
+  });
+
+  it("selector指定時はgeometryが与えられていても無視される(selectorが最優先)", () => {
+    const geometry = {
+      textBlocks: [{ id: 1, x: 100, y: 0, width: 400, height: 20, textLength: 150 }],
+      visualElements: [],
+      pageWidth: 1280,
+      pageHeight: 800,
+    };
+    const result = extractMarkdown(minimalHtml, { url: "https://example.com/old-site", selector: "body > div:first-child", geometry });
+    expect(result.extractionMethod).toBe("selector");
+    expect(result.markdown).toContain("短い。");
+  });
+
+  it("アダプタが一致する場合はgeometryより優先される", () => {
+    const qiitaHtmlMinimal = `<!DOCTYPE html><html lang="ja"><head><title>T</title></head><body>
+      <div class="it-MdContent"><p>${"Qiitaの本文です。".repeat(20)}</p></div>
+      <div data-amenbo-gid="1">無関係な段落です。</div>
+    </body></html>`;
+    const geometry = {
+      textBlocks: [{ id: 1, x: 100, y: 0, width: 400, height: 20, textLength: 999 }],
+      visualElements: [],
+      pageWidth: 1280,
+      pageHeight: 800,
+    };
+    const result = extractMarkdown(qiitaHtmlMinimal, { url: "https://qiita.com/x/items/y", geometry });
+    expect(result.extractionMethod).toBe("adapter");
+    expect(result.adapterName).toBe("qiita");
+  });
 });
 
 describe("extractMarkdown - J7 サイトアダプタ", () => {
@@ -111,5 +198,34 @@ describe("extractMarkdown - J7 サイトアダプタ", () => {
     const result = extractMarkdown(htmlWithoutAdapterClass, { url: "https://qiita.com/someone/items/xyz" });
     expect(result.adapterName).toBeNull();
     expect(result.markdown).toContain("本文段落です");
+  });
+
+  // Phase 4追加: MediaWikiは見出しを<div class="mw-heading">でラップし編集リンクを併記するため、
+  // Readabilityが記事中の全見出しを剥がしてしまうことを実機検証で確認済み(実URLで再現)。
+  // アダプタでReadabilityを完全にバイパスすることで見出し構造を保つ。
+  const wikipediaHtml = `<!DOCTYPE html>
+    <html lang="ja"><head><title>日本語 - Wikipedia</title></head>
+    <body>
+      <div class="mw-parser-output">
+        <p>日本語は日本国内や日本人同士の間で使用されている言語である。</p>
+        <div class="mw-heading mw-heading2"><h2 id="特徴">特徴</h2><span class="mw-editsection">[<a href="#">編集</a>]</span></div>
+        <p>${"日本語の音韻的特徴について説明する文章です。".repeat(5)}</p>
+        <div class="mw-heading mw-heading3"><h3 id="音韻">音韻</h3><span class="mw-editsection">[<a href="#">編集</a>]</span></div>
+        <p>${"母音・子音の体系について説明する文章です。".repeat(5)}</p>
+        <div class="navbox">関連項目のナビゲーションボックス</div>
+      </div>
+    </body></html>`;
+
+  it("ja.wikipedia.orgではadapterName='wikipedia-ja'になり、見出し構造を保持する(Readabilityは見出しを剥がすため)", () => {
+    const result = extractMarkdown(wikipediaHtml, { url: "https://ja.wikipedia.org/wiki/日本語" });
+    expect(result.adapterName).toBe("wikipedia-ja");
+    const headingLines = result.markdown.split("\n").filter((line) => /^#{1,6}\s/.test(line));
+    expect(headingLines).toEqual(["## 特徴", "### 音韻"]);
+  });
+
+  it("ja.wikipedia.orgでは編集リンク・navboxを除去する", () => {
+    const result = extractMarkdown(wikipediaHtml, { url: "https://ja.wikipedia.org/wiki/日本語" });
+    expect(result.markdown).not.toContain("編集");
+    expect(result.markdown).not.toContain("関連項目のナビゲーションボックス");
   });
 });

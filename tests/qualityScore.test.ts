@@ -72,4 +72,20 @@ describe("evaluateQuality", () => {
       expect(result.imgMissingAltRatio).toBe(0);
     });
   });
+
+  describe("Phase 4: realVisualAreaRatio(ブラウザ昇格時の実ジオメトリ)", () => {
+    it("指定時はDOM要素数ベースの近似より優先される", () => {
+      // 近似計算(tableCellCount/totalLeafElementCount)なら0.04で低品質にならないはずだが、
+      // 実ジオメトリで0.5と分かっていればそちらを採用しlowQuality=trueになる
+      const result = evaluateQuality(baseInput({ tableCellCount: 2, totalLeafElementCount: 50, realVisualAreaRatio: 0.5 }));
+      expect(result.visualOccupancyRatio).toBe(0.5);
+      expect(result.lowQuality).toBe(true);
+      expect(result.reason).toContain("占有率");
+    });
+
+    it("未指定時は従来通りDOM要素数ベースの近似を使う", () => {
+      const result = evaluateQuality(baseInput({ tableCellCount: 2, totalLeafElementCount: 50 }));
+      expect(result.visualOccupancyRatio).toBe(0.04);
+    });
+  });
 });

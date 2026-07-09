@@ -16,7 +16,7 @@ import { z } from "zod";
 import { computeScreenshotCacheKey, PageCache, type CacheStatus, type ScreenshotCacheStatus } from "./cache.js";
 import { diffMarkdown, type SectionDiff } from "./diff.js";
 import { AmenboError, SectionNotFoundError } from "./errors.js";
-import { extractMarkdown } from "./extract/markdown.js";
+import { extractMarkdown, type ExtractionMethod } from "./extract/markdown.js";
 import { buildOutline, extractSection, type OutlineResult } from "./extract/outline.js";
 import { DEFAULT_PDF_MAX_BYTES, extractPdfText, looksLikePdf, markdownFromPdfText, renderPdfPages } from "./extract/pdf.js";
 import { evaluateQuality } from "./extract/qualityScore.js";
@@ -25,6 +25,7 @@ import { httpGetBinary } from "./fetcher/http.js";
 import { discoverLinks, type LinksResult } from "./links.js";
 import { PolitenessManager } from "./politeness.js";
 import { captureTiledScreenshot, DEFAULT_TILE_WIDTH } from "./screenshot.js";
+import { computeBlockHashes, removeTemplateBlocks } from "./templateLearning.js";
 import { paginateMarkdown, type PaginatedResult } from "./tokens.js";
 
 /** キャッシュTTL(ミリ秒)。運用/検証時の調整用に環境変数で上書きできる(既定はcache.tsの15分)。 */
@@ -46,6 +47,15 @@ process.once("exit", () => {
 const DEFAULT_MAX_TOKENS = 8000;
 const DEFAULT_PAGE = 1;
 const DEFAULT_SCREENSHOT_SCALE = 1.0;
+
+/** URLのhostnameを安全に取り出す(不正URLならnull)。Phase 4テンプレート学習のドメインキーに使う。 */
+function safeHostname(url: string): string | null {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
 
 type ExtendedFetchTier = FetchTier | "cache";
 
@@ -69,11 +79,12 @@ interface ExtractedPage {
   qualityReason: string | null;
   prunedBlockCount: number;
   adapterName: string | null;
+  extractionMethod: ExtractionMethod;
 }
 
 type FetchAndExtractResult = { status: "not_modified" } | ExtractedPage;
 
-/** URLとselectorの組から、新規取得・変換したMarkdownと品質スコア/pruning/アダプタ結果を作る。 */
+/** URLとselectorの組から、新規取得・変換したMarkdownと品質スコア/pruning/アダプタ/ジオメトリ結果を作る。 */
 async function fetchAndExtract(
   url: string,
   selector: string | undefined,
@@ -84,24 +95,49 @@ async function fetchAndExtract(
     return { status: "not_modified" };
   }
 
-  const extracted = extractMarkdown(fetchResult.html, {
+  let extracted = extractMarkdown(fetchResult.html, {
     url: fetchResult.finalUrl,
     ...(selector ? { selector } : {}),
+    geometry: fetchResult.geometry,
   });
+  let finalFetchResult = fetchResult;
+
+  // Phase 4 ジオメトリ抽出: HTTP tierでReadability/アダプタ双方が失敗した(body-fallback)場合、
+  // 二段フェッチのSPA判定に該当しなくても、ジオメトリ(bounding box)を得る目的だけで
+  // ブラウザへ再エスカレーションする。div soup/テーブルレイアウトの古い個人/中小企業サイト
+  // 対策の本命(plan.md §6 Phase4)。selector指定時はユーザーが本文位置を明示済みなので行わない。
+  // ジオメトリでも改善しなかった場合はHTTP tierの結果(body-fallback)をそのまま使う。
+  if (!selector && fetchResult.tier === "http" && extracted.extractionMethod === "body-fallback") {
+    try {
+      await politeness.waitTurn(url); // 追加のブラウザ遷移が発生するため、律速のため再度順番を待つ
+      const browserFetchResult = await fetchPage(url, { forceBrowser: true });
+      if (!("notModified" in browserFetchResult)) {
+        const browserExtracted = extractMarkdown(browserFetchResult.html, { url: browserFetchResult.finalUrl, geometry: browserFetchResult.geometry });
+        if (browserExtracted.extractionMethod === "geometry") {
+          extracted = browserExtracted;
+          finalFetchResult = browserFetchResult;
+        }
+      }
+    } catch {
+      // 再エスカレーションに失敗してもHTTP tierの結果(body-fallback)をそのまま使う(ベストエフォート)
+    }
+  }
+
   const quality = evaluateQuality(extracted.qualityInput);
 
   return {
     status: "fetched",
     markdown: extracted.markdown,
     title: extracted.title,
-    finalUrl: fetchResult.finalUrl,
-    tier: fetchResult.tier,
-    etag: fetchResult.etag,
-    lastModified: fetchResult.lastModified,
+    finalUrl: finalFetchResult.finalUrl,
+    tier: finalFetchResult.tier,
+    etag: finalFetchResult.etag,
+    lastModified: finalFetchResult.lastModified,
     lowQuality: quality.lowQuality,
     qualityReason: quality.reason,
     prunedBlockCount: extracted.prunedBlockCount,
     adapterName: extracted.adapterName,
+    extractionMethod: extracted.extractionMethod,
   };
 }
 
@@ -115,6 +151,7 @@ interface ResolvedPage {
   qualityReason: string | null;
   prunedBlockCount: number;
   adapterName: string | null;
+  extractionMethod: ExtractionMethod;
   /** 新規フェッチ(cacheStatus==='miss')の場合のみ、上書き前の旧キャッシュ内容(§3-3差分応答用)。 */
   previousMarkdown: string | null;
 }
@@ -131,6 +168,7 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
     qualityReason: (metadata.qualityReason as string | null) ?? null,
     prunedBlockCount: Number(metadata.prunedBlockCount ?? 0),
     adapterName: (metadata.adapterName as string | null) ?? null,
+    extractionMethod: (metadata.extractionMethod as ExtractionMethod | undefined) ?? "readability",
     previousMarkdown: null,
   };
 }
@@ -156,6 +194,7 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
       qualityReason: result.qualityReason,
       prunedBlockCount: result.prunedBlockCount,
       adapterName: result.adapterName,
+      extractionMethod: result.extractionMethod,
       previousMarkdown: null,
     };
   }
@@ -179,6 +218,13 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
 
   const previousMarkdown = cached?.markdown ?? null;
 
+  // Phase 4 テンプレート学習: このページの(除去前・全)ブロックハッシュをドメイン別に記録する。
+  // selector指定時(このブランチには来ない)は記録しない(選択範囲が偏り学習を汚すため)。
+  const domain = safeHostname(result.finalUrl);
+  if (domain) {
+    cache.recordDomainPageBlocks(domain, url, computeBlockHashes(result.markdown));
+  }
+
   cache.set({
     url,
     etag: result.etag,
@@ -192,6 +238,7 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
       qualityReason: result.qualityReason,
       prunedBlockCount: result.prunedBlockCount,
       adapterName: result.adapterName,
+      extractionMethod: result.extractionMethod,
     },
   });
 
@@ -205,6 +252,7 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
     qualityReason: result.qualityReason,
     prunedBlockCount: result.prunedBlockCount,
     adapterName: result.adapterName,
+    extractionMethod: result.extractionMethod,
     previousMarkdown,
   };
 }
@@ -271,7 +319,21 @@ function adapterLine(adapterName: string | null): string[] {
   return adapterName ? [`adapter: ${adapterName}`] : [];
 }
 
-function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, sectionId: string | null): string {
+/**
+ * 抽出経路の注記。"readability"(既定の成功経路)/"adapter"(adapter:行と重複するため省略)/
+ * "selector"(ユーザー指定なので自明)は表示せず、Phase 4の "geometry" と、
+ * 品質が疑わしい "body-fallback" のみユーザーへ明示する(トークン節約)。
+ */
+function extractionMethodLine(method: ExtractionMethod): string[] {
+  return method === "geometry" || method === "body-fallback" ? [`extraction: ${method}`] : [];
+}
+
+/** Phase 4: テンプレート学習で除去した定型ブロック数(0件なら表示しない。トークン節約)。 */
+function templateRemovedLine(templateRemovedCount: number): string[] {
+  return templateRemovedCount > 0 ? [`template_blocks_removed: ${templateRemovedCount}`] : [];
+}
+
+function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, sectionId: string | null, templateRemovedCount: number): string {
   const header = [
     `title: ${page.title ?? "(なし)"}`,
     `url: ${page.finalUrl}`,
@@ -283,6 +345,8 @@ function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, 
     `fetch_tier: ${page.tier}`,
     `pruned_blocks: ${page.prunedBlockCount}`,
     ...adapterLine(page.adapterName),
+    ...extractionMethodLine(page.extractionMethod),
+    ...templateRemovedLine(templateRemovedCount),
   ].join("\n");
   return `${header}\n\n${paginated.content}`;
 }
@@ -306,7 +370,7 @@ function formatSectionDiffBlock(diff: SectionDiff): string {
 }
 
 /** §3-3 差分応答: 変更・追加・削除された節のみ返却。 */
-function formatDiffResponse(page: ResolvedPage, sections: SectionDiff[]): string {
+function formatDiffResponse(page: ResolvedPage, sections: SectionDiff[], templateRemovedCount: number): string {
   const counts = { added: 0, changed: 0, removed: 0 };
   for (const section of sections) counts[section.type]++;
 
@@ -318,12 +382,14 @@ function formatDiffResponse(page: ResolvedPage, sections: SectionDiff[]): string
     `changed_sections: ${sections.length}(追加${counts.added}/変更${counts.changed}/削除${counts.removed})`,
     `fetch_tier: ${page.tier}`,
     ...adapterLine(page.adapterName),
+    ...extractionMethodLine(page.extractionMethod),
+    ...templateRemovedLine(templateRemovedCount),
   ].join("\n");
 
   return `${header}\n\n${sections.map(formatSectionDiffBlock).join("\n\n")}`;
 }
 
-function formatOutlineResponse(page: ResolvedPage, outline: OutlineResult): string {
+function formatOutlineResponse(page: ResolvedPage, outline: OutlineResult, templateRemovedCount: number): string {
   const header = [
     `title: ${page.title ?? "(なし)"}`,
     `url: ${page.finalUrl}`,
@@ -332,6 +398,8 @@ function formatOutlineResponse(page: ResolvedPage, outline: OutlineResult): stri
     `total_tokens: ${outline.totalTokens}`,
     `fetch_tier: ${page.tier}`,
     ...adapterLine(page.adapterName),
+    ...extractionMethodLine(page.extractionMethod),
+    ...templateRemovedLine(templateRemovedCount),
   ].join("\n");
 
   const body =
@@ -454,19 +522,28 @@ async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock |
 
   const resolved = await resolvePage(input.url, input.selector);
 
+  // Phase 4 テンプレート学習: 定型ブロック(ヘッダ/フッタ/定型ナビ等)を表示直前に除去する。
+  // force_fullで無効化できる。selector指定時はページ全体ではなく特定要素の抽出結果なので対象外。
+  const domain = safeHostname(resolved.finalUrl);
+  const templateHashes = !input.force_full && !input.selector && domain ? cache.getTemplateBlockHashes(domain) : new Set<string>();
+  const { markdown: displayMarkdown, removedCount: templateRemovedCount } = removeTemplateBlocks(resolved.markdown, templateHashes);
+  const previousDisplayMarkdown =
+    resolved.previousMarkdown !== null ? removeTemplateBlocks(resolved.previousMarkdown, templateHashes).markdown : null;
+  const view: ResolvedPage = { ...resolved, markdown: displayMarkdown, previousMarkdown: previousDisplayMarkdown };
+
   // sectionが指定された場合は、mode指定に関わらずその節のMarkdownのみを返す(差分応答は適用しない)
   if (input.section) {
-    const sectionMarkdown = extractSection(resolved.markdown, input.section);
+    const sectionMarkdown = extractSection(view.markdown, input.section);
     if (sectionMarkdown === null) {
       throw new SectionNotFoundError(input.url, input.section);
     }
     const paginated = paginateMarkdown(sectionMarkdown, maxTokens, page);
-    return [{ type: "text", text: formatMarkdownResponse(resolved, paginated, input.section) }];
+    return [{ type: "text", text: formatMarkdownResponse(view, paginated, input.section, templateRemovedCount) }];
   }
 
   if (mode === "outline") {
-    const outline = buildOutline(resolved.markdown);
-    return [{ type: "text", text: formatOutlineResponse(resolved, outline) }];
+    const outline = buildOutline(view.markdown);
+    return [{ type: "text", text: formatOutlineResponse(view, outline, templateRemovedCount) }];
   }
 
   const wantsScreenshot = mode === "screenshot" || (mode === "auto" && resolved.lowQuality);
@@ -480,20 +557,21 @@ async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock |
   }
 
   // §3-3 差分応答: selector無し・force_full無し・新規フェッチ(cacheStatus==='miss')かつ旧キャッシュがある場合のみ
-  const diffEligible = !input.selector && !input.force_full && resolved.cacheStatus === "miss" && resolved.previousMarkdown !== null;
+  // 比較にはview(テンプレート除去後)を使う。定型ブロックの有無で誤って差分検知しないようにするため。
+  const diffEligible = !input.selector && !input.force_full && resolved.cacheStatus === "miss" && view.previousMarkdown !== null;
   if (diffEligible) {
-    if (resolved.previousMarkdown === resolved.markdown) {
-      return [{ type: "text", text: formatUnchangedResponse(resolved) }];
+    if (view.previousMarkdown === view.markdown) {
+      return [{ type: "text", text: formatUnchangedResponse(view) }];
     }
-    const diff = diffMarkdown(resolved.previousMarkdown ?? "", resolved.markdown);
+    const diff = diffMarkdown(view.previousMarkdown ?? "", view.markdown);
     if (diff.sections.length > 0 && !diff.allSectionsChanged) {
-      return [{ type: "text", text: formatDiffResponse(resolved, diff.sections) }];
+      return [{ type: "text", text: formatDiffResponse(view, diff.sections, templateRemovedCount) }];
     }
     // 全節変更、または差分検出不能な場合は通常の全文応答へフォールバックする
   }
 
-  const paginated = paginateMarkdown(resolved.markdown, maxTokens, page);
-  return [{ type: "text", text: formatMarkdownResponse(resolved, paginated, null) }];
+  const paginated = paginateMarkdown(view.markdown, maxTokens, page);
+  return [{ type: "text", text: formatMarkdownResponse(view, paginated, null, templateRemovedCount) }];
 }
 
 // ---- MCPサーバー本体 ----
@@ -515,7 +593,7 @@ server.registerTool(
       section: z.string().optional().describe("outlineで得たsection ID。指定時はその節のMarkdownのみ返す"),
       page: z.number().int().positive().optional().describe("ページ番号(既定1)"),
       max_tokens: z.number().int().positive().optional().describe("1ページの概算トークン上限(既定8000)"),
-      force_full: z.boolean().optional().describe("既定false。trueで差分応答(unchanged/diff)を無効化し常に全文を返す"),
+      force_full: z.boolean().optional().describe("既定false。trueで差分応答(unchanged/diff)と定型ブロック除去を無効化し常に全文を返す"),
     },
   },
   async ({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull }) => {
