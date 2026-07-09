@@ -2,19 +2,22 @@
  * extract/markdown.ts — HTML→Markdown変換パイプライン。
  *
  * linkedomでパース → J2 ruby除去 → J8 同意バナー除去 → 品質スコア用統計の採取(元DOM全体)
- * → 本文抽出(優先順: selector指定 > J7サイトアダプタ > J4 fit-pruning+Readability)
- * → turndown(GFM)でMarkdown化 → J3 CJK正規化。
+ * → 本文抽出(優先順: selector指定 > J7サイトアダプタ > Readability > Phase 4ジオメトリ抽出
+ *   > body全体フォールバック) → turndown(GFM)でMarkdown化 → J3 CJK正規化。
  *
  * 設計判断:
- * - selectorは「抽出前にDOMへ適用」(plan.md)の記述に基づき、アダプタ・Readabilityの
- *   両方より優先する。selector指定時はユーザーが本文位置を明示しているとみなし、
- *   J7アダプタ・Readability・J4 fit-pruningの全てをスキップする(ユーザーが明示した要素を
- *   ヒューリスティックで誤って削らないため)。
+ * - selectorは「抽出前にDOMへ適用」(plan.md)の記述に基づき、アダプタ・Readability・
+ *   ジオメトリ抽出の全てより優先する。selector指定時はユーザーが本文位置を明示している
+ *   とみなし、それら全てのヒューリスティックをスキップする(誤って削らないため)。
  * - J7サイトアダプタは自動判定(ユーザー指定ではない)なので、選択した要素の中にも
  *   J4 fit-pruningを適用する(アダプタのセレクタがコメント欄等まで含んでしまうケースの保険)。
  * - 品質スコア用の統計(qualityInput)はプルーニング/バナー除去後・selector適用前の
  *   ドキュメント全体から採取する。バナーは常にノイズなので統計からは除外し、
  *   ページ全体が視覚情報に依存しているかどうかを判定したい。
+ * - Phase 4ジオメトリ抽出: Readabilityが本文を特定できない(MIN_READABILITY_TEXT_LENGTH未満)
+ *   場合、body全体ダンプへ即座にフォールバックする前に、ブラウザ昇格時のみ利用可能な
+ *   ジオメトリデータ(bounding box)から主コンテンツ領域を推定する(div soup/テーブル
+ *   レイアウト対策)。それも失敗した場合のみ最終手段としてbody全体を使う。
  */
 import { Readability } from "@mozilla/readability";
 import { gfm } from "@joplin/turndown-plugin-gfm";
@@ -24,14 +27,20 @@ import { findAdapter } from "../adapters/index.js";
 import { ExtractionError } from "../errors.js";
 import { normalizeCjkText, stripRubyAnnotations } from "../jp/normalize.js";
 import { removeConsentBanners, type ConsentBannerHostDocument } from "../jp/consentBanner.js";
+import { computeVisualAreaRatio, selectMainContentCluster, type PageGeometrySnapshot } from "./geometry.js";
 import { type QualityScoreInput } from "./qualityScore.js";
 import { pruneLowValueBlocks, type PruneHostElement } from "./pruning.js";
 
 export interface ExtractOptions {
   url?: string;
-  /** CSSセレクタでDOMを絞り込んでから変換する(指定時はアダプタ/Readability/J4 pruningをスキップ)。 */
+  /** CSSセレクタでDOMを絞り込んでから変換する(指定時はアダプタ/Readability/J4 pruning/ジオメトリ抽出をスキップ)。 */
   selector?: string;
+  /** Phase 4: ブラウザ昇格時に採取したジオメトリデータ(HTTP tierやhttp未昇格時はnull/未指定)。 */
+  geometry?: PageGeometrySnapshot | null;
 }
+
+/** どの経路で本文候補HTMLを得たか(観測性向上・メタデータ表示用)。 */
+export type ExtractionMethod = "selector" | "adapter" | "readability" | "geometry" | "body-fallback";
 
 export interface ExtractResult {
   title: string | null;
@@ -42,6 +51,7 @@ export interface ExtractResult {
   qualityInput: QualityScoreInput;
   /** J7サイトアダプタが適用された場合、その識別名(selector指定時・未一致時はnull)。 */
   adapterName: string | null;
+  extractionMethod: ExtractionMethod;
 }
 
 const MIN_READABILITY_TEXT_LENGTH = 200;
@@ -88,7 +98,7 @@ function collectImageStats(body: QualityHostElement): { imgCount: number; imgMis
 }
 
 /** 品質スコア判定用の統計を、元ドキュメント全体(script/style除く)から採取する。 */
-function collectQualityInput(document: { body: QualityHostElement | null }): QualityScoreInput {
+function collectQualityInput(document: { body: QualityHostElement | null }, geometry: PageGeometrySnapshot | null | undefined): QualityScoreInput {
   const body = document.body;
   if (!body) {
     return {
@@ -117,6 +127,12 @@ function collectQualityInput(document: { body: QualityHostElement | null }): Qua
   const totalLeafElementCount = body.querySelectorAll(LEAF_ELEMENT_SELECTOR).length;
   const imageStats = collectImageStats(body);
 
+  // Phase 4: ブラウザ昇格時は実ジオメトリから視覚要素占有率を計算し、近似値より優先させる
+  const realVisualAreaRatio =
+    geometry && geometry.pageWidth > 0 && geometry.pageHeight > 0
+      ? computeVisualAreaRatio(geometry.visualElements, geometry.pageWidth, geometry.pageHeight)
+      : undefined;
+
   return {
     extractedTextLength: 0, // Markdown生成後に上書きする
     visibleTextLength,
@@ -125,6 +141,7 @@ function collectQualityInput(document: { body: QualityHostElement | null }): Qua
     svgCount,
     totalLeafElementCount,
     ...imageStats,
+    ...(realVisualAreaRatio !== undefined ? { realVisualAreaRatio } : {}),
   };
 }
 
@@ -147,6 +164,35 @@ function selectAdapterContent(document: AdapterHostDocument, selectors: string[]
   return null;
 }
 
+interface GeometryHostElement {
+  outerHTML: string;
+  getAttribute(name: string): string | null;
+}
+
+interface GeometryHostDocument {
+  querySelectorAll(selector: string): ArrayLike<GeometryHostElement>;
+}
+
+/**
+ * Phase 4: ジオメトリクラスタ(主コンテンツ領域と推定されたテキストブロック群)から、
+ * 対応するDOM要素(data-amenbo-gid経由で再選択)のHTMLをクラスタ内の並び順で組み立てる。
+ * クラスタの総テキスト量がReadabilityと同じ最低ラインに満たない場合はnullを返す
+ * (ジオメトリでも本文らしきものが見つからなかった、という扱い)。
+ */
+function extractByGeometry(document: GeometryHostDocument, geometry: PageGeometrySnapshot): string | null {
+  const cluster = selectMainContentCluster(geometry.textBlocks);
+  if (!cluster || cluster.totalTextLength < MIN_READABILITY_TEXT_LENGTH) return null;
+
+  const elementById = new Map<number, GeometryHostElement>();
+  for (const el of Array.from(document.querySelectorAll("[data-amenbo-gid]"))) {
+    const id = Number(el.getAttribute("data-amenbo-gid"));
+    if (!Number.isNaN(id)) elementById.set(id, el);
+  }
+
+  const htmlParts = cluster.blockIds.map((id) => elementById.get(id)?.outerHTML).filter((part): part is string => Boolean(part));
+  return htmlParts.length > 0 ? htmlParts.join("\n") : null;
+}
+
 /** HTML文字列をMarkdownへ変換する。 */
 export function extractMarkdown(html: string, options: ExtractOptions = {}): ExtractResult {
   const url = options.url ?? "about:blank";
@@ -156,12 +202,13 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
   removeConsentBanners(document as unknown as ConsentBannerHostDocument);
 
   // レンダリング可視テキストに近い統計を、プルーニング/selector適用前の元ドキュメントから採取する
-  const qualityInput = collectQualityInput(document as unknown as { body: QualityHostElement | null });
+  const qualityInput = collectQualityInput(document as unknown as { body: QualityHostElement | null }, options.geometry);
 
   let contentHtml: string;
   let title: string | null = document.title || null;
   let prunedBlockCount = 0;
   let adapterName: string | null = null;
+  let extractionMethod: ExtractionMethod;
 
   if (options.selector) {
     const matched = Array.from(document.querySelectorAll(options.selector));
@@ -169,6 +216,7 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
       throw new ExtractionError(url, `selectorに一致する要素がありません: ${options.selector}`);
     }
     contentHtml = matched.map((el) => el.outerHTML).join("\n");
+    extractionMethod = "selector";
   } else {
     const hostname = (() => {
       try {
@@ -189,18 +237,28 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
       prunedBlockCount = pruneLowValueBlocks(adapterElement);
       contentHtml = adapterElement.outerHTML;
       adapterName = adapter.name;
+      extractionMethod = "adapter";
     } else {
       if (document.body) {
         prunedBlockCount = pruneLowValueBlocks(document.body);
       }
 
       const article = new Readability(document).parse();
+      const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;
+
       if (article && article.content && (article.textContent ?? "").trim().length >= MIN_READABILITY_TEXT_LENGTH) {
         contentHtml = article.content;
         title = article.title || title;
+        extractionMethod = "readability";
+      } else if (geometryHtml) {
+        // Phase 4: Readabilityが貧弱(かつアダプタ非該当)な場合、body全体ダンプの前に
+        // ブラウザ昇格時のジオメトリ(bounding box)から主コンテンツ領域を推定する
+        contentHtml = geometryHtml;
+        extractionMethod = "geometry";
       } else if (document.body) {
-        // Readabilityが本文を特定できない場合はbody全体にフォールバックする
+        // Readability/ジオメトリいずれも本文を特定できない場合はbody全体にフォールバックする
         contentHtml = document.body.innerHTML;
+        extractionMethod = "body-fallback";
       } else {
         throw new ExtractionError(url, "本文と判定できる要素がありません");
       }
@@ -217,5 +275,6 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
     prunedBlockCount,
     qualityInput: { ...qualityInput, extractedTextLength: markdown.length },
     adapterName,
+    extractionMethod,
   };
 }

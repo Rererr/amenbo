@@ -168,3 +168,63 @@ describe("PageCache - スクリーンショットキャッシュ", () => {
     cache.close();
   });
 });
+
+describe("PageCache - Phase 4 テンプレート学習(定型ブロック判定)", () => {
+  it("直近ページ数(既定3件)に満たない場合は空集合を返す(コールドスタート)", () => {
+    const cache = new PageCache({ dbPath });
+    cache.recordDomainPageBlocks("example.com", "https://example.com/a", ["hashNav", "hashA"]);
+    cache.recordDomainPageBlocks("example.com", "https://example.com/b", ["hashNav", "hashB"]);
+    expect(cache.getTemplateBlockHashes("example.com")).toEqual(new Set());
+    cache.close();
+  });
+
+  it("直近3ページ全てに共通するハッシュのみ定型ブロックと判定する", () => {
+    const cache = new PageCache({ dbPath });
+    cache.recordDomainPageBlocks("example.com", "https://example.com/a", ["hashNav", "hashFooter", "hashA"]);
+    cache.recordDomainPageBlocks("example.com", "https://example.com/b", ["hashNav", "hashFooter", "hashB"]);
+    cache.recordDomainPageBlocks("example.com", "https://example.com/c", ["hashNav", "hashFooter", "hashC"]);
+
+    const templateHashes = cache.getTemplateBlockHashes("example.com");
+    expect(templateHashes).toEqual(new Set(["hashNav", "hashFooter"]));
+    cache.close();
+  });
+
+  it("一部のページにしか出現しないハッシュは定型ブロックと判定しない", () => {
+    const cache = new PageCache({ dbPath });
+    cache.recordDomainPageBlocks("example.com", "https://example.com/a", ["hashNav", "hashOnlyA"]);
+    cache.recordDomainPageBlocks("example.com", "https://example.com/b", ["hashNav", "hashOnlyB"]);
+    cache.recordDomainPageBlocks("example.com", "https://example.com/c", ["hashNav", "hashOnlyC"]);
+
+    expect(cache.getTemplateBlockHashes("example.com")).toEqual(new Set(["hashNav"]));
+    cache.close();
+  });
+
+  it("ドメインが異なれば独立して判定される", () => {
+    const cache = new PageCache({ dbPath });
+    for (const url of ["https://a.com/1", "https://a.com/2", "https://a.com/3"]) {
+      cache.recordDomainPageBlocks("a.com", url, ["hashA"]);
+    }
+    for (const url of ["https://b.com/1", "https://b.com/2"]) {
+      cache.recordDomainPageBlocks("b.com", url, ["hashB"]);
+    }
+    expect(cache.getTemplateBlockHashes("a.com")).toEqual(new Set(["hashA"]));
+    expect(cache.getTemplateBlockHashes("b.com")).toEqual(new Set()); // b.comはまだ2件のみ
+    cache.close();
+  });
+
+  it("直近3件を超えるとページ履歴が古いものから判定対象外になる", () => {
+    let now = 1_000_000;
+    const cache = new PageCache({ dbPath, now: () => now });
+    cache.recordDomainPageBlocks("example.com", "https://example.com/1", ["hashOld"]);
+    now += 1000;
+    cache.recordDomainPageBlocks("example.com", "https://example.com/2", ["hashCommon"]);
+    now += 1000;
+    cache.recordDomainPageBlocks("example.com", "https://example.com/3", ["hashCommon"]);
+    now += 1000;
+    cache.recordDomainPageBlocks("example.com", "https://example.com/4", ["hashCommon"]);
+
+    // 直近3件(2,3,4)には"hashOld"が含まれないため定型ブロック扱いされない
+    expect(cache.getTemplateBlockHashes("example.com")).toEqual(new Set(["hashCommon"]));
+    cache.close();
+  });
+});

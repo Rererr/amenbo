@@ -38,6 +38,13 @@ const CJK_ADJACENT_WHITESPACE = new RegExp(
   "gu",
 );
 
+// Turndownは<strong>/<em>等をCJKに隣接して変換する際、Markdownの曖昧性回避のため
+// "とても **重要** です" のように装飾記号の前後へ空白を挿入することがある。
+// 日本語の地の文では強調記号の前後に空白は不要なため、装飾記号(*_~)越しにCJKが
+// 隣接している場合もその空白を除去する(Phase 2で残課題としていたJ3の拡張)。
+const CJK_SPACE_BEFORE_MARKER = new RegExp(`(?<=[${CJK_CLASS}])[ \\t]+(?=[*_~]{1,3}[${CJK_CLASS}])`, "gu");
+const CJK_SPACE_AFTER_MARKER = new RegExp(`(?<=[${CJK_CLASS}][*_~]{1,3})[ \\t]+(?=[${CJK_CLASS}])`, "gu");
+
 // Markdownのフェンスコードブロック / インラインコードを保護するためのパターン
 const CODE_PATTERN = /```[\s\S]*?```|`[^`\n]*`/g;
 
@@ -69,7 +76,7 @@ function splitProtectingCode(markdown: string): TextSegment[] {
 /** コード以外の地の文に対して NFKC正規化 + CJK隣接空白除去を適用する。 */
 function normalizeProse(text: string): string {
   const nfkc = text.normalize("NFKC");
-  return nfkc.replace(CJK_ADJACENT_WHITESPACE, "");
+  return nfkc.replace(CJK_ADJACENT_WHITESPACE, "").replace(CJK_SPACE_BEFORE_MARKER, "").replace(CJK_SPACE_AFTER_MARKER, "");
 }
 
 /**

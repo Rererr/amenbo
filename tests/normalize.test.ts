@@ -49,4 +49,26 @@ describe("normalizeCjkText", () => {
   it("英数字と非CJKの空白はそのまま保持する(ASCII同士の間は対象外)", () => {
     expect(normalizeCjkText("Hello World")).toBe("Hello World");
   });
+
+  describe("Phase 4改善: 強調記号(**/_/~~)越しのCJK隣接空白除去", () => {
+    it("太字(**)の前後の空白を除去する", () => {
+      expect(normalizeCjkText("とても **重要** です。")).toBe("とても**重要**です。");
+    });
+
+    it("イタリック(_)の前後の空白を除去する", () => {
+      expect(normalizeCjkText("これは _強調_ 表現です。")).toBe("これは_強調_表現です。");
+    });
+
+    it("取り消し線(~~)の前後の空白を除去する", () => {
+      expect(normalizeCjkText("これは ~~誤り~~ でした。")).toBe("これは~~誤り~~でした。");
+    });
+
+    it("強調内容がASCII(英語)の場合は対象外(CJKで挟まれたCJK強調のみを対象にする意図的な範囲限定)", () => {
+      expect(normalizeCjkText("英語の **bold** です。")).toBe("英語の **bold** です。");
+    });
+
+    it("装飾記号の外側がASCII同士なら空白を保持する(誤除去しない)", () => {
+      expect(normalizeCjkText("This is **bold** text.")).toBe("This is **bold** text.");
+    });
+  });
 });

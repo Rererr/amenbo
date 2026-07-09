@@ -7,6 +7,7 @@
  */
 import { parseHTML } from "linkedom";
 import { UnsupportedContentError } from "../errors.js";
+import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { fetchWithBrowser } from "./browser.js";
 import { httpGet, type HttpGetOptions } from "./http.js";
 
@@ -24,6 +25,8 @@ export interface FetchResult {
   lastModified: string | null;
   /** SPA判定でブラウザへ昇格した場合、その理由。 */
   escalationReason: string | null;
+  /** Phase 4 ジオメトリ抽出用データ。browser tierのみ非null。 */
+  geometry: PageGeometrySnapshot | null;
 }
 
 export interface NotModifiedResult {
@@ -101,6 +104,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
       etag: httpResult.headers.get("etag"),
       lastModified: httpResult.headers.get("last-modified"),
       escalationReason: null,
+      geometry: null,
     };
   }
 
@@ -114,5 +118,6 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
     etag: null,
     lastModified: null,
     escalationReason: spaSignals.reason,
+    geometry: browserResult.geometry,
   };
 }
