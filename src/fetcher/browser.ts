@@ -4,10 +4,10 @@
  * 二段フェッチ(fetcher/index.ts)でSPAと判定された場合のみ起動する遅延初期化。
  * プロセス終了シグナルでクリーンアップする。
  */
-import { chromium, type Browser, type Page } from "playwright";
-import { BrowserLaunchError, FetchTimeoutError } from "../errors.js";
+import { chromium, type Browser, type Page, type Request, type Response as PlaywrightResponse, type Route } from "playwright";
+import { AmenboError, BrowserLaunchError, FetchTimeoutError, InvalidUrlError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
-import { USER_AGENT } from "./http.js";
+import { guardPublicAddress, USER_AGENT } from "./http.js";
 
 export type { PageGeometrySnapshot } from "../extract/geometry.js";
 
@@ -16,15 +16,22 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 let browserPromise: Promise<Browser> | null = null;
 let cleanupRegistered = false;
 
+/**
+ * M2: 以前はcleanup内でclose後にprocess.exit()を呼んでおらず、chromium起動後は
+ * SIGINTの既定動作(即終了)がこのリスナーに上書きされたままハングしていた
+ * (closeBrowser()はPromiseを返すだけで、'exit'イベントは同期処理しか待てないため
+ * 実質何もせず終了していた)。close完了を待ってから明示的にprocess.exit()する。
+ */
 function registerCleanupHandlers(): void {
   if (cleanupRegistered) return;
   cleanupRegistered = true;
-  const cleanup = (): void => {
-    void closeBrowser();
+  const shutdown = (): void => {
+    void closeBrowser().finally(() => {
+      process.exit(0);
+    });
   };
-  process.once("exit", cleanup);
-  process.once("SIGINT", cleanup);
-  process.once("SIGTERM", cleanup);
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 }
 
 /** 共有chromiumインスタンスを取得する(未起動なら遅延起動)。 */
@@ -173,21 +180,67 @@ export async function hideConsentBanners(page: Page): Promise<number> {
   });
 }
 
+// ---- C1/C2: SSRFガード付きナビゲーション ----
+
+const NAVIGATION_ROUTE_PATTERN = "**/*";
+
+/**
+ * C1: browser.ts(fetchWithBrowser)・screenshot.ts(captureTiledScreenshot)は
+ * fetcher/http.tsのSSRF/スキーム検証(guardPublicAddress)を経由せずpage.goto()していたため、
+ * `file:///etc/passwd` や `http://169.254.169.254/...` が素通りしていた。
+ *
+ * 対応:
+ *   1. page.goto()の前にguardPublicAddressで初回遷移先を検証する
+ *   2. context.route()で全リクエストを横取りし、メインフレームのナビゲーション
+ *      リクエスト(初回遷移・各リダイレクトホップの両方が該当する)についてのみ
+ *      再度guardPublicAddressを通す。private/予約アドレスやhttp(s)以外のスキームへの
+ *      遷移が検出された場合はそのリクエスト自体をabortし(=実接続前に遮断)、
+ *      型付きエラー(PrivateAddressError/InvalidUrlError)に変換してgoto()の失敗を報告する
+ *
+ * サブリソース(img/xhr等)は対象外(スコープはユーザー指定URLへの「遷移」の安全性)。
+ * 完全なTOCTOU対策(fetcher/http.tsのssrfSafeLookupのような接続時点での検証)は
+ * Playwright側では現実的に組み込めないため、遷移前検証+リダイレクト時の再検証という
+ * 「可能な範囲」の対策にとどめる。
+ */
+export async function navigateSafely(page: Page, url: string, timeoutMs: number): Promise<PlaywrightResponse | null> {
+  await guardPublicAddress(url);
+
+  let blockedError: AmenboError | null = null;
+  const handler = async (route: Route, request: Request): Promise<void> => {
+    if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) {
+      await route.continue();
+      return;
+    }
+    try {
+      await guardPublicAddress(request.url());
+      await route.continue();
+    } catch (error) {
+      blockedError = error instanceof AmenboError ? error : new InvalidUrlError(request.url(), "ナビゲーション検証に失敗しました");
+      await route.abort();
+    }
+  };
+
+  await page.route(NAVIGATION_ROUTE_PATTERN, handler);
+  try {
+    return await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
+  } catch (cause) {
+    if (blockedError) throw blockedError as AmenboError;
+    if (cause instanceof Error && /timeout/i.test(cause.message)) {
+      throw new FetchTimeoutError(url, timeoutMs);
+    }
+    throw cause;
+  } finally {
+    await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
+  }
+}
+
 /** Playwrightでページをレンダリングし、レンダリング後のHTMLを取得する。 */
 export async function fetchWithBrowser(url: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<BrowserFetchResult> {
   const browser = await getBrowser();
   const context = await browser.newContext({ userAgent: USER_AGENT });
   try {
     const page = await context.newPage();
-    let response;
-    try {
-      response = await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
-    } catch (cause) {
-      if (cause instanceof Error && /timeout/i.test(cause.message)) {
-        throw new FetchTimeoutError(url, timeoutMs);
-      }
-      throw cause;
-    }
+    const response = await navigateSafely(page, url, timeoutMs);
     await hideConsentBanners(page).catch(() => {
       // ページ評価に失敗しても取得自体は継続する(ベストエフォート)
     });

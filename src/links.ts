@@ -9,9 +9,24 @@
  * が指すRSS/Atomフィード → 最終手段としてページ内の<a>リンク抽出。
  */
 import { parseHTML } from "linkedom";
+import { HttpStatusError, PrivateAddressError, RobotsDeniedError } from "./errors.js";
 import { fetchPage } from "./fetcher/index.js";
-import { httpGet } from "./fetcher/http.js";
+import { assertHttpScheme, httpGet } from "./fetcher/http.js";
 import type { PolitenessManager } from "./politeness.js";
+
+/**
+ * M5: robots拒否(RobotsDeniedError)・SSRF拒否(PrivateAddressError)は「sitemap/feedが
+ * 無いだけ」として握りつぶさず再送出すべき明示的な拒否シグナルである。
+ *
+ * 公開品質バグ修正: 一方でHttpStatusError(404/403/5xx等)は、sitemap.xml/feedが
+ * 単に存在しないという極めて一般的なケースで発生する(実際、これがsitemap→RSS→
+ * ページ内リンクへのフォールバックの主な発生源になっている)。これをAmenboError全般として
+ * 再送出してしまうと、sitemap.xmlの無い(=大半の)サイトでlinksツールが丸ごと失敗する
+ * 深刻な回帰になるため、再送出するのは拒否シグナルのみに絞る。
+ */
+function isFallbackBlockingError(error: unknown): boolean {
+  return error instanceof PrivateAddressError || error instanceof RobotsDeniedError;
+}
 
 export type LinkSource = "sitemap" | "rss" | "page";
 
@@ -83,7 +98,13 @@ async function tryParseSitemap(
   try {
     await politeness.guard(sitemapUrl);
     document = await fetchXml(sitemapUrl, timeoutMs);
-  } catch {
+  } catch (error) {
+    if (isFallbackBlockingError(error)) throw error;
+    // sitemap.xmlが存在しない(404等)のは大半のサイトで起きる通常のフォールバック経路なので
+    // ログを出さない。それ以外(タイムアウト等の予期しない失敗)のみ診断用にログする。
+    if (!(error instanceof HttpStatusError)) {
+      console.error(`sitemapの取得に失敗しました: ${sitemapUrl}`, error);
+    }
     return null;
   }
 
@@ -112,7 +133,11 @@ async function tryParseFeed(feedUrl: string, politeness: PolitenessManager, time
     await politeness.guard(feedUrl);
     // RSS 2.0の<link>はHTMLパーサにvoid要素として扱われるためリネームして回避する(下記コメント参照)
     document = await fetchXml(feedUrl, timeoutMs, escapeRssLinkTag);
-  } catch {
+  } catch (error) {
+    if (isFallbackBlockingError(error)) throw error;
+    if (!(error instanceof HttpStatusError)) {
+      console.error(`フィードの取得に失敗しました: ${feedUrl}`, error);
+    }
     return null;
   }
 
@@ -195,6 +220,10 @@ export interface DiscoverLinksOptions {
 
 /** URLからリンク一覧を発見する。sitemap → RSS/Atom → ページ内リンクの優先順で試す。 */
 export async function discoverLinks(url: string, politeness: PolitenessManager, options: DiscoverLinksOptions = {}): Promise<LinksResult> {
+  // 公開品質バグ修正: robots.txt/sitemap取得より前にスキームを検証する。file:等を先に弾かないと
+  // origin("null"等)から `null/sitemap.xml` のような壊れたURLを組み立ててしまい、
+  // new URL()の生のTypeErrorがstderrに漏れてしまう。
+  assertHttpScheme(url);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const origin = new URL(url).origin;
 

@@ -21,6 +21,7 @@ vi.mock("../src/fetcher/index.js", async (importOriginal) => {
 
 const { PolitenessManager } = await import("../src/politeness.js");
 const { discoverLinks } = await import("../src/links.js");
+const { RobotsDeniedError } = await import("../src/errors.js");
 
 function htmlResult(html: string, status = 200) {
   return { finalUrl: "http://example.com/", status, headers: new Headers(), html, encoding: "UTF-8" };
@@ -254,5 +255,36 @@ describe("discoverLinks - ページ内リンク抽出(最終手段)", () => {
 
     const result = await discoverLinks("http://example.com/", makePoliteness(), { filter: "*/articles/*" });
     expect(result.links).toEqual([{ url: "http://example.com/articles/1", title: "記事1" }]);
+  });
+});
+
+describe("discoverLinks - 公開品質バグ修正: 非http(s)スキームはrobots.txt/sitemap取得より前に拒否する", () => {
+  it("file:スキームはInvalidUrlErrorで即座に拒否され、httpGet/fetchPageもconsole.errorも発生しない", async () => {
+    const { InvalidUrlError } = await import("../src/errors.js");
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(discoverLinks("file:///etc/passwd", makePoliteness())).rejects.toThrow(InvalidUrlError);
+
+    // 修正前は origin("null")から `null/sitemap.xml` 等の壊れたURLを組み立てようとし、
+    // new URL()の生のTypeErrorがcatchでconsole.errorされてstderrに漏れていた。
+    expect(httpGetMock).not.toHaveBeenCalled();
+    expect(fetchPageMock).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+});
+
+describe("discoverLinks - M5: AmenboErrorは握りつぶさず再送出する", () => {
+  it("宣言されたsitemap URL自体がrobots.txtで拒否されている場合、RobotsDeniedErrorを再送出する(ページ内リンクへ黙ってフォールバックしない)", async () => {
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) {
+        return htmlResult("User-agent: *\nDisallow: /sitemap.xml\nSitemap: http://example.com/sitemap.xml\n");
+      }
+      throw new Error(`unexpected url: ${url}`);
+    });
+
+    await expect(discoverLinks("http://example.com/", makePoliteness())).rejects.toThrow(RobotsDeniedError);
+    // ページ内リンク抽出(最終手段)へフォールバックしていないこと
+    expect(fetchPageMock).not.toHaveBeenCalled();
   });
 });

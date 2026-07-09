@@ -212,6 +212,46 @@ describe("PageCache - Phase 4 テンプレート学習(定型ブロック判定)
     cache.close();
   });
 
+  it("M3: 起動時(コンストラクタ)にTTL超過したpagesエントリを削除する", () => {
+    let now = 1_000_000;
+    const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    cache1.set({ url: "http://example.com/old", etag: null, lastModified: null, markdown: "古い本文", metadata: {} });
+    cache1.close();
+
+    now += 20 * 60 * 1000; // TTL(15分)超過
+    const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    expect(cache2.get("http://example.com/old")).toBeUndefined();
+    cache2.close();
+  });
+
+  it("M3: TTL内のpagesエントリは起動時に削除されない", () => {
+    let now = 1_000_000;
+    const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    cache1.set({ url: "http://example.com/fresh", etag: null, lastModified: null, markdown: "新しい本文", metadata: {} });
+    cache1.close();
+
+    now += 5 * 60 * 1000; // TTL(15分)以内
+    const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    expect(cache2.get("http://example.com/fresh")?.markdown).toBe("新しい本文");
+    cache2.close();
+  });
+
+  it("M3: 起動時にTTL超過したscreenshotsエントリを削除し、対応するPNGファイルも削除する", () => {
+    let now = 1_000_000;
+    const cache1 = new PageCache({ dbPath, cacheDir: dir, ttlMs: 15 * 60 * 1000, now: () => now });
+    const cacheKey = computeScreenshotCacheKey("http://example.com/", 1280, 1.0, true);
+    cache1.setScreenshot({ cacheKey, url: "http://example.com/", tiles: [Buffer.from([1, 2, 3])], metadata: {} });
+    const tilePath = cache1.getScreenshot(cacheKey)!.tilePaths[0]!;
+    expect(existsSync(tilePath)).toBe(true);
+    cache1.close();
+
+    now += 20 * 60 * 1000; // TTL超過
+    const cache2 = new PageCache({ dbPath, cacheDir: dir, ttlMs: 15 * 60 * 1000, now: () => now });
+    expect(cache2.getScreenshot(cacheKey)).toBeUndefined();
+    expect(existsSync(tilePath)).toBe(false); // PNGファイルもディスクから削除されている
+    cache2.close();
+  });
+
   it("直近3件を超えるとページ履歴が古いものから判定対象外になる", () => {
     let now = 1_000_000;
     const cache = new PageCache({ dbPath, now: () => now });

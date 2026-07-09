@@ -10,6 +10,8 @@
  *   - screenshot: 明示的な視覚確認用のタイル分割スクリーンショット。
  */
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -20,13 +22,27 @@ import { extractMarkdown, type ExtractionMethod } from "./extract/markdown.js";
 import { buildOutline, extractSection, type OutlineResult } from "./extract/outline.js";
 import { DEFAULT_PDF_MAX_BYTES, extractPdfText, looksLikePdf, markdownFromPdfText, renderPdfPages } from "./extract/pdf.js";
 import { evaluateQuality } from "./extract/qualityScore.js";
+import { closeBrowser } from "./fetcher/browser.js";
 import { fetchPage, type FetchTier } from "./fetcher/index.js";
-import { httpGetBinary } from "./fetcher/http.js";
+import { assertHttpScheme, httpGetBinary } from "./fetcher/http.js";
 import { discoverLinks, type LinksResult } from "./links.js";
 import { PolitenessManager } from "./politeness.js";
 import { captureTiledScreenshot, DEFAULT_TILE_WIDTH } from "./screenshot.js";
 import { computeBlockHashes, removeTemplateBlocks } from "./templateLearning.js";
 import { paginateMarkdown, type PaginatedResult } from "./tokens.js";
+
+/** N1: package.jsonのversionを読み込む(以前はここに"0.3.0"を直書きしておりpackage.json(0.1.0)と不整合だった)。 */
+function resolvePackageVersion(): string {
+  const fallback = "0.0.0";
+  try {
+    const packageJsonPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+    const parsed = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { version?: unknown };
+    return typeof parsed.version === "string" ? parsed.version : fallback;
+  } catch (error) {
+    console.error("package.jsonからバージョンを読み込めませんでした:", error);
+    return fallback;
+  }
+}
 
 /** キャッシュTTL(ミリ秒)。運用/検証時の調整用に環境変数で上書きできる(既定はcache.tsの15分)。 */
 function resolveCacheTtlMs(): number | undefined {
@@ -40,8 +56,19 @@ const cacheTtlMs = resolveCacheTtlMs();
 const politeness = new PolitenessManager();
 const cache = new PageCache(cacheTtlMs !== undefined ? { ttlMs: cacheTtlMs } : {});
 
+// M2: cache.close()は同期処理なので'exit'イベント(非同期処理を待てない)内でも安全に呼べる。
+// 一方でSIGINT/SIGTERMはブラウザのクリーンアップ(非同期)を待ってから明示的にprocess.exit()する
+// 必要がある(fetcher/browser.tsのregisterCleanupHandlersと同様の理由。あちらは
+// getBrowser()が一度も呼ばれない=chromium未起動のセッションではリスナー登録自体が行われない
+// ため、ここでサーバー起点の終了処理として独立して登録しておく)。
 process.once("exit", () => {
   cache.close();
+});
+process.once("SIGINT", () => {
+  void closeBrowser().finally(() => process.exit(0));
+});
+process.once("SIGTERM", () => {
+  void closeBrowser().finally(() => process.exit(0));
 });
 
 const DEFAULT_MAX_TOKENS = 8000;
@@ -269,6 +296,8 @@ interface ResolvedScreenshot {
   cacheStatus: ScreenshotCacheStatus;
   pageWidth: number;
   pageHeight: number;
+  /** N7: MAX_TILES切り捨てが発生していた場合true。 */
+  truncated: boolean;
 }
 
 interface ResolveScreenshotOptions {
@@ -277,20 +306,45 @@ interface ResolveScreenshotOptions {
   scale: number;
 }
 
+/**
+ * M4: キャッシュ済みタイルのPNGファイルが(手動削除・M3のTTL掃除の競合等で)欠損している場合、
+ * 生のENOENTを伝播させず null を返してcache miss扱い(再撮影)へフォールバックする。
+ */
+function readCachedTiles(tilePaths: string[]): ScreenshotTileData[] | null {
+  try {
+    return tilePaths.map((filePath) => ({ data: readFileSync(filePath) }));
+  } catch (error) {
+    const isEnoent = error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
+    if (isEnoent) return null;
+    throw error;
+  }
+}
+
 async function resolveScreenshot(url: string, options: ResolveScreenshotOptions): Promise<ResolvedScreenshot> {
+  // 公開品質バグ修正: robots.txt取得(politeness.guard)やブラウザ起動より前にスキームを検証する。
+  // file:等を先に弾かないと、politeness側が origin("null"等)からrobots URLを組み立てる際に
+  // 壊れたURLになり、生のTypeErrorがstderrに漏れてしまう(guardPublicAddress自体は
+  // このあとcaptureTiledScreenshot内のnavigateSafelyでも検証するが、それより前段で
+  // クリーンな型付きエラーとして早期に弾く)。
+  assertHttpScheme(url);
   // 実URLへの独立したブラウザ遷移が発生するため、markdown抽出時とは別にpolitenessの順番待ちを行う
   await politeness.guard(url);
 
   const cacheKey = computeScreenshotCacheKey(url, options.width, options.scale, options.fullPage);
   const cached = cache.getScreenshot(cacheKey);
   if (cached && cache.isFresh(cached)) {
-    return {
-      finalUrl: cached.url,
-      tiles: cached.tilePaths.map((filePath) => ({ data: readFileSync(filePath) })),
-      cacheStatus: "fresh",
-      pageWidth: Number(cached.metadata.pageWidth ?? 0),
-      pageHeight: Number(cached.metadata.pageHeight ?? 0),
-    };
+    const tiles = readCachedTiles(cached.tilePaths);
+    if (tiles) {
+      return {
+        finalUrl: cached.url,
+        tiles,
+        cacheStatus: "fresh",
+        pageWidth: Number(cached.metadata.pageWidth ?? 0),
+        pageHeight: Number(cached.metadata.pageHeight ?? 0),
+        truncated: Boolean(cached.metadata.truncated),
+      };
+    }
+    // PNGファイル欠損: キャッシュmiss扱いで下の再撮影へフォールスルーする
   }
 
   const captured = await captureTiledScreenshot(url, options);
@@ -298,7 +352,7 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
     cacheKey,
     url: captured.finalUrl,
     tiles: captured.tiles.map((tile) => tile.png),
-    metadata: { pageWidth: captured.pageWidth, pageHeight: captured.pageHeight },
+    metadata: { pageWidth: captured.pageWidth, pageHeight: captured.pageHeight, truncated: captured.truncated },
   });
 
   return {
@@ -307,6 +361,7 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
     cacheStatus: "miss",
     pageWidth: captured.pageWidth,
     pageHeight: captured.pageHeight,
+    truncated: captured.truncated,
   };
 }
 
@@ -333,6 +388,11 @@ function templateRemovedLine(templateRemovedCount: number): string[] {
   return templateRemovedCount > 0 ? [`template_blocks_removed: ${templateRemovedCount}`] : [];
 }
 
+/** N6: 単一ブロックがmax_tokens予算を超過し、分割できずそのまま返した場合のみ明示する。 */
+function budgetExceededLine(paginated: PaginatedResult): string[] {
+  return paginated.exceededBudget ? [`budget_exceeded: true(単一ブロックがmax_tokensを超過しています)`] : [];
+}
+
 function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, sectionId: string | null, templateRemovedCount: number): string {
   const header = [
     `title: ${page.title ?? "(なし)"}`,
@@ -347,6 +407,7 @@ function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, 
     ...adapterLine(page.adapterName),
     ...extractionMethodLine(page.extractionMethod),
     ...templateRemovedLine(templateRemovedCount),
+    ...budgetExceededLine(paginated),
   ].join("\n");
   return `${header}\n\n${paginated.content}`;
 }
@@ -424,6 +485,8 @@ function buildScreenshotContent(
     `tiles: ${screenshot.tiles.length}`,
     `page_size: ${screenshot.pageWidth}x${screenshot.pageHeight}`,
     `fetch_tier: browser`,
+    // N7: MAX_TILES切り捨てが発生した場合のみ明示する(トークン節約)
+    ...(screenshot.truncated ? [`truncated: true(MAX_TILES枚を超えるため切り捨てました)`] : []),
   ].join("\n");
 
   return [
@@ -450,6 +513,7 @@ function formatPdfTextResponse(title: string | null, finalUrl: string, cacheStat
     `page: ${paginated.page} of ${paginated.totalPages}`,
     `fetch_tier: pdf`,
     `pdf_pages: ${pdfPageCount}`,
+    ...budgetExceededLine(paginated),
   ].join("\n");
   return `${header}\n\n${paginated.content}`;
 }
@@ -514,6 +578,10 @@ async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock |
   const mode = input.mode ?? "auto";
   const page = input.page ?? DEFAULT_PAGE;
   const maxTokens = input.max_tokens ?? DEFAULT_MAX_TOKENS;
+  // 公開品質バグ修正: robots.txt取得(politeness.guard)より前にスキームを検証する(理由は
+  // resolveScreenshotのコメント参照)。zodの.url()はスキームを制限しないため、ここでの
+  // 検証が実質的な最初の関門になる。
+  assertHttpScheme(input.url);
   await politeness.guard(input.url);
 
   if (looksLikePdf(input.url, null)) {
@@ -576,7 +644,7 @@ async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock |
 
 // ---- MCPサーバー本体 ----
 
-const server = new McpServer({ name: "amenbo", version: "0.3.0" });
+const server = new McpServer({ name: "amenbo", version: resolvePackageVersion() });
 
 server.registerTool(
   "fetch",

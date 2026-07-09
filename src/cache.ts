@@ -17,7 +17,7 @@
  * と判定する(getTemplateBlockHashes)。除去処理自体はtemplateLearning.tsが行う。
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -150,6 +150,34 @@ export class PageCache {
       )
     `);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_domain_pages_domain_fetched_at ON domain_pages (domain, fetched_at DESC)`);
+
+    // M3: TTL超過削除・サイズ上限が無くディスクが無制限に増加する問題への対応。
+    // 起動(コンストラクタ)のたびにTTL超過エントリを掃除する。
+    this.pruneExpired();
+  }
+
+  /**
+   * M3: TTL超過エントリを削除する(ディスク無制限増加の防止)。起動時に自動実行される。
+   * screenshotsはSQLite行に加え、対応するPNGファイル(タイル)もあわせて削除する。
+   */
+  private pruneExpired(): void {
+    const cutoff = this.now() - this.ttlMs;
+
+    this.db.prepare("DELETE FROM pages WHERE fetched_at < ?").run(cutoff);
+    this.db.prepare("DELETE FROM domain_pages WHERE fetched_at < ?").run(cutoff);
+
+    const expiredScreenshots = this.db.prepare<[number], ScreenshotRow>("SELECT * FROM screenshots WHERE fetched_at < ?").all(cutoff);
+    for (const row of expiredScreenshots) {
+      const tilePaths = JSON.parse(row.tile_paths) as string[];
+      for (const filePath of tilePaths) {
+        try {
+          rmSync(filePath, { force: true });
+        } catch {
+          // 既に削除済み等のファイルシステムエラーはベストエフォートで無視する
+        }
+      }
+    }
+    this.db.prepare("DELETE FROM screenshots WHERE fetched_at < ?").run(cutoff);
   }
 
   /** 保存済みエントリを取得する(TTL判定は行わない。判定は isFresh を使う)。 */

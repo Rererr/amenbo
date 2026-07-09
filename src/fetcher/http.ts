@@ -4,10 +4,14 @@
  * - UA: 正直に amenbo であることを明示する
  * - J1: エンコーディング検出(Content-Typeヘッダ→metaタグ→encoding-japanese自動判定)
  * - SSRF防止: http(s)以外拒否、DNS解決してprivate/loopback/link-local IPを拒否
- *   (リダイレクト先も含めて毎ホップ検証する)
+ *   (リダイレクト先も含めて毎ホップ検証する)。加えてDNS rebinding(TOCTOU)対策として、
+ *   実接続時のDNS解決そのものにも検証を組み込む(下記「TOCTOU対策」節参照)
  * - タイムアウト(既定15秒)
+ * - M1: レスポンスボディにサイズ上限を設ける(OOM DoS対策。既定値は環境変数で調整可)
  */
+import { lookup as dnsCallbackLookup } from "node:dns";
 import { lookup as dnsLookup } from "node:dns/promises";
+import type { LookupFunction } from "node:net";
 import { isIP } from "node:net";
 // 注意: encoding-japaneseはCJS製で、Node ESMのcjs-module-lexerによる named export静的解析が
 // この実装(module.exports = {...}を後段で組み立てる形)を検出できない。
@@ -15,6 +19,7 @@ import { isIP } from "node:net";
 // 常に真の module.exports を指すdefault importを使う(vitestは緩いCJS interopのため
 // namespace importでも動いてしまい、この不整合はユニットテストでは検出できなかった)。
 import Encoding from "encoding-japanese";
+import { Agent as UndiciAgent, type Dispatcher } from "undici";
 import { FetchTimeoutError, HttpStatusError, InvalidUrlError, PayloadTooLargeError, PrivateAddressError } from "../errors.js";
 
 export const USER_AGENT = "amenbo/0.1 (+https://github.com/Rererr/amenbo)";
@@ -115,13 +120,39 @@ export function isPrivateOrReservedIp(ip: string): boolean {
   return true; // 判定不能なものは安全側(拒否)に倒す
 }
 
-/** URLのホストを解決し、private/予約アドレスであれば拒否する(SSRF対策)。 */
-async function guardPublicAddress(urlStr: string): Promise<void> {
+/**
+ * URLがhttp(s)スキームかどうかだけを検証する軽量チェック(DNS解決は行わない)。
+ *
+ * server.ts(fetch/screenshotツール)・links.tsの各エントリポイントで、
+ * politeness.guard(robots.txt取得)やブラウザ起動より前に最初に呼ぶことを想定している。
+ * これを怠ると、例えば file:// のようなURLに対して politeness 側が
+ * `new URL(url).origin` (file:等では "null" になる)から不正なrobots URL
+ * (`null/robots.txt`)を組み立ててしまい、guardPublicAddress内の `new URL()` が
+ * 生のTypeErrorを投げてスタックトレースがstderrに漏れる問題があった(公開品質バグ)。
+ */
+export function assertHttpScheme(urlStr: string): URL {
   const url = new URL(urlStr);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new InvalidUrlError(urlStr, `サポート対象外のスキームです: ${url.protocol}`);
   }
+  return url;
+}
 
+/**
+ * URLのホストを解決し、private/予約アドレスであれば拒否する(SSRF対策)。
+ * http(s)以外のスキーム(file:等)も拒否する。
+ *
+ * fetcher/browser.ts・screenshot.tsのPlaywrightナビゲーション(page.goto前・
+ * リダイレクト再検証)からも共通利用する(C1: screenshot/browser層がSSRF/スキーム
+ * 検証を経由していなかった問題への対応)。
+ *
+ * 注意(TOCTOU): この関数の検証と実際の接続(fetch/ブラウザのTCP接続)は別のDNS解決を
+ * 行うため、その間にDNS rebindingが起きると理論上すり抜けうる。httpGet/httpGetBinaryの
+ * 実接続については下記「TOCTOU対策」のssrfSafeLookupで接続時点そのものを検証しており、
+ * この関数はスキーム検証と早期の分かりやすいエラーメッセージのための一次防御にあたる。
+ */
+export async function guardPublicAddress(urlStr: string): Promise<void> {
+  const url = assertHttpScheme(urlStr);
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   const literalVersion = isIP(hostname);
   const addresses = literalVersion
@@ -133,6 +164,67 @@ async function guardPublicAddress(urlStr: string): Promise<void> {
       throw new PrivateAddressError(urlStr, address);
     }
   }
+}
+
+// ---- C2: TOCTOU対策(DNS rebinding) ----
+//
+// guardPublicAddressによる事前検証と実際の接続は別々のDNS解決になるため、検証直後に
+// DNSレコードが private IP へ書き換わる(rebinding)と素通りしうる。これを塞ぐため、
+// 実接続の名前解決そのものに検証を組み込んだundici Agentを作り、fetch()のdispatcherとして
+// 渡す。検証で使ったIPアドレスへそのまま接続する(Host/SNIは元のホスト名のまま undici が
+// 設定するため変わらない)ので、検証時点と接続時点のアドレスが必ず一致する。
+
+/**
+ * undiciのconnect.lookupはnet.connectと同様、呼び出し元がoptions.all=trueを渡した場合
+ * `(err, addresses[])` 形式でコールバックする実装になっているが、Node公式の
+ * `LookupFunction` 型定義はこの挙動をカバーしていない(上流の型定義の既知の制限)。
+ * 実行時の挙動に合わせて型アサーションで対応する。
+ */
+const ssrfSafeLookup: LookupFunction = (hostname, options, callback) => {
+  dnsCallbackLookup(hostname, { all: true }, (err, addresses) => {
+    if (err) {
+      callback(err, "", 0);
+      return;
+    }
+
+    const safeAddresses = addresses.filter((entry) => !isPrivateOrReservedIp(entry.address));
+    if (safeAddresses.length === 0) {
+      const blockedAddress = addresses[0]?.address ?? hostname;
+      callback(new PrivateAddressError(hostname, blockedAddress) as unknown as NodeJS.ErrnoException, "", 0);
+      return;
+    }
+
+    const wantsAll = (options as unknown as { all?: boolean } | null)?.all === true;
+    if (wantsAll) {
+      (callback as unknown as (err: null, addresses: Array<{ address: string; family: number }>) => void)(null, safeAddresses);
+      return;
+    }
+
+    const [first] = safeAddresses;
+    callback(null, first!.address, first!.family);
+  });
+};
+
+let ssrfSafeDispatcher: Dispatcher | null = null;
+
+/** httpGet/httpGetBinaryのfetch()に渡す、接続時点でSSRF検証を行うdispatcher(遅延生成・使い回し)。 */
+function getSsrfSafeDispatcher(): Dispatcher {
+  ssrfSafeDispatcher ??= new UndiciAgent({ connect: { lookup: ssrfSafeLookup } });
+  return ssrfSafeDispatcher;
+}
+
+/**
+ * fetch失敗時、原因チェーン(.cause)を辿ってssrfSafeLookupが投げたPrivateAddressErrorを探す。
+ * undiciはconnector由来のエラーを `TypeError: fetch failed` でラップして投げるため、
+ * そのままでは型情報が失われ、呼び出し側が「SSRFで拒否された」と判別できなくなる。
+ */
+function findPrivateAddressError(error: unknown): PrivateAddressError | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    if (current instanceof PrivateAddressError) return current;
+    current = current.cause;
+  }
+  return undefined;
 }
 
 // ---- J1: エンコーディング検出 ----
@@ -206,12 +298,69 @@ export function decodeHtmlBytes(bytes: Uint8Array, contentTypeHeader: string | n
   return { text: new TextDecoder("utf-8").decode(bytes), encoding: "UTF-8" };
 }
 
+// ---- M1: レスポンスボディのサイズ上限(OOM DoS対策) ----
+
+const DEFAULT_MAX_BODY_BYTES = 20 * 1024 * 1024; // 20MB
+
+/** 環境変数 AMENBO_MAX_BODY_BYTES で既定のボディサイズ上限を調整できる。 */
+function resolveDefaultMaxBodyBytes(): number {
+  const raw = process.env.AMENBO_MAX_BODY_BYTES;
+  if (!raw) return DEFAULT_MAX_BODY_BYTES;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_BODY_BYTES;
+}
+
+/**
+ * レスポンスボディをmaxBytes上限付きで読み切る。
+ * Content-Lengthヘッダでの事前チェックに加え、ヘッダ詐称・chunked転送対策として
+ * ストリーミング中の実受信バイト数も逐次チェックする(超過時点で読み取りを打ち切る)。
+ */
+async function readBodyWithLimit(response: Response, url: string, maxBytes: number): Promise<Uint8Array> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength && Number(declaredLength) > maxBytes) {
+    throw new PayloadTooLargeError(url, Number(declaredLength), maxBytes);
+  }
+
+  if (!response.body) {
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    if (buffer.length > maxBytes) {
+      throw new PayloadTooLargeError(url, buffer.length, maxBytes);
+    }
+    return buffer;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.length;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new PayloadTooLargeError(url, total, maxBytes);
+    }
+    chunks.push(value);
+  }
+
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
 // ---- HTTP GET本体 ----
 
 export interface HttpGetOptions {
   timeoutMs?: number;
   /** 条件付きGET用の追加ヘッダ(If-None-Match/If-Modified-Since等)。 */
   headers?: Record<string, string>;
+  /** レスポンスボディのサイズ上限(バイト)。既定は環境変数AMENBO_MAX_BODY_BYTES、未設定なら20MB。 */
+  maxBytes?: number;
 }
 
 export interface HttpGetResult {
@@ -241,8 +390,15 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
         redirect: "manual",
         signal: controller.signal,
         headers: { "User-Agent": USER_AGENT, ...options.headers },
-      });
+        // C2: 事前検証(guardPublicAddress)とは別に、実接続の名前解決そのものを検証する
+        // dispatcherを使う(DNS rebindingのTOCTOU対策)。
+        dispatcher: getSsrfSafeDispatcher(),
+      } as RequestInit & { dispatcher: Dispatcher });
     } catch (cause) {
+      const privateAddressError = findPrivateAddressError(cause);
+      if (privateAddressError) {
+        throw privateAddressError;
+      }
       if (controller.signal.aborted) {
         throw new FetchTimeoutError(url, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
       }
@@ -257,7 +413,14 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
       if (!location) {
         throw new HttpStatusError(currentUrl, response.status, response.statusText);
       }
-      currentUrl = new URL(location, currentUrl).toString();
+      // N3: Locationヘッダが不正な形式の場合、new URL()の生例外ではなく型付きエラーにする
+      let nextUrl: URL;
+      try {
+        nextUrl = new URL(location, currentUrl);
+      } catch {
+        throw new InvalidUrlError(location, "リダイレクト先URLの形式が不正です");
+      }
+      currentUrl = nextUrl.toString();
       continue;
     }
 
@@ -287,7 +450,7 @@ export async function httpGet(url: string, options: HttpGetOptions = {}): Promis
       throw new HttpStatusError(finalUrl, response.status, response.statusText);
     }
 
-    const buffer = new Uint8Array(await response.arrayBuffer());
+    const buffer = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes());
     const decoded = decodeHtmlBytes(buffer, response.headers.get("content-type"));
     return {
       finalUrl,
@@ -301,10 +464,7 @@ export async function httpGet(url: string, options: HttpGetOptions = {}): Promis
   }
 }
 
-export interface HttpGetBinaryOptions extends HttpGetOptions {
-  /** これを超えるバイト数のボディはPayloadTooLargeErrorを投げる(PDF等のサイズ上限に使用)。 */
-  maxBytes?: number;
-}
+export type HttpGetBinaryOptions = HttpGetOptions;
 
 export interface HttpGetBinaryResult {
   finalUrl: string;
@@ -335,15 +495,7 @@ export async function httpGetBinary(url: string, options: HttpGetBinaryOptions =
       throw new HttpStatusError(finalUrl, response.status, response.statusText);
     }
 
-    const declaredLength = response.headers.get("content-length");
-    if (options.maxBytes && declaredLength && Number(declaredLength) > options.maxBytes) {
-      throw new PayloadTooLargeError(finalUrl, Number(declaredLength), options.maxBytes);
-    }
-
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (options.maxBytes && bytes.length > options.maxBytes) {
-      throw new PayloadTooLargeError(finalUrl, bytes.length, options.maxBytes);
-    }
+    const bytes = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes());
 
     return { finalUrl, status: response.status, headers: response.headers, bytes, contentType: response.headers.get("content-type") };
   } finally {
