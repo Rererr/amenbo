@@ -4,7 +4,7 @@
  * 二段フェッチ(fetcher/index.ts)でSPAと判定された場合のみ起動する遅延初期化。
  * プロセス終了シグナルでクリーンアップする。
  */
-import { chromium, type Browser } from "playwright";
+import { chromium, type Browser, type Page } from "playwright";
 import { BrowserLaunchError, FetchTimeoutError } from "../errors.js";
 import { USER_AGENT } from "./http.js";
 
@@ -55,6 +55,53 @@ export interface BrowserFetchResult {
   status: number;
 }
 
+/**
+ * J8: 国内同意バナー・アプリ誘導インタースティシャルを実レンダリング結果から隠す。
+ *
+ * jp/consentBanner.tsの静的DOM版と同じ判定パターンだが、page.evaluate内は
+ * ブラウザコンテキストで実行されNode側のクロージャを参照できないため、判定パターンを
+ * self-containedな関数として定義し直している(多少の重複はやむを得ない設計判断)。
+ * 実ブラウザではcomputed styleが取得できるため、position:fixed等の判定も加えている。
+ * DOMから除去するのではなく非表示にする(スクリーンショット/SPA判定への影響を抑えつつ
+ * 視覚的な妨げだけを取り除く)。
+ */
+export async function hideConsentBanners(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const textPatterns = [
+      /同意して閉じる/,
+      /同意する/,
+      /Cookie.{0,10}(の使用に|に)?同意/i,
+      /このサイトはCookieを使用/,
+      /アプリで(開く|見る|読む)/,
+      /アプリをダウンロード/,
+      /アプリ内で開く/,
+      /ストアで見る/,
+    ];
+    const idClassPattern = /cookie|consent|cmp[-_]|gdpr|app[-_]?banner|interstitial|smart-?banner/i;
+    const maxTextLength = 400;
+
+    let hidden = 0;
+    const candidates = Array.from(document.querySelectorAll("div, section, aside, dialog"));
+    for (const el of candidates) {
+      const text = el.textContent ?? "";
+      if (text.length === 0 || text.length > maxTextLength) continue;
+
+      const idClassMatch = idClassPattern.test(`${el.id} ${el.className}`);
+      const textMatch = textPatterns.some((pattern) => pattern.test(text));
+      if (!(idClassMatch && textMatch)) continue;
+
+      const style = window.getComputedStyle(el);
+      const isOverlayish = style.position === "fixed" || style.position === "sticky" || Number(style.zIndex || "0") >= 100;
+
+      if (isOverlayish) {
+        (el as HTMLElement).style.setProperty("display", "none", "important");
+        hidden++;
+      }
+    }
+    return hidden;
+  });
+}
+
 /** Playwrightでページをレンダリングし、レンダリング後のHTMLを取得する。 */
 export async function fetchWithBrowser(url: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<BrowserFetchResult> {
   const browser = await getBrowser();
@@ -70,6 +117,9 @@ export async function fetchWithBrowser(url: string, timeoutMs: number = DEFAULT_
       }
       throw cause;
     }
+    await hideConsentBanners(page).catch(() => {
+      // ページ評価に失敗しても取得自体は継続する(ベストエフォート)
+    });
     const html = await page.content();
     return { finalUrl: page.url(), html, status: response?.status() ?? 200 };
   } finally {

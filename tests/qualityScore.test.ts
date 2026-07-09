@@ -9,6 +9,9 @@ function baseInput(overrides: Partial<QualityScoreInput> = {}): QualityScoreInpu
     canvasCount: 0,
     svgCount: 0,
     totalLeafElementCount: 50,
+    imgCount: 1,
+    imgMissingAltCount: 0,
+    imgAreaRatio: 0.05,
     ...overrides,
   };
 }
@@ -45,5 +48,28 @@ describe("evaluateQuality", () => {
   it("閾値ちょうど(density=0.6)は低品質と判定しない(未満のみ)", () => {
     const result = evaluateQuality(baseInput({ extractedTextLength: 600, visibleTextLength: 1000 }));
     expect(result.lowQuality).toBe(false);
+  });
+
+  describe("J6 画像文字検知", () => {
+    it("画像面積比・alt欠落率が共に高いとlowQuality=true(J6理由)", () => {
+      const result = evaluateQuality(baseInput({ imgCount: 4, imgMissingAltCount: 4, imgAreaRatio: 0.5 }));
+      expect(result.lowQuality).toBe(true);
+      expect(result.reason).toContain("J6");
+    });
+
+    it("画像面積比が高くてもaltが揃っていればlowQualityにしない(正当な写真記事を誤検知しない)", () => {
+      const result = evaluateQuality(baseInput({ imgCount: 4, imgMissingAltCount: 0, imgAreaRatio: 0.5 }));
+      expect(result.lowQuality).toBe(false);
+    });
+
+    it("alt欠落率が高くても画像面積が小さければlowQualityにしない", () => {
+      const result = evaluateQuality(baseInput({ imgCount: 4, imgMissingAltCount: 4, imgAreaRatio: 0.05 }));
+      expect(result.lowQuality).toBe(false);
+    });
+
+    it("imgCountが0の場合はimgMissingAltRatioを0として扱う", () => {
+      const result = evaluateQuality(baseInput({ imgCount: 0, imgMissingAltCount: 0, imgAreaRatio: 0 }));
+      expect(result.imgMissingAltRatio).toBe(0);
+    });
   });
 });

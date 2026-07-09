@@ -7,7 +7,7 @@
  * ≒ トークン消費量)を圧縮できるレバーになる。
  */
 import { FetchTimeoutError } from "./errors.js";
-import { getBrowser } from "./fetcher/browser.js";
+import { getBrowser, hideConsentBanners } from "./fetcher/browser.js";
 import { USER_AGENT } from "./fetcher/http.js";
 
 export interface TileGeometry {
@@ -99,6 +99,11 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
       }
       throw cause;
     }
+
+    // J8: 撮影前にCookie同意バナー/アプリ誘導オーバーレイを隠す(視覚的な妨げを除く)
+    await hideConsentBanners(page).catch(() => {
+      // ベストエフォート。失敗しても撮影自体は続行する
+    });
 
     const dimensions = await page.evaluate(() => ({
       width: Math.ceil(document.documentElement.scrollWidth),

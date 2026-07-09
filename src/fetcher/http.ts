@@ -9,8 +9,13 @@
  */
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import * as Encoding from "encoding-japanese";
-import { FetchTimeoutError, HttpStatusError, InvalidUrlError, PrivateAddressError } from "../errors.js";
+// 注意: encoding-japaneseはCJS製で、Node ESMのcjs-module-lexerによる named export静的解析が
+// この実装(module.exports = {...}を後段で組み立てる形)を検出できない。
+// `import * as Encoding` はNode実行時にconvert/detectがundefinedになる実バグを踏むため、
+// 常に真の module.exports を指すdefault importを使う(vitestは緩いCJS interopのため
+// namespace importでも動いてしまい、この不整合はユニットテストでは検出できなかった)。
+import Encoding from "encoding-japanese";
+import { FetchTimeoutError, HttpStatusError, InvalidUrlError, PayloadTooLargeError, PrivateAddressError } from "../errors.js";
 
 export const USER_AGENT = "amenbo/0.1 (+https://github.com/Rererr/amenbo)";
 
@@ -220,7 +225,50 @@ export interface HttpGetResult {
 }
 
 /**
- * SSRF対策付きの素のHTTP GET。リダイレクトは手動で追跡し、毎ホップでSSRFガードを行う。
+ * SSRF対策付きの手動リダイレクト追跡fetch。httpGet/httpGetBinaryの共通部分。
+ * 呼び出し側がstatus 304/非2xxの扱いとボディの読み方(テキスト/バイナリ)を決める。
+ */
+async function guardedFetch(url: string, options: HttpGetOptions, controller: AbortController): Promise<{ finalUrl: string; response: Response }> {
+  let currentUrl = url;
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    await guardPublicAddress(currentUrl);
+
+    let response: Response;
+    try {
+      response = await fetch(currentUrl, {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+        headers: { "User-Agent": USER_AGENT, ...options.headers },
+      });
+    } catch (cause) {
+      if (controller.signal.aborted) {
+        throw new FetchTimeoutError(url, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      }
+      throw cause;
+    }
+
+    // 304 (Not Modified) は300-399の数値レンジに含まれるが、リダイレクトではなく
+    // 条件付きGETの再検証結果であり、Locationヘッダを伴わない。ここで先に除外しないと
+    // 「Locationヘッダの無いリダイレクト」として誤ってHttpStatusErrorになってしまう。
+    if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+      const location = response.headers.get("location");
+      if (!location) {
+        throw new HttpStatusError(currentUrl, response.status, response.statusText);
+      }
+      currentUrl = new URL(location, currentUrl).toString();
+      continue;
+    }
+
+    return { finalUrl: currentUrl, response };
+  }
+
+  throw new HttpStatusError(url, 310, "Too Many Redirects");
+}
+
+/**
+ * SSRF対策付きの素のHTTP GET(テキスト/HTML用)。リダイレクトは手動で追跡し、毎ホップでSSRFガードを行う。
  * status 304(未変更)はエラーにせずそのまま返す(キャッシュ再検証用)。
  * 200以外(304を除く)の非2xxはHttpStatusErrorを投げる。
  */
@@ -230,55 +278,74 @@ export async function httpGet(url: string, options: HttpGetOptions = {}): Promis
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    let currentUrl = url;
+    const { finalUrl, response } = await guardedFetch(url, options, controller);
 
-    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      await guardPublicAddress(currentUrl);
-
-      let response: Response;
-      try {
-        response = await fetch(currentUrl, {
-          method: "GET",
-          redirect: "manual",
-          signal: controller.signal,
-          headers: { "User-Agent": USER_AGENT, ...options.headers },
-        });
-      } catch (cause) {
-        if (controller.signal.aborted) {
-          throw new FetchTimeoutError(url, timeoutMs);
-        }
-        throw cause;
-      }
-
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (!location) {
-          throw new HttpStatusError(currentUrl, response.status, response.statusText);
-        }
-        currentUrl = new URL(location, currentUrl).toString();
-        continue;
-      }
-
-      if (response.status === 304) {
-        return { finalUrl: currentUrl, status: 304, headers: response.headers, html: "", encoding: "" };
-      }
-
-      if (!response.ok) {
-        throw new HttpStatusError(currentUrl, response.status, response.statusText);
-      }
-
-      const buffer = new Uint8Array(await response.arrayBuffer());
-      const decoded = decodeHtmlBytes(buffer, response.headers.get("content-type"));
-      return {
-        finalUrl: currentUrl,
-        status: response.status,
-        headers: response.headers,
-        html: decoded.text,
-        encoding: decoded.encoding,
-      };
+    if (response.status === 304) {
+      return { finalUrl, status: 304, headers: response.headers, html: "", encoding: "" };
+    }
+    if (!response.ok) {
+      throw new HttpStatusError(finalUrl, response.status, response.statusText);
     }
 
-    throw new HttpStatusError(url, 310, "Too Many Redirects");
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    const decoded = decodeHtmlBytes(buffer, response.headers.get("content-type"));
+    return {
+      finalUrl,
+      status: response.status,
+      headers: response.headers,
+      html: decoded.text,
+      encoding: decoded.encoding,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface HttpGetBinaryOptions extends HttpGetOptions {
+  /** これを超えるバイト数のボディはPayloadTooLargeErrorを投げる(PDF等のサイズ上限に使用)。 */
+  maxBytes?: number;
+}
+
+export interface HttpGetBinaryResult {
+  finalUrl: string;
+  status: number;
+  headers: Headers;
+  /** status 304 の場合は空。 */
+  bytes: Uint8Array;
+  contentType: string | null;
+}
+
+/**
+ * SSRF対策付きの素のHTTP GET(バイナリ用、PDF等)。デコードせずバイト列のまま返す。
+ * Content-Lengthヘッダ・実バイト数の両方でmaxBytesを検証する(ヘッダ詐称対策として実サイズも確認)。
+ * status 304(未変更)はhttpGetと同様エラーにせずそのまま返す(条件付きGETを行う将来の呼び出し元向け)。
+ */
+export async function httpGetBinary(url: string, options: HttpGetBinaryOptions = {}): Promise<HttpGetBinaryResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const { finalUrl, response } = await guardedFetch(url, options, controller);
+
+    if (response.status === 304) {
+      return { finalUrl, status: 304, headers: response.headers, bytes: new Uint8Array(0), contentType: null };
+    }
+    if (!response.ok) {
+      throw new HttpStatusError(finalUrl, response.status, response.statusText);
+    }
+
+    const declaredLength = response.headers.get("content-length");
+    if (options.maxBytes && declaredLength && Number(declaredLength) > options.maxBytes) {
+      throw new PayloadTooLargeError(finalUrl, Number(declaredLength), options.maxBytes);
+    }
+
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (options.maxBytes && bytes.length > options.maxBytes) {
+      throw new PayloadTooLargeError(finalUrl, bytes.length, options.maxBytes);
+    }
+
+    return { finalUrl, status: response.status, headers: response.headers, bytes, contentType: response.headers.get("content-type") };
   } finally {
     clearTimeout(timer);
   }
