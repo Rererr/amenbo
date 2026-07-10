@@ -12,6 +12,7 @@ function baseInput(overrides: Partial<QualityScoreInput> = {}): QualityScoreInpu
     imgCount: 1,
     imgMissingAltCount: 0,
     imgAreaRatio: 0.05,
+    extractedTokenEstimate: 200,
     ...overrides,
   };
 }
@@ -50,6 +51,52 @@ describe("evaluateQuality", () => {
     expect(result.lowQuality).toBe(false);
   });
 
+  describe("抽出テキストの絶対量による密度チェックの免除", () => {
+    it("密度が低くても抽出トークン数が十分(500以上)ならlowQualityにしない", () => {
+      const result = evaluateQuality(
+        baseInput({ extractedTextLength: 300, visibleTextLength: 1000, extractedTokenEstimate: 500 }),
+      );
+      expect(result.lowQuality).toBe(false);
+      expect(result.reason).toBeNull();
+    });
+
+    it("抽出トークン数が閾値未満なら従来通り密度理由でlowQuality=trueにする", () => {
+      const result = evaluateQuality(
+        baseInput({ extractedTextLength: 300, visibleTextLength: 1000, extractedTokenEstimate: 499 }),
+      );
+      expect(result.lowQuality).toBe(true);
+      expect(result.reason).toContain("密度");
+    });
+
+    it("抽出トークン数が十分なら表由来の占有率超過もlowQualityにしない(表はGFM化できている想定)", () => {
+      const result = evaluateQuality(
+        baseInput({
+          extractedTextLength: 300,
+          visibleTextLength: 1000,
+          extractedTokenEstimate: 5000,
+          tableCellCount: 40,
+          totalLeafElementCount: 50,
+        }),
+      );
+      expect(result.lowQuality).toBe(false);
+    });
+
+    it("抽出トークン数が十分でもcanvas/svg由来の占有率が高ければlowQualityのまま(テキスト代替が無いため免除しない)", () => {
+      const result = evaluateQuality(
+        baseInput({
+          extractedTextLength: 300,
+          visibleTextLength: 1000,
+          extractedTokenEstimate: 5000,
+          tableCellCount: 0,
+          canvasCount: 20,
+          totalLeafElementCount: 50,
+        }),
+      );
+      expect(result.lowQuality).toBe(true);
+      expect(result.reason).toContain("占有率");
+    });
+  });
+
   describe("J6 画像文字検知", () => {
     it("画像面積比・alt欠落率が共に高いとlowQuality=true(J6理由)", () => {
       const result = evaluateQuality(baseInput({ imgCount: 4, imgMissingAltCount: 4, imgAreaRatio: 0.5 }));
@@ -86,6 +133,28 @@ describe("evaluateQuality", () => {
     it("未指定時は従来通りDOM要素数ベースの近似を使う", () => {
       const result = evaluateQuality(baseInput({ tableCellCount: 2, totalLeafElementCount: 50 }));
       expect(result.visualOccupancyRatio).toBe(0.04);
+    });
+
+    it("realTableAreaRatio併せて指定時、抽出トークン数が十分なら表由来分はlowQuality理由にしない", () => {
+      const result = evaluateQuality(
+        baseInput({ realVisualAreaRatio: 0.5, realTableAreaRatio: 0.5, extractedTokenEstimate: 5000 }),
+      );
+      expect(result.visualOccupancyRatio).toBe(0.5);
+      expect(result.lowQuality).toBe(false);
+    });
+
+    it("realTableAreaRatio併せて指定時でも、canvas/svg由来分(realVisualAreaRatioとの差分)が閾値超過ならlowQualityのまま", () => {
+      const result = evaluateQuality(
+        baseInput({ realVisualAreaRatio: 0.5, realTableAreaRatio: 0.1, extractedTokenEstimate: 5000 }),
+      );
+      expect(result.lowQuality).toBe(true);
+      expect(result.reason).toContain("占有率");
+    });
+
+    it("realTableAreaRatio未指定時は分離不能として全量を免除対象外に倒す(抽出トークン数が十分でもlowQualityのまま)", () => {
+      const result = evaluateQuality(baseInput({ realVisualAreaRatio: 0.5, extractedTokenEstimate: 5000 }));
+      expect(result.lowQuality).toBe(true);
+      expect(result.reason).toContain("占有率");
     });
   });
 });
