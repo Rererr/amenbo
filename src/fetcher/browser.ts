@@ -17,6 +17,7 @@ import {
 import { AmenboError, BrowserLaunchError, FetchTimeoutError, InvalidUrlError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { guardPublicAddress, USER_AGENT } from "./http.js";
+import { closeSharedSsrfProxy, getSharedSsrfProxyUrl } from "./ssrfProxy.js";
 
 export type { PageGeometrySnapshot } from "../extract/geometry.js";
 
@@ -68,10 +69,14 @@ function registerCleanupHandlers(): void {
 export async function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
     registerCleanupHandlers();
-    browserPromise = chromium.launch({ headless: true }).catch((cause: unknown) => {
-      browserPromise = null;
-      throw new BrowserLaunchError("chromiumの起動に失敗しました", { cause });
-    });
+    // C2(browser tier): 全リクエストをSSRF検証プロキシ経由にする。Chromiumがホスト名を自前で
+    // 解決せずプロキシへ委ねるため、事前検証と実接続の間のDNS rebinding(TOCTOU)を塞げる。
+    browserPromise = getSharedSsrfProxyUrl()
+      .then((proxyServer) => chromium.launch({ headless: true, proxy: { server: proxyServer } }))
+      .catch((cause: unknown) => {
+        browserPromise = null;
+        throw new BrowserLaunchError("chromiumの起動に失敗しました", { cause });
+      });
   }
   return browserPromise;
 }
@@ -91,13 +96,15 @@ async function getSystemChromeBrowser(): Promise<Browser> {
 
   if (!systemChromeBrowserPromise) {
     registerCleanupHandlers();
-    systemChromeBrowserPromise = chromium.launch({ headless: true, channel: "chrome" }).catch((cause: unknown) => {
-      systemChromeBrowserPromise = null;
-      if (isMissingExecutableError(cause)) {
-        systemChromeExecutableMissing = true;
-      }
-      throw new BrowserLaunchError("システムのGoogle Chromeの起動に失敗しました", { cause });
-    });
+    systemChromeBrowserPromise = getSharedSsrfProxyUrl()
+      .then((proxyServer) => chromium.launch({ headless: true, channel: "chrome", proxy: { server: proxyServer } }))
+      .catch((cause: unknown) => {
+        systemChromeBrowserPromise = null;
+        if (isMissingExecutableError(cause)) {
+          systemChromeExecutableMissing = true;
+        }
+        throw new BrowserLaunchError("システムのGoogle Chromeの起動に失敗しました", { cause });
+      });
   }
   return systemChromeBrowserPromise;
 }
@@ -119,6 +126,8 @@ export async function closeBrowser(): Promise<void> {
   browserPromise = null;
   systemChromeBrowserPromise = null;
   await Promise.all([closeBrowserPromise(primary), closeBrowserPromise(systemChrome)]);
+  // ブラウザを閉じた後にSSRF検証プロキシも停止する(開いているとプロセスが終了できずハングする)。
+  await closeSharedSsrfProxy();
 }
 
 export interface BrowserFetchResult {
@@ -247,37 +256,80 @@ export async function hideConsentBanners(page: Page): Promise<number> {
 const NAVIGATION_ROUTE_PATTERN = "**/*";
 
 /**
+ * サブリソース/サブフレームのリクエストURLをSSRF検証する。
+ *
+ * data:/blob:/about: 等ネットワークアクセスを伴わないスキーム(インライン画像・CSS等)は許可し、
+ * file: はローカルファイル読み取り防止のため遮断、http(s)は埋め込みIPが予約アドレスでないか検証する。
+ * 同一ホストへの繰り返し(ページ自身のホストやCDN等)でDNS解決を重複させないよう、
+ * 1回のナビゲーション内はホスト単位で検証結果(Promise)を使い回す。
+ */
+function guardRequestUrl(rawUrl: string, hostGuardCache: Map<string, Promise<void>>): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return Promise.reject(new InvalidUrlError(rawUrl, "リクエストURLの形式が不正です"));
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    if (parsed.protocol === "file:") {
+      return Promise.reject(new InvalidUrlError(rawUrl, "サブリソースのfile:スキームは許可されません"));
+    }
+    return Promise.resolve();
+  }
+  const key = `${parsed.protocol}//${parsed.host}`;
+  let cached = hostGuardCache.get(key);
+  if (!cached) {
+    cached = guardPublicAddress(rawUrl);
+    hostGuardCache.set(key, cached);
+  }
+  return cached;
+}
+
+/**
  * C1: browser.ts(fetchWithBrowser)・screenshot.ts(captureTiledScreenshot)は
  * fetcher/http.tsのSSRF/スキーム検証(guardPublicAddress)を経由せずpage.goto()していたため、
  * `file:///etc/passwd` や `http://169.254.169.254/...` が素通りしていた。
  *
  * 対応:
  *   1. page.goto()の前にguardPublicAddressで初回遷移先を検証する
- *   2. context.route()で全リクエストを横取りし、メインフレームのナビゲーション
- *      リクエスト(初回遷移・各リダイレクトホップの両方が該当する)についてのみ
- *      再度guardPublicAddressを通す。private/予約アドレスやhttp(s)以外のスキームへの
- *      遷移が検出された場合はそのリクエスト自体をabortし(=実接続前に遮断)、
- *      型付きエラー(PrivateAddressError/InvalidUrlError)に変換してgoto()の失敗を報告する
+ *   2. context.route()で全リクエストを横取りし、以下を検証する:
+ *      - メインフレームのナビゲーション(初回遷移・各リダイレクトホップ): guardPublicAddressで
+ *        再検証し、private/予約アドレスやhttp(s)以外のスキームは実接続前にabort。型付きエラー
+ *        (PrivateAddressError/InvalidUrlError)へ変換してgoto()の失敗を報告する。
+ *      - サブフレーム(iframe)のナビゲーション・サブリソース(img/xhr/fetch等): 同様にSSRF検証し、
+ *        private/予約アドレス・file:へのリクエストはabortする(呼び出しは失敗させず該当リクエストのみ遮断)。
  *
- * サブリソース(img/xhr等)は対象外(スコープはユーザー指定URLへの「遷移」の安全性)。
+ * サブフレーム/サブリソースも検証対象に含めるのは、攻撃者ページが `<iframe src=http://169.254.169.254/...>`
+ * を埋め込んでスクリーンショットに内部情報を写し込む(同一オリジンポリシーを迂回した情報窃取)、
+ * あるいは no-cors fetch で内部サービスへ副作用付きリクエストを送る、といった browser tier 経由の
+ * SSRF を塞ぐため。
+ *
  * 完全なTOCTOU対策(fetcher/http.tsのssrfSafeLookupのような接続時点での検証)は
- * Playwright側では現実的に組み込めないため、遷移前検証+リダイレクト時の再検証という
+ * Playwright側では現実的に組み込めないため、遷移前検証+リクエスト時の再検証という
  * 「可能な範囲」の対策にとどめる。
  */
 export async function navigateSafely(page: Page, url: string, timeoutMs: number): Promise<PlaywrightResponse | null> {
   await guardPublicAddress(url);
 
   let blockedError: AmenboError | null = null;
+  const hostGuardCache = new Map<string, Promise<void>>();
   const handler = async (route: Route, request: Request): Promise<void> => {
-    if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) {
-      await route.continue();
-      return;
-    }
+    const requestUrl = request.url();
+    const isMainFrameNavigation = request.isNavigationRequest() && request.frame() === page.mainFrame();
     try {
-      await guardPublicAddress(request.url());
+      if (isMainFrameNavigation) {
+        await guardPublicAddress(requestUrl);
+      } else {
+        await guardRequestUrl(requestUrl, hostGuardCache);
+      }
       await route.continue();
     } catch (error) {
-      blockedError = error instanceof AmenboError ? error : new InvalidUrlError(request.url(), "ナビゲーション検証に失敗しました");
+      // メインフレームの遷移失敗のみgoto()の失敗として型付きエラーで報告する。サブフレーム/
+      // サブリソースの遮断はページ全体を失敗させず、該当リクエストのabortにとどめる(ブラウザが
+      // 読み込めないリソースをスキップするのと同じ挙動)。
+      if (isMainFrameNavigation) {
+        blockedError = error instanceof AmenboError ? error : new InvalidUrlError(requestUrl, "ナビゲーション検証に失敗しました");
+      }
       await route.abort();
     }
   };

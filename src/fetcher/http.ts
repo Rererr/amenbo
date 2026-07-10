@@ -104,8 +104,10 @@ function isPrivateIpv6(ip: string): boolean {
   if (n === 0n || n === 1n) return true; // :: (未指定) / ::1 (ループバック)
   if (isInIpv6Range(n, "fc00::", 7)) return true; // ユニークローカル
   if (isInIpv6Range(n, "fe80::", 10)) return true; // リンクローカル
-  if (isInIpv6Range(n, "::ffff:0:0", 96)) {
-    // IPv4-mapped IPv6: 埋め込みIPv4側を再判定する
+  // 下位32bitにIPv4を埋め込む各表記(IPv4-mapped ::ffff:0:0/96、deprecatedなIPv4-compatible ::/96、
+  // NAT64の well-known prefix 64:ff9b::/96)は、埋め込みIPv4側が予約アドレスなら遮断する。
+  // 例: `::127.0.0.1` や `64:ff9b::7f00:1` がloopback/内部へ到達しうる経路を塞ぐ(::/::1は上で処理済み)。
+  if (isInIpv6Range(n, "::ffff:0:0", 96) || isInIpv6Range(n, "::", 96) || isInIpv6Range(n, "64:ff9b::", 96)) {
     const v4 = [Number((n >> 24n) & 0xffn), Number((n >> 16n) & 0xffn), Number((n >> 8n) & 0xffn), Number(n & 0xffn)].join(".");
     return isPrivateIpv4(v4);
   }
