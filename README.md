@@ -2,7 +2,7 @@
 
 **Skims the web without making waves** — a Japanese-web-native MCP server for low-impact, token-efficient web collection.
 
-amenbo(アメンボ / water strider)は、Claude Code や Codex のようなコーディングエージェント向けの [MCP](https://modelcontextprotocol.io) サーバーです。水面に波を立てずに滑る虫のように、**収集先に負荷をかけず・少ないトークンで** Web から情報を集めます。とりわけ**日本語サイト**に最適化しています。
+amenbo(アメンボ / water strider)は、Claude Code や Codex のようなコーディングエージェント向けの [MCP](https://modelcontextprotocol.io) サーバーです。水面に波を立てずに滑る虫のように、**収集先に負荷をかけず・少ないトークンで** Web から情報を集めます。とりわけ**日本語サイト**に最適化しています。MCP クライアントを持たないシェル環境からは、同じコアを共有する CLI としても使えます([CLIとして使う](#cliとして使う)参照)。
 
 ## なぜ amenbo か
 
@@ -75,12 +75,46 @@ npm run build
 - 同じ URL の再取得で `unchanged` / `diff` が返るのは正常(変更なし / 変更節のみ)。
   全文が必要なときだけ `force_full: true` を使う
 - サイト内のページを探すときは URL を推測せず `links`(`filter` で絞り込み)で列挙する
+- シェルが使える環境で、キーワードで探したいだけの長いページや複数ページの一括収集は、
+  CLI で `amenbo fetch <url> > page.md` に落として grep / 部分読みする(本文をコンテキストに入れない)。
+  構造を見ながら判断したいページは従来どおり MCP の outline → section が向く
 - 日本語以外のサイトにも使える(段階開示・キャッシュ・低負荷は言語非依存)。ただし本文抽出は
   日本語向けに調整しているため、非日本語ページで本文が欠けて見えるときは `selector` 指定か
   `mode: "screenshot"` で取り直す
 - 料金表・レイアウトなど視覚情報が目的なら `screenshot`。`scale: 0.5` 程度で画像トークンを減らせる
 - robots.txt 拒否や bot 対策による取得失敗は仕様(回避しない)。失敗はそのままユーザーに報告する
 ```
+
+## CLIとして使う
+
+`amenbo` は MCP サーバーと同一のコア(取得・キャッシュ・politeness・抽出ロジック)を共有する CLI としても動作します。引数なし、または `amenbo serve` は従来通り MCP サーバーとして起動する(`.mcp.json` の `"command": "amenbo"` はそのまま動きます)ので、既存の MCP 登録には影響しません。
+
+```bash
+# ページをMarkdownとして取得(標準出力へ)
+amenbo fetch https://example.com/
+
+# 長いページはまずoutlineで見出しとトークン量だけ確認
+amenbo fetch https://example.com/ --mode outline
+
+# 出力をファイルに落として grep や部分読み(head/sed)する
+amenbo fetch https://example.com/ > page.md
+grep -A3 "料金" page.md
+
+# サイト内のリンクを列挙(sitemap/RSS優先)
+amenbo links https://example.com/ --filter "blog/*"
+
+# スクリーンショット(タイルPNGは--out-dirへ保存され、パスが標準出力に列挙される)
+amenbo screenshot https://example.com/ --viewport-only --scale 0.5 --out-dir ./shots
+```
+
+各サブコマンドの詳細は `amenbo <fetch|links|screenshot> --help` を参照してください。
+
+**MCP と CLI の使い分け**:
+
+- **MCP** — エージェントの主経路。ブラウザ(Chromium)がプロセス内でウォームに保たれ、スクリーンショット等の画像を会話へ直接返せる。claude.ai のようにシェルを持たないホストのエージェントにも届く
+- **CLI** — シェルスクリプト・CI・デバッグ用途、出力をファイルに落として `grep`/部分読みしたい場合、または MCP 非対応のエージェント/ツールチェーンから使う場合に向く。1 コマンド= 1 プロセスのためブラウザは毎回起動する
+
+キャッシュ・差分応答(`unchanged`/`diff`)・レート制御(robots.txt/ドメイン毎の直列アクセス)の状態は MCP サーバーと CLI で共有されます(同じ `~/.cache/amenbo` を使うため)。ただしレート制御のプロセス間共有はベストエフォートです。同一ドメインへの直列化は各プロセス内でのみ厳密に保証され、MCP サーバーと複数の CLI 実行が同時に同じドメインへアクセスした場合、最小間隔が多少すり抜けることがあります。
 
 ## ツール
 
