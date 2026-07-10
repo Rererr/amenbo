@@ -15,6 +15,13 @@
  * Phase 4 テンプレート学習: ドメイン毎に直近ページのブロックハッシュ集合を domain_pages に
  * 記録し、直近N ページ全てに共通して出現したハッシュを定型ブロック(ヘッダ/フッタ/定型ナビ等)
  * と判定する(getTemplateBlockHashes)。除去処理自体はtemplateLearning.tsが行う。
+ *
+ * CLI併設対応: politenessのドメイン毎レート制御(直近リクエスト時刻)は元々プロセス内メモリ
+ * のみで保持していたが、CLIは1コマンド=1プロセスのためプロセスを跨いで状態を引き継げず、
+ * 短時間に連続実行すると同一ドメインへの最小間隔が守られない。host_requests テーブルへ
+ * 最終リクエスト時刻を永続化し、PolitenessManagerのstoreオプションとして注入することで
+ * MCPサーバー/CLIの複数プロセス間で共有する(再起動直後の連続アクセスも守れる副次効果あり)。
+ * journal_mode=WAL は複数プロセスからの同時アクセスを想定して設定している。
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -79,6 +86,11 @@ interface DomainPageRow {
   url: string;
   fetched_at: number;
   block_hashes: string;
+}
+
+interface HostRequestRow {
+  host: string;
+  last_request_at: number;
 }
 
 export function hashContent(content: string): string {
@@ -150,6 +162,12 @@ export class PageCache {
       )
     `);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_domain_pages_domain_fetched_at ON domain_pages (domain, fetched_at DESC)`);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS host_requests (
+        host TEXT PRIMARY KEY,
+        last_request_at INTEGER NOT NULL
+      )
+    `);
 
     // M3: TTL超過削除・サイズ上限が無くディスクが無制限に増加する問題への対応。
     // 起動(コンストラクタ)のたびにTTL超過エントリを掃除する。
@@ -165,6 +183,9 @@ export class PageCache {
 
     this.db.prepare("DELETE FROM pages WHERE fetched_at < ?").run(cutoff);
     this.db.prepare("DELETE FROM domain_pages WHERE fetched_at < ?").run(cutoff);
+    // code-reviewer指摘: host_requestsもM3の対象から漏れていた(訪問ホスト毎に1行増える
+    // 無制限増加テーブルという点でdomain_pages等と同じ性質を持つため、他テーブルと一貫させる)。
+    this.db.prepare("DELETE FROM host_requests WHERE last_request_at < ?").run(cutoff);
 
     const expiredScreenshots = this.db.prepare<[number], ScreenshotRow>("SELECT * FROM screenshots WHERE fetched_at < ?").all(cutoff);
     for (const row of expiredScreenshots) {
@@ -324,6 +345,34 @@ export class PageCache {
       if (count >= recentPages) templateHashes.add(hash);
     }
     return templateHashes;
+  }
+
+  /**
+   * CLI併設対応: ホスト(例 "example.com")の最終リクエスト時刻を返す(未記録ならnull)。
+   * PolitenessManagerのstoreオプションとして注入し、プロセス間でレート制御状態を共有するために使う。
+   */
+  getHostLastRequestAt(host: string): number | null {
+    const row = this.db.prepare<[string], HostRequestRow>("SELECT * FROM host_requests WHERE host = ?").get(host);
+    return row ? row.last_request_at : null;
+  }
+
+  /**
+   * ホストの最終リクエスト時刻を記録する。
+   *
+   * code-reviewer指摘: MCPサーバー/CLIの複数プロセスが同一ホストへほぼ同時にwaitTurnを
+   * 実行すると、「読み取り→待機→書き込み」の3ステップがプロセス間でアトミックではないため
+   * 後勝ちの書き込みが古い時刻で新しい時刻を上書きし、最小間隔がすり抜けうる
+   * (完全な直列化はプロセス内のみ。プロセス間はベストエフォート。PolitenessManagerの
+   * store JSDoc参照)。せめて時刻が巻き戻らないよう、SQL側でMAXを取って単調増加を保証する。
+   */
+  setHostLastRequestAt(host: string, at: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO host_requests (host, last_request_at)
+         VALUES (@host, @lastRequestAt)
+         ON CONFLICT(host) DO UPDATE SET last_request_at = MAX(last_request_at, excluded.last_request_at)`,
+      )
+      .run({ host, lastRequestAt: at });
   }
 
   close(): void {

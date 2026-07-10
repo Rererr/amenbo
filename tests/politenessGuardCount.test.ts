@@ -35,7 +35,7 @@ vi.mock("../src/screenshot.js", async (importOriginal) => {
 const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-guard-count-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
-const { handleFetchTool, handleScreenshotTool, politeness } = await import("../src/server.js");
+const { handleFetchTool, handleScreenshotTool, politeness } = await import("../src/core.js");
 
 afterAll(() => {
   rmSync(cacheDir, { recursive: true, force: true });

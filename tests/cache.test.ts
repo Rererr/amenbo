@@ -268,3 +268,84 @@ describe("PageCache - Phase 4 テンプレート学習(定型ブロック判定)
     cache.close();
   });
 });
+
+// CLI併設対応: CLIは1コマンド=1プロセスのため、politenessのドメイン毎レート制御の状態を
+// プロセス間で共有する必要がある。host_requestsテーブル(getHostLastRequestAt/setHostLastRequestAt)を検証する。
+describe("PageCache - host_requests(politenessのプロセス間レート制御永続化)", () => {
+  it("未記録のホストはgetHostLastRequestAtでnullを返す", () => {
+    const cache = new PageCache({ dbPath });
+    expect(cache.getHostLastRequestAt("example.com")).toBeNull();
+    cache.close();
+  });
+
+  it("setHostLastRequestAtで記録した時刻をgetHostLastRequestAtで取得できる", () => {
+    const cache = new PageCache({ dbPath });
+    cache.setHostLastRequestAt("example.com", 12345);
+    expect(cache.getHostLastRequestAt("example.com")).toBe(12345);
+    cache.close();
+  });
+
+  it("同一ホストへの再setHostLastRequestAtは上書きされる", () => {
+    const cache = new PageCache({ dbPath });
+    cache.setHostLastRequestAt("example.com", 100);
+    cache.setHostLastRequestAt("example.com", 200);
+    expect(cache.getHostLastRequestAt("example.com")).toBe(200);
+    cache.close();
+  });
+
+  it("code-reviewer指摘: 古い時刻でのsetHostLastRequestAtは時刻を巻き戻さない(SQL側でMAXを取る)", () => {
+    // プロセス間のread-modify-write競合で「新しい時刻の書き込み」の後に「古い時刻の書き込み」が
+    // 遅れて到着しても、レート制御の最小間隔が短くなる方向にすり抜けないようにするための保証。
+    const cache = new PageCache({ dbPath });
+    cache.setHostLastRequestAt("example.com", 200);
+    cache.setHostLastRequestAt("example.com", 100);
+    expect(cache.getHostLastRequestAt("example.com")).toBe(200);
+    cache.close();
+  });
+
+  it("ホストが異なれば独立して記録される", () => {
+    const cache = new PageCache({ dbPath });
+    cache.setHostLastRequestAt("a.example.com", 111);
+    cache.setHostLastRequestAt("b.example.com", 222);
+    expect(cache.getHostLastRequestAt("a.example.com")).toBe(111);
+    expect(cache.getHostLastRequestAt("b.example.com")).toBe(222);
+    cache.close();
+  });
+
+  it("code-reviewer指摘: M3と一貫させ、起動時にTTL超過したhost_requestsエントリを削除する", () => {
+    let now = 1_000_000;
+    const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    cache1.setHostLastRequestAt("old.example.com", now);
+    cache1.close();
+
+    now += 20 * 60 * 1000; // TTL(15分)超過
+    const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    expect(cache2.getHostLastRequestAt("old.example.com")).toBeNull();
+    cache2.close();
+  });
+
+  it("M3: TTL内のhost_requestsエントリは起動時に削除されない", () => {
+    let now = 1_000_000;
+    const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    cache1.setHostLastRequestAt("fresh.example.com", now);
+    cache1.close();
+
+    now += 5 * 60 * 1000; // TTL(15分)以内
+    const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    expect(cache2.getHostLastRequestAt("fresh.example.com")).toBe(1_000_000);
+    cache2.close();
+  });
+
+  it("プロセスを跨いでも同じDBファイルであれば永続化されている", () => {
+    // M3(起動時TTL掃除)の対象にならないよう、実時刻に近い値を使う(999のような固定の
+    // 小さい値だと既定TTL(15分)を起動時に必ず超過しており、掃除で消えてしまうため)。
+    const recentTimestamp = Date.now();
+    const cache1 = new PageCache({ dbPath });
+    cache1.setHostLastRequestAt("example.com", recentTimestamp);
+    cache1.close();
+
+    const cache2 = new PageCache({ dbPath });
+    expect(cache2.getHostLastRequestAt("example.com")).toBe(recentTimestamp);
+    cache2.close();
+  });
+});

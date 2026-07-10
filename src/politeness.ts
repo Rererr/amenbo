@@ -35,6 +35,25 @@ interface RobotsCacheEntry {
   fetchedAt: number;
 }
 
+/**
+ * CLI併設対応: ドメイン毎の最終リクエスト時刻をプロセス間で共有するための永続化ストア。
+ * CLIは1コマンド=1プロセスのためインメモリのlastRequestAtだけでは直列/最小間隔制御が
+ * プロセスを跨いで機能しない。cache.ts(host_requestsテーブル)をこの形で注入する想定。
+ *
+ * code-reviewer指摘(重要な制約): waitTurn内の「store読み取り→待機時間の算出→sleep→
+ * store書き込み」は、同一プロセス内ではlocks(直列キュー)で完全に直列化されるが、
+ * 複数プロセス(MCPサーバー+複数のCLI実行等)が同一ホストへほぼ同時にこの一連の処理へ
+ * 入った場合、プロセスを跨いだ排他制御は無い(read-modify-writeがアトミックではない)ため
+ * 最小間隔がすり抜けうる。低負荷"優先"のベストエフォートな安全網であり、分散ロックのような
+ * 複雑な再試行機構は追加しない(単一プロセス内の直列化という強い保証・低実装コストという
+ * コンセプトを崩さないため)。cache.ts側のsetHostLastRequestAtはSQLのMAXで時刻の巻き戻りだけは
+ * 防いでいるが、read-modify-writeの競合そのものは解消しない。
+ */
+export interface PolitenessStore {
+  getLastRequestAt(host: string): number | null;
+  setLastRequestAt(host: string, at: number): void;
+}
+
 export interface PolitenessOptions {
   /** ドメイン毎の最小リクエスト間隔(ミリ秒、既定1000ms)。robots.txtのCrawl-Delayがこれより長ければそちらを優先。 */
   minIntervalMs?: number;
@@ -44,6 +63,8 @@ export interface PolitenessOptions {
   now?: () => number;
   /** テスト用のsleep関数差し替え。 */
   sleep?: (ms: number) => Promise<void>;
+  /** 未指定時は従来通りインメモリのみでレート制御する(完全後方互換)。 */
+  store?: PolitenessStore;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -55,6 +76,7 @@ export class PolitenessManager {
   private readonly robotsTtlMs: number;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly store: PolitenessStore | undefined;
 
   private readonly robotsCache = new Map<string, RobotsCacheEntry>();
   // N8: settledを持たせるのは、pruneStaleHostStateがまだ完了していない(=キューに並んでいる
@@ -69,6 +91,7 @@ export class PolitenessManager {
     this.robotsTtlMs = options.robotsTtlMs ?? DEFAULT_ROBOTS_TTL_MS;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
+    this.store = options.store;
   }
 
   /** robots.txtとレート制御の両方を確認し、アクセス可能になるまで待機する。拒否時はRobotsDeniedErrorを投げる。 */
@@ -91,7 +114,12 @@ export class PolitenessManager {
     return robots?.getSitemaps() ?? [];
   }
 
-  /** ドメイン毎の直列キュー+最小間隔(robots.txtのCrawl-Delay考慮)を適用して順番を待つ。 */
+  /**
+   * ドメイン毎の直列キュー+最小間隔(robots.txtのCrawl-Delay考慮)を適用して順番を待つ。
+   * 直列キュー(locks)による直列化はプロセス内のみ有効。store(PolitenessStore)経由の
+   * プロセス間共有はread-modify-writeがアトミックではないベストエフォート(PolitenessStoreの
+   * JSDoc参照)。
+   */
   async waitTurn(url: string): Promise<void> {
     this.pruneStaleHostState();
     const host = new URL(url).host;
@@ -109,12 +137,18 @@ export class PolitenessManager {
 
     await previous;
     try {
-      const lastAt = this.lastRequestAt.get(host) ?? -Infinity;
+      // CLI併設対応: インメモリのlastRequestAtとstore(プロセス間永続化)の値のうち新しい方を
+      // 採用する。store未指定時はstoreLastAtが常に-Infinityになり従来通りの挙動になる。
+      const memoryLastAt = this.lastRequestAt.get(host) ?? -Infinity;
+      const storeLastAt = this.store?.getLastRequestAt(host) ?? -Infinity;
+      const lastAt = Math.max(memoryLastAt, storeLastAt);
       const elapsed = this.now() - lastAt;
       if (elapsed < intervalMs) {
         await this.sleep(intervalMs - elapsed);
       }
-      this.lastRequestAt.set(host, this.now());
+      const requestAt = this.now();
+      this.lastRequestAt.set(host, requestAt);
+      this.store?.setLastRequestAt(host, requestAt);
     } finally {
       release();
       entry.settled = true;

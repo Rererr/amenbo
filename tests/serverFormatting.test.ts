@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-// server.tsはモジュール読み込み時にPageCache(better-sqlite3)を既定のキャッシュディレクトリ
+// core.tsはモジュール読み込み時にPageCache(better-sqlite3)を既定のキャッシュディレクトリ
 // (~/.cache/amenbo)に生成する副作用を持つため、テスト用の一時ディレクトリへ退避させてから
-// importする(実ユーザーのキャッシュを汚さないため)。server.ts側はmain()(stdio接続)を
-// 直接実行時のみ走らせるガード(isDirectlyExecuted)を持つため、importしてもハングしない。
+// importする(実ユーザーのキャッシュを汚さないため)。stdio接続(server.tsのrunServer())は
+// isDirectlyExecutedガードにより直接実行時のみ走るため、core.tsをimportしてもハングしない。
 const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-server-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
-const { formatHandoffResponse, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/server.js");
+const { formatHandoffResponse, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/core.js");
 type HandoffResultLike = Parameters<typeof formatHandoffResponse>[0];
 
 afterAll(() => {
