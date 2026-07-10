@@ -2,7 +2,7 @@ import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
 import { pruneLowValueBlocks, scoreBlock, type PruneHostElement } from "../src/extract/pruning.js";
 
-describe("scoreBlock(J4 CJK本文スコアラー)", () => {
+describe("scoreBlock(J4 本文スコアラー)", () => {
   it("句読点が多くリンクが少ない文章ブロックは高いスコアになる(本文らしい)", () => {
     const text =
       "これは十分な長さの日本語の文章です。句読点が多く含まれており、リンクはほとんど含まれていません。本文らしいブロックとして判定されるはずです。";
@@ -24,6 +24,29 @@ describe("scoreBlock(J4 CJK本文スコアラー)", () => {
   it("linkDensityは1を超えない", () => {
     const result = scoreBlock({ text: "短い", linkText: "短いリンクテキストがそれより長い" });
     expect(result.linkDensity).toBeLessThanOrEqual(1);
+  });
+
+  it("リンクを一部含む英文の本文段落は高いスコアになる(本文らしい、非CJK回帰確認)", () => {
+    const text =
+      "The city was founded in the early nineteenth century by a group of settlers who arrived from the coast. " +
+      "Over the following decades it grew into a major trading hub, connecting the inland farms to the coastal ports. " +
+      "Today the historic district features several landmark buildings, including the old courthouse and the central market. " +
+      "Its economy, culture, and population grew rapidly, driven by trade, agriculture, and coastal shipping.";
+    const linkText = "nineteenth century historic district old courthouse";
+    const result = scoreBlock({ text, linkText });
+    expect(result.score).toBeGreaterThanOrEqual(0);
+  });
+
+  it("romaji・英字が混じった日本語ナビゲーションも低いスコアになる(LETTER_WEIGHT増加時の回帰検知)", () => {
+    const text = "ホーム ABOUT US 会社概要 NEWS お問い合わせ PRIVACY POLICY サイトマップ";
+    const result = scoreBlock({ text, linkText: text });
+    expect(result.score).toBeLessThan(0);
+  });
+
+  it("句読点のほぼ無い英語のナビゲーションは低いスコアになる(ナビらしい、非CJK回帰確認)", () => {
+    const text = "Home About Contact Privacy Policy Terms of Service Sitemap Careers Support";
+    const result = scoreBlock({ text, linkText: text });
+    expect(result.score).toBeLessThan(0);
   });
 });
 
@@ -64,6 +87,42 @@ describe("pruneLowValueBlocks(fit-pruning)", () => {
     expect(prunedCount).toBeGreaterThanOrEqual(1);
     expect(root.textContent).not.toContain("人気記事その一");
     expect(root.textContent).toContain("これは本文の段落です");
+  });
+
+  it("リンクを一部含む英文の本文段落は除去されない(非CJK回帰確認)", () => {
+    const root = makeElement(`
+      <article>
+        <p>The city was founded in the early <a href="/century">nineteenth century</a> by a group of settlers
+        who arrived from the coast. Over the following decades it grew into a major trading hub, connecting
+        the inland farms to the coastal ports. Today the <a href="/district">historic district</a> features
+        several landmark buildings, including the <a href="/courthouse">old courthouse</a> and the central market.
+        Its economy, culture, and population grew rapidly, driven by trade, agriculture, and coastal shipping.</p>
+      </article>
+    `);
+    const prunedCount = pruneLowValueBlocks(root);
+    expect(prunedCount).toBe(0);
+    expect(root.textContent).toContain("historic district");
+  });
+
+  it("句読点のほぼ無い英語のナビゲーションdivは除去される(非CJK回帰確認)", () => {
+    const root = makeElement(`
+      <div class="nav-like">
+        <a href="/home">Home</a>
+        <a href="/about">About</a>
+        <a href="/contact">Contact</a>
+        <a href="/privacy">Privacy Policy</a>
+        <a href="/terms">Terms of Service</a>
+        <a href="/sitemap">Sitemap</a>
+        <a href="/careers">Careers</a>
+        <a href="/support">Support</a>
+      </div>
+      <p>This is the main body paragraph. It has enough length and proper sentences, with periods, to be
+      recognized as body text rather than navigation.</p>
+    `);
+    const prunedCount = pruneLowValueBlocks(root);
+    expect(prunedCount).toBeGreaterThanOrEqual(1);
+    expect(root.textContent).not.toContain("Privacy Policy");
+    expect(root.textContent).toContain("main body paragraph");
   });
 
   it("短いブロック(既定20文字未満)はスコアリング対象外で除去されない", () => {
