@@ -19,7 +19,12 @@ import { isIP } from "node:net";
 // 常に真の module.exports を指すdefault importを使う(vitestは緩いCJS interopのため
 // namespace importでも動いてしまい、この不整合はユニットテストでは検出できなかった)。
 import Encoding from "encoding-japanese";
-import { Agent as UndiciAgent, type Dispatcher } from "undici";
+// 注意: グローバルfetch(Node同梱undici)ではなく、npmパッケージundiciのfetchを明示的に使う。
+// Node 20〜24の同梱undiciは旧式ハンドラプロトコルでdispatchするため、npm undici v8系の
+// Agent(新ハンドラプロトコル要求)をdispatcherとして渡すと「invalid onRequestStart method」で
+// 実行時に落ちる(Node 26は同梱undiciがv8系のため問題が顕在化しなかった)。
+// fetchとAgentを同一のundiciパッケージ由来に揃えることで、Nodeバージョンに依存しなくする。
+import { Agent as UndiciAgent, fetch as undiciFetch, type Dispatcher, type Headers, type Response } from "undici";
 import { AmenboError, FetchTimeoutError, HttpStatusError, InvalidUrlError, NetworkError, PayloadTooLargeError, PrivateAddressError } from "../errors.js";
 
 export const USER_AGENT = "amenbo/0.1 (+https://github.com/Rererr/amenbo)";
@@ -409,15 +414,16 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
 
     let response: Response;
     try {
-      response = await fetch(currentUrl, {
+      response = await undiciFetch(currentUrl, {
         method: "GET",
         redirect: "manual",
         signal: controller.signal,
         headers: { "User-Agent": USER_AGENT, ...options.headers },
         // C2: 事前検証(guardPublicAddress)とは別に、実接続の名前解決そのものを検証する
-        // dispatcherを使う(DNS rebindingのTOCTOU対策)。
+        // dispatcherを使う(DNS rebindingのTOCTOU対策)。undiciのfetchはdispatcherを
+        // RequestInitの正規オプションとして受け付けるため、型キャストは不要。
         dispatcher: getSsrfSafeDispatcher(),
-      } as RequestInit & { dispatcher: Dispatcher });
+      });
     } catch (cause) {
       const privateAddressError = findPrivateAddressError(cause);
       if (privateAddressError) {
