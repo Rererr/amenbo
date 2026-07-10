@@ -1,10 +1,10 @@
 /**
- * extract/pruning.ts — J4 CJK本文スコアラー + fit-pruning。
+ * extract/pruning.ts — J4 本文スコアラー + fit-pruning。
  *
  * Readabilityの本文判定ヒューリスティック(英語の単語数/カンマ数前提)は、
  * スペース区切りの無い日本語では機能しにくい。代わりに
  *   - 句読点密度(、。等。日本語文の「文らしさ」の代替指標)
- *   - CJK文字比率
+ *   - Unicode文字比率(\p{L}。英字・CJK等を問わない)
  *   - リンク密度(ナビ/ランキング/広告枠ほど高くなる)
  * でブロックをスコアリングし、低価値ブロック(ナビ/ランキング/広告枠/フッター相当:
  * リンク密度高・句読点密度低)をMarkdown化前にDOMから除去する。
@@ -20,8 +20,8 @@ interface BlockTextStats {
 export interface BlockScore {
   /** 句読点(、。!?等)がテキストに占める割合(0-1)。 */
   punctuationDensity: number;
-  /** CJK文字(かな/カナ/漢字)がテキストに占める割合(0-1)。 */
-  cjkRatio: number;
+  /** Unicode文字(英字・CJK等、\p{L}に一致する文字)がテキストに占める割合(0-1)。 */
+  letterRatio: number;
   /** リンクテキストが全体テキストに占める割合(0-1)。 */
   linkDensity: number;
   /** 総合スコア。0以上を本文らしいブロックとみなす。 */
@@ -29,49 +29,41 @@ export interface BlockScore {
 }
 
 const PUNCTUATION_PATTERN = /[、。!?！?.,]/gu;
-
-function isCjkChar(ch: string): boolean {
-  const cp = ch.codePointAt(0);
-  if (cp === undefined) return false;
-  return (
-    (cp >= 0x3040 && cp <= 0x309f) || // ひらがな
-    (cp >= 0x30a0 && cp <= 0x30ff) || // カタカナ
-    (cp >= 0x3400 && cp <= 0x4dbf) || // CJK統合漢字拡張A
-    (cp >= 0x4e00 && cp <= 0x9fff) || // CJK統合漢字
-    (cp >= 0xf900 && cp <= 0xfaff) // CJK互換漢字
-  );
-}
+// 結合文字(\p{M})も文字として数える(NFD分解形のアクセント記号等で比率が不当に下がらないように)。
+const LETTER_PATTERN = /[\p{L}\p{M}]/gu;
 
 // スコア係数(設計判断): 句読点密度を最重視(日本語では「文」の存在そのものが本文らしさの
-// 最も強いシグナル)、リンク密度は本文らしさを大きく減点する要因、CJK比率は補助的な弱いシグナル
-// (日本語のナビ/フッターも漢字を含むため単独では本文/非本文を判別できない)。
+// 最も強いシグナル)、リンク密度は本文らしさを大きく減点する要因、文字比率は補助的な弱い
+// シグナル(日本語のナビ/フッターも漢字を含み、英語のナビ/フッターも英字を含むため単独では
+// 本文/非本文を判別できない)。従来はCJK文字のみをカウントしていたため、非CJKページの本文が
+// このボーナスを一切得られず、リンクを多く含む英文の本文ブロックが誤って除去されやすかった。
+// \p{L}(Unicode Letter全般)に対象を広げ、言語に依存しない指標にしている。
 const PUNCTUATION_WEIGHT = 40;
-const CJK_WEIGHT = 1;
+const LETTER_WEIGHT = 1;
 const LINK_WEIGHT = 5;
 
 /** J4: ブロックのテキスト統計からスコアを算出する(純関数)。 */
 export function scoreBlock(stats: BlockTextStats): BlockScore {
   const text = stats.text.trim();
-  const length = text.length;
+  // 分母はコードポイント数で数える。正規表現matchの分子(コードポイント単位)と単位を揃えないと、
+  // 補助面の文字(CJK拡張B等のサロゲートペア)を含むテキストで比率が過小評価される。
+  const length = [...text].length;
   if (length === 0) {
-    return { punctuationDensity: 0, cjkRatio: 0, linkDensity: 0, score: 0 };
+    return { punctuationDensity: 0, letterRatio: 0, linkDensity: 0, score: 0 };
   }
 
   const punctuationCount = (text.match(PUNCTUATION_PATTERN) ?? []).length;
   const punctuationDensity = punctuationCount / length;
 
-  let cjkCount = 0;
-  for (const ch of text) {
-    if (isCjkChar(ch)) cjkCount++;
-  }
-  const cjkRatio = cjkCount / length;
+  const letterCount = (text.match(LETTER_PATTERN) ?? []).length;
+  const letterRatio = letterCount / length;
 
-  const linkTextLength = stats.linkText.trim().length;
+  const linkTextLength = [...stats.linkText.trim()].length;
   const linkDensity = Math.min(linkTextLength / length, 1);
 
-  const score = punctuationDensity * PUNCTUATION_WEIGHT + cjkRatio * CJK_WEIGHT - linkDensity * LINK_WEIGHT;
+  const score = punctuationDensity * PUNCTUATION_WEIGHT + letterRatio * LETTER_WEIGHT - linkDensity * LINK_WEIGHT;
 
-  return { punctuationDensity, cjkRatio, linkDensity, score };
+  return { punctuationDensity, letterRatio, linkDensity, score };
 }
 
 export interface PruneOptions {
