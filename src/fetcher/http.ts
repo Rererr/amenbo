@@ -155,9 +155,23 @@ export async function guardPublicAddress(urlStr: string): Promise<void> {
   const url = assertHttpScheme(urlStr);
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   const literalVersion = isIP(hostname);
-  const addresses = literalVersion
-    ? [hostname]
-    : (await dnsLookup(hostname, { all: true })).map((entry) => entry.address);
+
+  let addresses: string[];
+  if (literalVersion) {
+    addresses = [hostname];
+  } else {
+    try {
+      addresses = (await dnsLookup(hostname, { all: true })).map((entry) => entry.address);
+    } catch (cause) {
+      // CLI併設対応で発覚した既存の穴: この関数はguardedFetch(実fetch呼び出し)より前段で
+      // 呼ばれるため、DNS解決失敗(ENOTFOUND等)がここで起きると生のNode dnsエラーが
+      // AmenboErrorでラップされないまま上位へ素通りしていた(呼び出し元のcatchが
+      // `error instanceof AmenboError`で分岐しているため、スタックトレース付きでstderrに
+      // 漏れる/CLIがexit code 1で握り潰さず処理する、という設計が機能しない)。
+      // guardedFetch内のfetch()自体のDNS失敗と同じ分類(NetworkError.fromCause)に揃える。
+      throw NetworkError.fromCause(urlStr, cause);
+    }
+  }
 
   for (const address of addresses) {
     if (isPrivateOrReservedIp(address)) {
