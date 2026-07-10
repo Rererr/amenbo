@@ -9,7 +9,7 @@ import { parseHTML } from "linkedom";
 import { UnsupportedContentError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { fetchWithBrowser } from "./browser.js";
-import { httpGet, type HttpGetOptions } from "./http.js";
+import { httpGetRouted, type HttpGetOptions } from "./http.js";
 
 export type FetchTier = "http" | "browser";
 
@@ -32,6 +32,20 @@ export interface FetchResult {
 export interface NotModifiedResult {
   notModified: true;
   finalUrl: string;
+}
+
+/** 機能B: HTML/PDF以外のコンテンツタイプのハンドオフ応答用データ(メタデータ+プレビュー用バイト列)。 */
+export interface HandoffResult {
+  handoff: true;
+  finalUrl: string;
+  status: number;
+  contentType: string | null;
+  /** プレビュー用に読み取ったボディ(既定256KB上限。ファイル全体ではない)。 */
+  bytes: Uint8Array;
+  /** Content-Lengthヘッダ由来の宣言サイズ(無ければnull)。 */
+  declaredSize: number | null;
+  /** プレビュー上限で本文を打ち切った場合true(ファイル全体は取得していない)。 */
+  truncated: boolean;
 }
 
 // ---- SPA判定ヒューリスティック ----
@@ -80,35 +94,49 @@ export interface FetchPageOptions extends HttpGetOptions {
 }
 
 /** 二段フェッチ本体。条件付きGETでstatus 304が返った場合はNotModifiedResultを返す。 */
-export async function fetchPage(url: string, options: FetchPageOptions = {}): Promise<FetchResult | NotModifiedResult> {
-  const httpResult = await httpGet(url, options);
+export async function fetchPage(url: string, options: FetchPageOptions = {}): Promise<FetchResult | NotModifiedResult | HandoffResult> {
+  const routed = await httpGetRouted(url, options);
 
-  if (httpResult.status === 304) {
-    return { notModified: true, finalUrl: httpResult.finalUrl };
+  if (routed.kind === "notModified") {
+    return { notModified: true, finalUrl: routed.finalUrl };
   }
 
-  const contentType = httpResult.headers.get("content-type") ?? "";
-  if (contentType && !/text\/html|application\/xhtml\+xml/i.test(contentType)) {
-    throw new UnsupportedContentError(httpResult.finalUrl, contentType);
+  if (routed.kind === "handoff") {
+    // PDFの既存処理フロー(server.tsのURL拡張子判定 → handlePdfFetch)は変更しない。
+    // URL拡張子で検出できなかったPDF(content-typeのみで判明するケース)は、
+    // 機能B以前と同じくUnsupportedContentErrorのままにする(バイナリをテキストとして
+    // プレビューしてしまう回帰を避けるため)。
+    if (routed.contentType && /application\/pdf/i.test(routed.contentType)) {
+      throw new UnsupportedContentError(routed.finalUrl, routed.contentType);
+    }
+    return {
+      handoff: true,
+      finalUrl: routed.finalUrl,
+      status: routed.status,
+      contentType: routed.contentType,
+      bytes: routed.bytes,
+      declaredSize: routed.declaredSize,
+      truncated: routed.truncated,
+    };
   }
 
-  const spaSignals = options.forceBrowser ? { escalate: true, reason: "forceBrowser指定" } : detectSpaSignals(httpResult.html);
+  const spaSignals = options.forceBrowser ? { escalate: true, reason: "forceBrowser指定" } : detectSpaSignals(routed.html);
 
   if (!spaSignals.escalate) {
     return {
-      finalUrl: httpResult.finalUrl,
-      html: httpResult.html,
+      finalUrl: routed.finalUrl,
+      html: routed.html,
       tier: "http",
-      status: httpResult.status,
-      encoding: httpResult.encoding,
-      etag: httpResult.headers.get("etag"),
-      lastModified: httpResult.headers.get("last-modified"),
+      status: routed.status,
+      encoding: routed.encoding,
+      etag: routed.headers.get("etag"),
+      lastModified: routed.headers.get("last-modified"),
       escalationReason: null,
       geometry: null,
     };
   }
 
-  const browserResult = await fetchWithBrowser(httpResult.finalUrl, options.timeoutMs);
+  const browserResult = await fetchWithBrowser(routed.finalUrl, options.timeoutMs);
   return {
     finalUrl: browserResult.finalUrl,
     html: browserResult.html,

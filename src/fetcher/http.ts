@@ -20,7 +20,7 @@ import { isIP } from "node:net";
 // namespace importでも動いてしまい、この不整合はユニットテストでは検出できなかった)。
 import Encoding from "encoding-japanese";
 import { Agent as UndiciAgent, type Dispatcher } from "undici";
-import { FetchTimeoutError, HttpStatusError, InvalidUrlError, PayloadTooLargeError, PrivateAddressError } from "../errors.js";
+import { AmenboError, FetchTimeoutError, HttpStatusError, InvalidUrlError, NetworkError, PayloadTooLargeError, PrivateAddressError } from "../errors.js";
 
 export const USER_AGENT = "amenbo/0.1 (+https://github.com/Rererr/amenbo)";
 
@@ -303,7 +303,7 @@ export function decodeHtmlBytes(bytes: Uint8Array, contentTypeHeader: string | n
 const DEFAULT_MAX_BODY_BYTES = 20 * 1024 * 1024; // 20MB
 
 /** 環境変数 AMENBO_MAX_BODY_BYTES で既定のボディサイズ上限を調整できる。 */
-function resolveDefaultMaxBodyBytes(): number {
+export function resolveDefaultMaxBodyBytes(): number {
   const raw = process.env.AMENBO_MAX_BODY_BYTES;
   if (!raw) return DEFAULT_MAX_BODY_BYTES;
   const parsed = Number(raw);
@@ -321,36 +321,44 @@ async function readBodyWithLimit(response: Response, url: string, maxBytes: numb
     throw new PayloadTooLargeError(url, Number(declaredLength), maxBytes);
   }
 
-  if (!response.body) {
-    const buffer = new Uint8Array(await response.arrayBuffer());
-    if (buffer.length > maxBytes) {
-      throw new PayloadTooLargeError(url, buffer.length, maxBytes);
+  // 機能A(実機検証での追加修正): ヘッダ受信後のストリーミング読み取り中に接続断等が起きた場合、
+  // 生のエラーを素通りさせずNetworkErrorへ分類する(意図的に投げているPayloadTooLargeError等の
+  // AmenboErrorはそのまま再送出する)。
+  try {
+    if (!response.body) {
+      const buffer = new Uint8Array(await response.arrayBuffer());
+      if (buffer.length > maxBytes) {
+        throw new PayloadTooLargeError(url, buffer.length, maxBytes);
+      }
+      return buffer;
     }
-    return buffer;
-  }
 
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.length;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw new PayloadTooLargeError(url, total, maxBytes);
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.length;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new PayloadTooLargeError(url, total, maxBytes);
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
-  }
 
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof AmenboError) throw error;
+    throw NetworkError.fromCause(url, error);
   }
-  return result;
 }
 
 // ---- HTTP GET本体 ----
@@ -402,7 +410,9 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
       if (controller.signal.aborted) {
         throw new FetchTimeoutError(url, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
       }
-      throw cause;
+      // 機能A: undiciのcauseチェーン(error.cause.code等)からdns/tls/connection/unknownを
+      // 分類した型付きエラーにして投げる(以前は生の"TypeError: fetch failed"が素通りしていた)。
+      throw NetworkError.fromCause(currentUrl, cause);
     }
 
     // 304 (Not Modified) は300-399の数値レンジに含まれるが、リダイレクトではなく
@@ -498,6 +508,114 @@ export async function httpGetBinary(url: string, options: HttpGetBinaryOptions =
     const bytes = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes());
 
     return { finalUrl, status: response.status, headers: response.headers, bytes, contentType: response.headers.get("content-type") };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---- 機能B: 非HTMLコンテンツのハンドオフ応答用ルーティング ----
+
+const HTML_CONTENT_TYPE_RE = /text\/html|application\/xhtml\+xml/i;
+/**
+ * ハンドオフ応答のプレビュー用に読み取るボディの上限(バイト)。CSV/JSON等のプレビュー
+ * (ヘッダ+先頭数行、または既定max_tokens相当のテキスト)には十分な量である一方、
+ * 数百MB〜GB級のオープンデータファイルの全体取得は避ける(politeness優先)。
+ */
+const HANDOFF_PREVIEW_BYTES = 256 * 1024; // 256KB
+
+/**
+ * readBodyWithLimitと異なり上限超過をエラーにせず「truncated」として扱う
+ * (機能B: 非HTMLコンテンツのプレビュー用。ボディ全体は取得せず必要な分だけ読んで切断する)。
+ */
+async function readBodyPreview(response: Response, url: string, maxBytes: number): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  // 機能A(実機検証での追加修正): 読み取り中の接続断等をNetworkErrorへ分類する(readBodyWithLimitと同様)。
+  try {
+    if (!response.body) {
+      const buffer = new Uint8Array(await response.arrayBuffer());
+      if (buffer.length <= maxBytes) return { bytes: buffer, truncated: false };
+      return { bytes: buffer.subarray(0, maxBytes), truncated: true };
+    }
+
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let truncated = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      if (total + value.length > maxBytes) {
+        chunks.push(value.subarray(0, maxBytes - total));
+        total = maxBytes;
+        truncated = true;
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      chunks.push(value);
+      total += value.length;
+    }
+
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return { bytes: result, truncated };
+  } catch (error) {
+    if (error instanceof AmenboError) throw error;
+    throw NetworkError.fromCause(url, error);
+  }
+}
+
+export type HttpGetRoutedResult =
+  | { kind: "notModified"; status: 304; finalUrl: string; headers: Headers }
+  | { kind: "html"; status: number; finalUrl: string; headers: Headers; html: string; encoding: string }
+  | {
+      kind: "handoff";
+      status: number;
+      finalUrl: string;
+      headers: Headers;
+      contentType: string | null;
+      bytes: Uint8Array;
+      /** Content-Lengthヘッダ由来の宣言サイズ(無ければnull)。 */
+      declaredSize: number | null;
+      /** プレビュー上限で本文を打ち切った場合true(ファイル全体は取得していない)。 */
+      truncated: boolean;
+    };
+
+/**
+ * 機能B: content-typeを見て、HTML本文の全体読み取り(既存のhttpGetと同じ挙動)か、
+ * 非HTMLハンドオフ用のプレビュー読み取り(既定256KBで打ち切り)かを1回のfetchで振り分ける。
+ * リダイレクト先を含め毎ホップでcontent-typeが確定するのは最終応答のみなので、
+ * guardedFetchで得たヘッダを見てから初めてボディの読み方を決める。
+ */
+export async function httpGetRouted(url: string, options: HttpGetOptions = {}): Promise<HttpGetRoutedResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const { finalUrl, response } = await guardedFetch(url, options, controller);
+
+    if (response.status === 304) {
+      return { kind: "notModified", status: 304, finalUrl, headers: response.headers };
+    }
+    if (!response.ok) {
+      throw new HttpStatusError(finalUrl, response.status, response.statusText);
+    }
+
+    const contentType = response.headers.get("content-type");
+    if (!contentType || HTML_CONTENT_TYPE_RE.test(contentType)) {
+      const buffer = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes());
+      const decoded = decodeHtmlBytes(buffer, contentType);
+      return { kind: "html", status: response.status, finalUrl, headers: response.headers, html: decoded.text, encoding: decoded.encoding };
+    }
+
+    const declaredLengthHeader = response.headers.get("content-length");
+    const declaredSize = declaredLengthHeader && Number.isFinite(Number(declaredLengthHeader)) ? Number(declaredLengthHeader) : null;
+    const { bytes, truncated } = await readBodyPreview(response, finalUrl, HANDOFF_PREVIEW_BYTES);
+    return { kind: "handoff", status: response.status, finalUrl, headers: response.headers, contentType, bytes, declaredSize, truncated };
   } finally {
     clearTimeout(timer);
   }

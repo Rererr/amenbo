@@ -119,6 +119,122 @@ export class SectionNotFoundError extends AmenboError {
   }
 }
 
+/** 機能A: undiciのcauseチェーンから分類したネットワークエラーの種別。 */
+export type NetworkErrorKind = "dns" | "tls" | "connection" | "unknown";
+
+const NETWORK_ERROR_KIND_LABELS: Record<Exclude<NetworkErrorKind, "unknown">, string> = {
+  dns: "DNS解決失敗",
+  tls: "TLS/証明書エラー",
+  connection: "接続拒否/リセット",
+};
+
+/** tls/connection時のみ付与するヒント(dns失敗はブラウザ経由でも解決しないため付けない)。 */
+const NETWORK_ERROR_SCREENSHOT_HINT =
+  " — サイト側がボットアクセスを遮断している可能性があります。mode: screenshot(ブラウザ経由)で再試行すると通る場合があります";
+
+const DNS_ERROR_CODES = new Set(["ENOTFOUND", "EAI_AGAIN"]);
+const CONNECTION_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EPIPE",
+  "ECONNABORTED",
+]);
+
+/** TLS関連のNode/OpenSSLエラーコード判定(CERT_接頭辞・ERR_TLS_接頭辞・代表的な証明書エラー名)。 */
+function isTlsErrorCode(code: string): boolean {
+  return (
+    code.startsWith("CERT_") ||
+    code.startsWith("ERR_TLS_") ||
+    code === "DEPTH_ZERO_SELF_SIGNED_CERT" ||
+    code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
+    code === "SELF_SIGNED_CERT_IN_CHAIN" ||
+    code === "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" ||
+    code === "HOSTNAME_MISMATCH"
+  );
+}
+
+/**
+ * HTTP/2レベルのエラーコード判定(ERR_HTTP2_接頭辞)。実機検証でボットブロック時に
+ * NGHTTP2_INTERNAL_ERROR(ERR_HTTP2_STREAM_ERROR等)で失敗するケースを確認しており、
+ * これはTLS拒否と同様「ブラウザ経由(mode: screenshot)なら通る」典型ケースのためconnection扱いにする。
+ */
+function isHttp2ErrorCode(code: string): boolean {
+  return code.startsWith("ERR_HTTP2_");
+}
+
+function classifyNetworkErrorCode(code: string): NetworkErrorKind | null {
+  if (DNS_ERROR_CODES.has(code)) return "dns";
+  if (isTlsErrorCode(code)) return "tls";
+  if (CONNECTION_ERROR_CODES.has(code) || isHttp2ErrorCode(code)) return "connection";
+  return null;
+}
+
+interface CauseChainNode {
+  code?: unknown;
+  message?: unknown;
+  cause?: unknown;
+}
+
+/** Error.cause チェーンを辿ってノード列(自分自身含む)を取り出す(循環/深すぎる場合に備え深さ上限あり)。 */
+function walkCauseChain(error: unknown, maxDepth = 5): CauseChainNode[] {
+  const nodes: CauseChainNode[] = [];
+  let current: unknown = error;
+  for (let i = 0; i < maxDepth && current !== null && typeof current === "object"; i++) {
+    nodes.push(current as CauseChainNode);
+    current = (current as CauseChainNode).cause;
+  }
+  return nodes;
+}
+
+function buildNetworkErrorMessage(url: string, kind: NetworkErrorKind, rawMessage: string): string {
+  const detail = kind === "unknown" ? rawMessage : NETWORK_ERROR_KIND_LABELS[kind];
+  const hint = kind === "tls" || kind === "connection" ? NETWORK_ERROR_SCREENSHOT_HINT : "";
+  return `接続に失敗しました(${detail}): ${url}${hint}`;
+}
+
+/**
+ * ネットワークレベルの接続失敗(DNS解決失敗/TLSハンドシェイク拒否/接続拒否等)。
+ * undiciがfetch失敗時に生成する `TypeError: fetch failed` は原因(cause)チェーンの奥に
+ * 実際のNode/OpenSSLエラーコードを持つため、それを辿って分類する(fromCause参照)。
+ */
+export class NetworkError extends AmenboError {
+  readonly code = "NETWORK_ERROR";
+
+  private constructor(
+    readonly url: string,
+    readonly kind: NetworkErrorKind,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+
+  /** fetch失敗時のcause(生のTypeError等)からdns/tls/connection/unknownを分類して生成する。 */
+  static fromCause(url: string, cause: unknown): NetworkError {
+    const nodes = walkCauseChain(cause);
+
+    for (const node of nodes) {
+      if (typeof node.code === "string") {
+        const kind = classifyNetworkErrorCode(node.code);
+        if (kind) {
+          return new NetworkError(url, kind, buildNetworkErrorMessage(url, kind, node.code), { cause });
+        }
+      }
+    }
+
+    // unknown分類時は原因チェーンの最も奥(最も具体的な原因)のメッセージを優先して保持する
+    const deepestMessage = [...nodes]
+      .reverse()
+      .map((node) => node.message)
+      .find((message): message is string => typeof message === "string");
+    const rawMessage = deepestMessage ?? String(cause);
+    return new NetworkError(url, "unknown", buildNetworkErrorMessage(url, "unknown", rawMessage), { cause });
+  }
+}
+
 /** ダウンロード対象(PDF等)がサイズ上限を超えている。 */
 export class PayloadTooLargeError extends AmenboError {
   readonly code = "PAYLOAD_TOO_LARGE";
