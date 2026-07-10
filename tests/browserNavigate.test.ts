@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { InvalidUrlError, PrivateAddressError } from "../src/errors.js";
-import { navigateSafely } from "../src/fetcher/browser.js";
+import { isChromiumHttp2NavigationError, navigateSafely } from "../src/fetcher/browser.js";
 
 /**
  * C1/C2: fetcher/browser.tsのnavigateSafelyは、Playwrightのpage.goto()前後で
@@ -121,5 +121,32 @@ describe("navigateSafely", () => {
     const response = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000);
     expect(response?.status()).toBe(200);
     expect(page.url()).toBe("http://93.184.216.34/c");
+  });
+});
+
+describe("isChromiumHttp2NavigationError(改善キュー対応: システムChromeフォールバック判定)", () => {
+  it("ERR_HTTP2_PROTOCOL_ERRORを含むエラーはtrue", () => {
+    const error = new Error("page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://initial.inc/");
+    expect(isChromiumHttp2NavigationError(error)).toBe(true);
+  });
+
+  it("ERR_HTTP2_接頭辞の別コード(STREAM_ERROR等)も対象に含む", () => {
+    const error = new Error("page.goto: net::ERR_HTTP2_STREAM_ERROR at https://example.com/");
+    expect(isChromiumHttp2NavigationError(error)).toBe(true);
+  });
+
+  it("接続拒否等の一般的なネットワークエラーはfalse(Chromeフォールバックの対象外)", () => {
+    const error = new Error("page.goto: net::ERR_CONNECTION_REFUSED at https://example.com/");
+    expect(isChromiumHttp2NavigationError(error)).toBe(false);
+  });
+
+  it("タイムアウトエラーはfalse", () => {
+    const error = new Error("page.goto: Timeout 15000ms exceeded.");
+    expect(isChromiumHttp2NavigationError(error)).toBe(false);
+  });
+
+  it("Error以外の値はfalse", () => {
+    expect(isChromiumHttp2NavigationError("not an error")).toBe(false);
+    expect(isChromiumHttp2NavigationError(null)).toBe(false);
   });
 });

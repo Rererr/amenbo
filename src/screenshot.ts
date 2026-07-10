@@ -8,7 +8,7 @@
  * ≒ トークン消費量)を圧縮できるレバーになる。
  */
 import { createCanvas, loadImage } from "@napi-rs/canvas";
-import { getBrowser, hideConsentBanners, navigateSafely } from "./fetcher/browser.js";
+import { hideConsentBanners, openPageAndNavigate } from "./fetcher/browser.js";
 import { USER_AGENT } from "./fetcher/http.js";
 
 export interface TileGeometry {
@@ -91,18 +91,16 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
   const fullPage = options.fullPage ?? true;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const browser = await getBrowser();
-  const context = await browser.newContext({
+  // C1: SSRF/スキーム検証(guardPublicAddress)+リダイレクト再検証込みのナビゲーション。
+  // 改善キュー対応: 同梱ChromiumがERR_HTTP2_PROTOCOL_ERROR系で失敗した場合、システムに
+  // Chromeがあれば1回だけそちらへフォールバックする(openPageAndNavigate参照)。
+  const { context, page } = await openPageAndNavigate(url, timeoutMs, {
     userAgent: USER_AGENT,
     viewport: { width, height: DEFAULT_TILE_HEIGHT },
     deviceScaleFactor: scale,
   });
 
   try {
-    const page = await context.newPage();
-    // C1: SSRF/スキーム検証(guardPublicAddress)+リダイレクト再検証込みのナビゲーション
-    await navigateSafely(page, url, timeoutMs);
-
     // J8: 撮影前にCookie同意バナー/アプリ誘導オーバーレイを隠す(視覚的な妨げを除く)
     await hideConsentBanners(page).catch(() => {
       // ベストエフォート。失敗しても撮影自体は続行する
