@@ -32,6 +32,18 @@ describe("isPrivateOrReservedIp(SSRF対策)", () => {
     expect(isPrivateOrReservedIp("::ffff:127.0.0.1")).toBe(true);
     expect(isPrivateOrReservedIp("::ffff:8.8.8.8")).toBe(false);
   });
+
+  it("IPv4-compatible IPv6(deprecated, ::/96)も埋め込みIPv4側で判定する", () => {
+    // `::127.0.0.1` = ::7f00:1。loopbackを指す埋め込みIPv4なので拒否する。
+    expect(isPrivateOrReservedIp("::127.0.0.1")).toBe(true);
+    expect(isPrivateOrReservedIp("::169.254.169.254")).toBe(true);
+  });
+
+  it("NAT64 well-known prefix(64:ff9b::/96)も埋め込みIPv4側で判定する", () => {
+    expect(isPrivateOrReservedIp("64:ff9b::7f00:1")).toBe(true); // 127.0.0.1
+    expect(isPrivateOrReservedIp("64:ff9b::a9fe:a9fe")).toBe(true); // 169.254.169.254
+    expect(isPrivateOrReservedIp("64:ff9b::808:808")).toBe(false); // 8.8.8.8(公開)
+  });
 });
 
 describe("guardPublicAddress(C1: browser.ts/screenshot.tsが共通利用するスキーム+アドレス検証)", () => {

@@ -29,12 +29,30 @@ interface FakeRequest {
 
 class FakePage {
   readonly redirects = new Map<string, string>();
+  /** ページ読み込み中に発生するサブフレーム/サブリソースのリクエスト(route handlerへ通す)。 */
+  readonly subRequests: FakeRequest[] = [];
+  /** 各サブリクエストがhandlerでcontinue/abortのどちらになったか。 */
+  readonly subRequestOutcomes: Array<{ url: string; outcome: "continue" | "abort" }> = [];
   private handler: RouteHandler | null = null;
   private readonly mainFrameSentinel = { id: "main-frame" };
   private finalUrl = "";
 
   mainFrame(): unknown {
     return this.mainFrameSentinel;
+  }
+
+  private async dispatchSubRequests(): Promise<void> {
+    for (const request of this.subRequests) {
+      let aborted = false;
+      const route: FakeRoute = {
+        abort: async () => {
+          aborted = true;
+        },
+        continue: async () => {},
+      };
+      if (this.handler) await this.handler(route, request);
+      this.subRequestOutcomes.push({ url: request.url(), outcome: aborted ? "abort" : "continue" });
+    }
   }
 
   async route(_pattern: string, handler: RouteHandler): Promise<void> {
@@ -72,6 +90,7 @@ class FakePage {
       const next = this.redirects.get(currentUrl);
       if (!next) {
         this.finalUrl = currentUrl;
+        await this.dispatchSubRequests();
         return { status: () => 200 };
       }
       currentUrl = next;
@@ -111,6 +130,57 @@ describe("navigateSafely", () => {
     page.redirects.set("http://93.184.216.34/", "http://127.0.0.1/admin");
 
     await expect(navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/", 5000)).rejects.toThrow(PrivateAddressError);
+  });
+
+  const subFrameNav = (url: string): FakeRequest => ({
+    url: () => url,
+    isNavigationRequest: () => true,
+    frame: () => ({ id: "sub-frame" }),
+  });
+  const subResource = (url: string): FakeRequest => ({
+    url: () => url,
+    isNavigationRequest: () => false,
+    frame: () => ({ id: "sub-frame" }),
+  });
+
+  it("SSRF: privateアドレスへのサブフレーム(iframe)遷移はページ全体を失敗させずに該当リクエストのみabortする", async () => {
+    const page = new FakePage();
+    // 攻撃者ページが <iframe src=http://169.254.169.254/...> を埋め込み、スクリーンショットに
+    // 内部情報を写し込もうとするケースを模す。iframeのナビゲーションは遮断されるが、
+    // メインページの取得(goto)自体は成功する。
+    page.subRequests.push(subFrameNav("http://169.254.169.254/latest/meta-data/"));
+
+    const response = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/", 5000);
+    expect(response?.status()).toBe(200);
+    expect(page.subRequestOutcomes).toEqual([{ url: "http://169.254.169.254/latest/meta-data/", outcome: "abort" }]);
+  });
+
+  it("SSRF: privateアドレスへのサブリソース(no-cors fetch/img等)はabortされる", async () => {
+    const page = new FakePage();
+    page.subRequests.push(subResource("http://127.0.0.1:8080/admin/delete"));
+
+    await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/", 5000);
+    expect(page.subRequestOutcomes).toEqual([{ url: "http://127.0.0.1:8080/admin/delete", outcome: "abort" }]);
+  });
+
+  it("SSRF: サブリソースのfile:スキームはabortされる", async () => {
+    const page = new FakePage();
+    page.subRequests.push(subResource("file:///etc/passwd"));
+
+    await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/", 5000);
+    expect(page.subRequestOutcomes).toEqual([{ url: "file:///etc/passwd", outcome: "abort" }]);
+  });
+
+  it("data:/公開ホストのサブリソースは許可される(インライン画像や正当な外部リソースを壊さない)", async () => {
+    const page = new FakePage();
+    page.subRequests.push(subResource("data:image/png;base64,iVBORw0KGgo="));
+    page.subRequests.push(subResource("http://93.184.216.34/style.css"));
+
+    await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/", 5000);
+    expect(page.subRequestOutcomes).toEqual([
+      { url: "data:image/png;base64,iVBORw0KGgo=", outcome: "continue" },
+      { url: "http://93.184.216.34/style.css", outcome: "continue" },
+    ]);
   });
 
   it("複数ホップの正常なリダイレクトは最終的に許可される", async () => {
