@@ -12,6 +12,7 @@
  * ツール登録・エラーラッピング・stdioトランスポート接続のみを担当する。
  * politeness/cacheのシングルトンやツールハンドラの実処理はcore.ts(CLIと共有)にある。
  */
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -120,9 +121,12 @@ export async function runServer(): Promise<void> {
  * このモジュールが直接実行された(node dist/server.js / tsx src/server.ts / binエントリ経由)場合のみ
  * trueを返す。テスト(vitest)がformatHandoffResponse等のユニットテストのためにこのファイルを
  * importした際、stdioトランスポート接続(runServer())が誤って走ってテストプロセスがハングするのを防ぐ。
+ *
+ * npm/npx経由の実行ではprocess.argv[1]がnode_modules/.bin配下のシンボリックリンクのパスになる一方、
+ * fileURLToPath(import.meta.url)はリンクを解決した実体パスになるため、realpathSyncで両者を揃えてから比較する。
  */
 function isDirectlyExecuted(): boolean {
-  return typeof process.argv[1] === "string" && fileURLToPath(import.meta.url) === process.argv[1];
+  return typeof process.argv[1] === "string" && fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
 }
 
 if (isDirectlyExecuted()) {
