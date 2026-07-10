@@ -1,0 +1,87 @@
+[
+  {
+    "tool": "mcp-server-fetch",
+    "id": "zenn",
+    "url": "https://zenn.dev/avaintelligence/articles/b7d4743a448485",
+    "ok": true,
+    "ms": 3951,
+    "textTokens": 2627,
+    "images": 0,
+    "head": "Contents of https://zenn.dev/avaintelligence/articles/b7d4743a448485:\n## はじめに\n\nAI x 旅行アプリのアバトラベル（[iOS](https://apps.apple.com/jp/app/%E3%82%A2%E3%83%90%E3%83%88%E3%83%A9%E3%83%99%E3%83%AB-%E6%B5%B7%E5%A4%96%E6%97%85%E8%A1%8C%E8%A8%88%E7%94%BB-%E6%97%85%E3%81%AE%E3%81%97%E3%81%8A%E3%82%8A-ai%E6%97%85%E8%A1%8C%E3%82%A2%E3%83%97%E3%83%AA/id6470335943) / [Android](https://play.google.com/store/apps/de",
+    "tableRows": 14,
+    "codeBlocks": 4
+  },
+  {
+    "tool": "mcp-server-fetch",
+    "id": "wiki",
+    "url": "https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7",
+    "ok": true,
+    "ms": 2240,
+    "textTokens": 2078,
+    "images": 0,
+    "head": "Contents of https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7:\n出典: フリー百科事典『ウィキペディア（Wikipedia）』\n\n[![](//upload.wikimedia.org/wikipedia/commons/thumb/9/9f/2020_Japan_Census_population_prefectures.svg/250px-2020_Japan_Census_population_prefectures.svg.png)](//ja.wikipedia.org/wiki/ファイル:2020_Japan_Census_population_prefectures.svg)\n\n2020年（令",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "mcp-server-fetch",
+    "id": "aozora",
+    "url": "https://www.aozora.gr.jp/cards/000148/files/789_14547.html",
+    "ok": true,
+    "ms": 7448,
+    "textTokens": 1400,
+    "images": 0,
+    "head": "Contents of https://www.aozora.gr.jp/cards/000148/files/789_14547.html:\n#### ��\n\n�@��y�i�킪�͂��j�͔L�ł���B���O�͂܂������B  \n�@�ǂ��Ő��ꂽ���Ƃ�������i����Ƃ��j�����ʁB���ł����Â����߂��߂������Ńj���[�j���[�����Ă����������͋L�����Ă���B��y�͂����Ŏn�߂Đl�ԂƂ������̂������B���������Ƃŕ����Ƃ���͏����Ƃ����l�Ԓ��ň���ֈ��i�ǂ������j�Ȏ푰�ł������������B���̏����Ƃ����͎̂��X��X�����i�����j�������i���j�ĐH���Ƃ����b�ł���B���������̓���",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "mcp-server-fetch",
+    "id": "gov",
+    "url": "https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html",
+    "ok": true,
+    "ms": 923,
+    "textTokens": 519,
+    "images": 0,
+    "head": "Contents of https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html:\n官民データ活用推進基本法（平成28年法律第103号）において、国及び地方公共団体はオープンデータに取り組むことが義務付けられました。オープンデータへの取組により、国民参加・官民協働の推進を通じた諸課題の解決、経済活性化、行政の高度化・効率化等が期待されています。\n\n※オープンデータとは  \n１　営利目的、非営利目的を問わず二次利用可能なルールが適用されたもの  \n２　機械判読に適したもの  \n３　無償で利用できるもの\n\nこれを受け、介護サービス情報公表システムの介護サービス事業所データを、csvファイルとして提供しています。  \n（提供時期：毎年6月末時点、12月末時点）\n\n【参照】[オープンデータ（デジタル庁）](https://www.digital.",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "mcp-server-fetch",
+    "id": "pdf",
+    "url": "https://www.mhlw.go.jp/content/000778218.pdf",
+    "ok": true,
+    "ms": 429,
+    "textTokens": 1329,
+    "images": 0,
+    "head": "Content type application/pdf cannot be simplified to markdown, but here is the raw content:\nContents of https://www.mhlw.go.jp/content/000778218.pdf:\n%PDF-1.7\r\n%����\r\n1 0 obj\r\n<</Type/Catalog/Pages 2 0 R/Lang(ja-JP) /StructTreeRoot 26 0 R/Outlines 24 0 R/MarkInfo<</Marked true>>/Metadata 604 0 R/ViewerPreferences 605 0 R>>\r\nendobj\r\n2 0 obj\r\n<</Type/Pages/Count 1/Kids[ 3 0 R] >>\r\nendobj\r\n3 0 obj\r\n<",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "mcp-server-fetch",
+    "id": "csv",
+    "url": "https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv",
+    "ok": true,
+    "ms": 1090,
+    "textTokens": 2669,
+    "images": 0,
+    "head": "Content type text/csv cannot be simplified to markdown, but here is the raw content:\nContents of https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv:\n﻿都道府県コード又は市町村コード,No,都道府県名,市区町村名,事業所名,事業所名カナ,サービスの種類,住所,方書（ビル名等）,緯度,経度,電話番号,FAX番号,法人番号,法人の名称,事業所番号,利用可能曜日,利用可能曜日特記事項,定員,URL,高齢者の方と障害者の方が同時一体的に利用できるサービス,介護保険の通常の指定基準を満たしている,障害福祉の通常の指定基準を満たしている,備考\r\n011011,0170101950,北海道,札幌市中央区,訪問介護事業所　心輪,ホウモンカイゴジギョ",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "mcp-server-fetch",
+    "id": "err",
+    "url": "https://initial.inc/",
+    "ok": false,
+    "ms": 5113,
+    "textTokens": 20,
+    "images": 0,
+    "head": "Failed to fetch robots.txt https://initial.inc/robots.txt due to a connection issue\n",
+    "tableRows": 0,
+    "codeBlocks": 0,
+    "error": "Failed to fetch robots.txt https://initial.inc/robots.txt due to a connection issue\n"
+  }
+]
