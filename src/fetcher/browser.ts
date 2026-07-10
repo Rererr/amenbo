@@ -4,7 +4,16 @@
  * 二段フェッチ(fetcher/index.ts)でSPAと判定された場合のみ起動する遅延初期化。
  * プロセス終了シグナルでクリーンアップする。
  */
-import { chromium, type Browser, type Page, type Request, type Response as PlaywrightResponse, type Route } from "playwright";
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type BrowserContextOptions,
+  type Page,
+  type Request,
+  type Response as PlaywrightResponse,
+  type Route,
+} from "playwright";
 import { AmenboError, BrowserLaunchError, FetchTimeoutError, InvalidUrlError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { guardPublicAddress, USER_AGENT } from "./http.js";
@@ -14,7 +23,28 @@ export type { PageGeometrySnapshot } from "../extract/geometry.js";
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 let browserPromise: Promise<Browser> | null = null;
+// 改善キュー対応: 同梱Chromium(Playwrightがpinするビルド)がERR_HTTP2_PROTOCOL_ERROR系で
+// ナビゲーションに失敗するサイト(実機確認: initial.inc)向けのフォールバック専用インスタンス。
+// 低負荷優先の設計原則に従い、実際にフォールバックが発生するまでは起動しない(遅延初期化)。
+let systemChromeBrowserPromise: Promise<Browser> | null = null;
+// code-reviewer指摘: システムChromeの実行ファイル自体が存在しない(未インストール)場合、
+// HTTP2エラーが起きる度に無駄なlaunch試行(失敗が確定しているのに毎回レイテンシを払う)を
+// 繰り返さないよう、プロセス寿命内で「無い」と分かった事実をキャッシュする。
+// (launch失敗が実行ファイル不在以外の理由の場合はキャッシュせず、以後も再試行を許す。)
+let systemChromeExecutableMissing = false;
 let cleanupRegistered = false;
+
+/**
+ * Playwrightがchannel指定の実行ファイルを見つけられない場合に投げるエラーメッセージ
+ * ("Chromium distribution 'chrome' is not found at ...")のパターン。この場合のみ
+ * systemChromeExecutableMissingへ恒久的にキャッシュする(それ以外の起動失敗は一時的な
+ * 可能性があるため、次回のHTTP2エラー発生時に再試行を許す)。
+ */
+const CHROME_EXECUTABLE_MISSING_PATTERN = /is not found/i;
+
+function isMissingExecutableError(error: unknown): boolean {
+  return error instanceof Error && CHROME_EXECUTABLE_MISSING_PATTERN.test(error.message);
+}
 
 /**
  * M2: 以前はcleanup内でclose後にprocess.exit()を呼んでおらず、chromium起動後は
@@ -46,17 +76,49 @@ export async function getBrowser(): Promise<Browser> {
   return browserPromise;
 }
 
-/** 共有chromiumインスタンスを終了する(プロセス終了時・テストのクリーンアップ用)。 */
-export async function closeBrowser(): Promise<void> {
-  if (!browserPromise) return;
-  const promise = browserPromise;
-  browserPromise = null;
+/**
+ * システムにインストール済みのGoogle Chrome(channel: "chrome")を遅延起動する。
+ * 同梱Chromiumのpage.goto()がERR_HTTP2_PROTOCOL_ERROR系で失敗した場合のみ呼ばれる想定
+ * (isChromiumHttp2NavigationError参照)。未インストール環境ではchromium.launch自体が
+ * 失敗するため、呼び出し元(openPageAndNavigate)でcatchし元のエラーへフォールスルーする。
+ * 実行ファイル不在と判明した場合はプロセス寿命内でキャッシュし、以後は起動を試みない
+ * (毎回のlaunch失敗レイテンシを避ける)。
+ */
+async function getSystemChromeBrowser(): Promise<Browser> {
+  if (systemChromeExecutableMissing) {
+    throw new BrowserLaunchError("システムのGoogle Chromeが見つかりません(未インストールと判明済みのため再試行しません)");
+  }
+
+  if (!systemChromeBrowserPromise) {
+    registerCleanupHandlers();
+    systemChromeBrowserPromise = chromium.launch({ headless: true, channel: "chrome" }).catch((cause: unknown) => {
+      systemChromeBrowserPromise = null;
+      if (isMissingExecutableError(cause)) {
+        systemChromeExecutableMissing = true;
+      }
+      throw new BrowserLaunchError("システムのGoogle Chromeの起動に失敗しました", { cause });
+    });
+  }
+  return systemChromeBrowserPromise;
+}
+
+async function closeBrowserPromise(promise: Promise<Browser> | null): Promise<void> {
+  if (!promise) return;
   try {
     const browser = await promise;
     await browser.close();
   } catch {
     // 起動に失敗していた場合等は無視(既にクローズ済み/未起動)
   }
+}
+
+/** 共有chromium/システムChromeインスタンスを終了する(プロセス終了時・テストのクリーンアップ用)。 */
+export async function closeBrowser(): Promise<void> {
+  const primary = browserPromise;
+  const systemChrome = systemChromeBrowserPromise;
+  browserPromise = null;
+  systemChromeBrowserPromise = null;
+  await Promise.all([closeBrowserPromise(primary), closeBrowserPromise(systemChrome)]);
 }
 
 export interface BrowserFetchResult {
@@ -234,13 +296,86 @@ export async function navigateSafely(page: Page, url: string, timeoutMs: number)
   }
 }
 
+// ---- 改善キュー対応: 同梱ChromiumのHTTP/2非互換に対するシステムChromeフォールバック ----
+
+const HTTP2_NAVIGATION_ERROR_PATTERN = /ERR_HTTP2_/;
+
+/**
+ * page.goto()の失敗が、ERR_HTTP2_PROTOCOL_ERROR系(実機検証: initial.inc等でPlaywright
+ * pinビルドのChromiumのみ発生し、素のcurl --http2やシステムのGoogle Chromeでは成功する
+ * ブラウザビルド固有のHTTP/2非互換)かどうかを判定する。この場合のみシステムChromeへの
+ * フォールバックを試みる(接続拒否/タイムアウト等の一般的なネットワークエラーは対象外。
+ * 常時Chrome起動という追加コストを、明確にビルド固有と分かっているケース以外では払わない)。
+ */
+export function isChromiumHttp2NavigationError(error: unknown): boolean {
+  return error instanceof Error && HTTP2_NAVIGATION_ERROR_PATTERN.test(error.message);
+}
+
+export interface BrowserNavigation {
+  context: BrowserContext;
+  page: Page;
+  response: PlaywrightResponse | null;
+}
+
+/**
+ * 共有chromiumでcontext/pageを作りnavigateSafelyでナビゲーションする。ERR_HTTP2_PROTOCOL_ERROR系
+ * で失敗した場合のみ、システムのGoogle Chromeへ1回だけフォールバックする。
+ *
+ * フォールバックが行われないケース(元のエラーをそのまま投げ、呼び出し元の既存の
+ * エラー分類・メッセージ生成をそのまま活かす):
+ *   - HTTP2以外のエラー(接続拒否/タイムアウト等)
+ *   - システムにChromeが無くgetSystemChromeBrowser自体が失敗した場合
+ * Chromeでの再試行も失敗した場合は、そちらのエラー(Chrome経由での実際の失敗内容)を投げる。
+ */
+export async function openPageAndNavigate(
+  url: string,
+  timeoutMs: number,
+  contextOptions: BrowserContextOptions = {},
+): Promise<BrowserNavigation> {
+  const primaryBrowser = await getBrowser();
+  const primaryContext = await primaryBrowser.newContext(contextOptions);
+  try {
+    const page = await primaryContext.newPage();
+    const response = await navigateSafely(page, url, timeoutMs);
+    return { context: primaryContext, page, response };
+  } catch (primaryError) {
+    await primaryContext.close().catch(() => {});
+    if (!isChromiumHttp2NavigationError(primaryError)) throw primaryError;
+
+    let chromeBrowser: Browser;
+    try {
+      chromeBrowser = await getSystemChromeBrowser();
+    } catch {
+      // システムChrome未インストール等: 元のエラー(分類済みメッセージ)にフォールスルーする
+      throw primaryError;
+    }
+
+    let chromeContext: BrowserContext;
+    try {
+      chromeContext = await chromeBrowser.newContext(contextOptions);
+    } catch {
+      // code-reviewer指摘: newContext自体をtry内に含める。前回のフォールバック使用後に
+      // システムChromeが切断されていた場合等、newContextが素の例外を投げうるため、
+      // getSystemChromeBrowser失敗時と同様に元のエラー(分類済みメッセージ)へ
+      // フォールスルーする(Chrome側の生の例外で覆い隠さない)。
+      throw primaryError;
+    }
+
+    try {
+      const page = await chromeContext.newPage();
+      const response = await navigateSafely(page, url, timeoutMs);
+      return { context: chromeContext, page, response };
+    } catch (fallbackError) {
+      await chromeContext.close().catch(() => {});
+      throw fallbackError;
+    }
+  }
+}
+
 /** Playwrightでページをレンダリングし、レンダリング後のHTMLを取得する。 */
 export async function fetchWithBrowser(url: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<BrowserFetchResult> {
-  const browser = await getBrowser();
-  const context = await browser.newContext({ userAgent: USER_AGENT });
+  const { context, page, response } = await openPageAndNavigate(url, timeoutMs, { userAgent: USER_AGENT });
   try {
-    const page = await context.newPage();
-    const response = await navigateSafely(page, url, timeoutMs);
     await hideConsentBanners(page).catch(() => {
       // ページ評価に失敗しても取得自体は継続する(ベストエフォート)
     });

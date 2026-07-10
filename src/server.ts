@@ -55,7 +55,9 @@ function resolveCacheTtlMs(): number | undefined {
 }
 
 const cacheTtlMs = resolveCacheTtlMs();
-const politeness = new PolitenessManager();
+// テスト用export(既存スタイルに合わせた最小のテスト可能化。code-reviewer指摘:
+// politeness.guardの呼び出し回数をテストで検証するため、spyOn対象として参照できる必要がある)。
+export const politeness = new PolitenessManager();
 const cache = new PageCache(cacheTtlMs !== undefined ? { ttlMs: cacheTtlMs } : {});
 
 // M2: cache.close()は同期処理なので'exit'イベント(非同期処理を待てない)内でも安全に呼べる。
@@ -338,6 +340,13 @@ interface ResolveScreenshotOptions {
   fullPage: boolean;
   width: number;
   scale: number;
+  /**
+   * code-reviewer指摘: handleFetchTool冒頭で全mode共通のpoliteness.guard(input.url)を
+   * 既に実行済みの経路(fetchツールのmode: screenshot/mode: auto→screenshot切替)から
+   * 呼ぶ場合にtrueを指定し、resolveScreenshot内の二重guard(min_interval二重待機)を
+   * 省略する。screenshotツール単体(事前guard無し)は既定false(guardを実行する)のまま。
+   */
+  skipGuard?: boolean;
 }
 
 /**
@@ -361,8 +370,11 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
   // このあとcaptureTiledScreenshot内のnavigateSafelyでも検証するが、それより前段で
   // クリーンな型付きエラーとして早期に弾く)。
   assertHttpScheme(url);
-  // 実URLへの独立したブラウザ遷移が発生するため、markdown抽出時とは別にpolitenessの順番待ちを行う
-  await politeness.guard(url);
+  // 実URLへの独立したブラウザ遷移が発生するため、markdown抽出時とは別にpolitenessの順番待ちを行う。
+  // ただし呼び出し元(handleFetchTool)で既にguard済みの場合はskipGuardで二重待機を避ける。
+  if (!options.skipGuard) {
+    await politeness.guard(url);
+  }
 
   const cacheKey = computeScreenshotCacheKey(url, options.width, options.scale, options.fullPage);
   const cached = cache.getScreenshot(cacheKey);
@@ -673,7 +685,8 @@ interface FetchToolInput {
   force_full?: boolean | undefined;
 }
 
-async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock | ImageBlock>> {
+// テスト用export(既存スタイルに合わせた最小のテスト可能化。politeness.guard呼び出し回数の検証用)。
+export async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock | ImageBlock>> {
   const mode = input.mode ?? "auto";
   const page = input.page ?? DEFAULT_PAGE;
   const maxTokens = input.max_tokens ?? DEFAULT_MAX_TOKENS;
@@ -685,6 +698,22 @@ async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock |
 
   if (looksLikePdf(input.url, null)) {
     return handlePdfFetch(input.url, page, maxTokens);
+  }
+
+  // 公開品質バグ修正: mode: screenshot(section未指定時)はMarkdown抽出結果を一切使わないため、
+  // resolvePage(素のHTTP GETを含む二段フェッチ)を経由せずブラウザへ直行する。
+  // 素のHTTPクライアントを拒否しブラウザは許可するサイト(例: initial.inc)に対して、
+  // 「screenshotで再試行すると通る場合があります」というエラー提案がscreenshotモード自身の
+  // HTTP前段GET失敗で行き止まりになっていた回帰の修正。screenshotツール本体は元々この経路を
+  // 通らずブラウザ直行だったため、fetchツールのmode: screenshotもそれと同じ経路に揃える。
+  if (mode === "screenshot" && !input.section) {
+    const screenshot = await resolveScreenshot(input.url, {
+      fullPage: true,
+      width: DEFAULT_TILE_WIDTH,
+      scale: DEFAULT_SCREENSHOT_SCALE,
+      skipGuard: true, // 直前でこの関数冒頭のpoliteness.guard(input.url)を既に実行済み
+    });
+    return buildScreenshotContent({ title: null }, screenshot, null);
   }
 
   const resolvedOrHandoff = await resolvePage(input.url, input.selector);
@@ -720,14 +749,22 @@ async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock |
     return [{ type: "text", text: formatOutlineResponse(view, outline, templateRemovedCount) }];
   }
 
-  const wantsScreenshot = mode === "screenshot" || (mode === "auto" && resolved.lowQuality);
-  if (wantsScreenshot) {
-    const screenshot = await resolveScreenshot(resolved.finalUrl, {
+  // mode: screenshot(section未指定)はここに到達する前に早期returnしているため、
+  // ここでのscreenshot切替はmode: autoの品質判定のみが対象になる。
+  //
+  // code-reviewer指摘: 以前はここでresolved.finalUrl(resolvePageのHTTPフェッチが辿った
+  // リダイレクト後のURL)を渡しており、上のmode: screenshot早期return(input.urlを渡す)
+  // とキャッシュキーの元になるURLが食い違っていた。リダイレクトのあるURLでは同一ページが
+  // 二重に撮影・保存されてしまうため、両経路で必ずinput.urlを渡すよう統一する
+  // (resolveScreenshot自身のブラウザナビゲーションが同じリダイレクトを辿るため実害は無い)。
+  if (mode === "auto" && resolved.lowQuality) {
+    const screenshot = await resolveScreenshot(input.url, {
       fullPage: true,
       width: DEFAULT_TILE_WIDTH,
       scale: DEFAULT_SCREENSHOT_SCALE,
+      skipGuard: true, // この関数冒頭のpoliteness.guard(input.url)を既に実行済み
     });
-    return buildScreenshotContent(resolved, screenshot, mode === "screenshot" ? null : resolved.qualityReason);
+    return buildScreenshotContent(resolved, screenshot, resolved.qualityReason);
   }
 
   // §3-3 差分応答: selector無し・force_full無し・新規フェッチ(cacheStatus==='miss')かつ旧キャッシュがある場合のみ
@@ -808,6 +845,25 @@ server.registerTool(
   },
 );
 
+interface ScreenshotToolInput {
+  url: string;
+  fullPage?: boolean | undefined;
+  width?: number | undefined;
+  scale?: number | undefined;
+}
+
+// テスト用export(既存スタイルに合わせた最小のテスト可能化。politeness.guard呼び出し回数の検証用)。
+// 独立screenshotツールは(fetchツールのmode: screenshot早期returnと異なり)事前guardを
+// 行わないため、resolveScreenshot自身が既定でguardする(skipGuard未指定)。
+export async function handleScreenshotTool(input: ScreenshotToolInput): Promise<Array<TextBlock | ImageBlock>> {
+  const screenshot = await resolveScreenshot(input.url, {
+    fullPage: input.fullPage ?? true,
+    width: input.width ?? DEFAULT_TILE_WIDTH,
+    scale: input.scale ?? DEFAULT_SCREENSHOT_SCALE,
+  });
+  return buildScreenshotContent({ title: null }, screenshot, null);
+}
+
 server.registerTool(
   "screenshot",
   {
@@ -822,12 +878,8 @@ server.registerTool(
   },
   async ({ url, fullPage, width, scale }) => {
     try {
-      const screenshot = await resolveScreenshot(url, {
-        fullPage: fullPage ?? true,
-        width: width ?? DEFAULT_TILE_WIDTH,
-        scale: scale ?? DEFAULT_SCREENSHOT_SCALE,
-      });
-      return { content: buildScreenshotContent({ title: null }, screenshot, null) };
+      const content = await handleScreenshotTool({ url, fullPage, width, scale });
+      return { content };
     } catch (error) {
       const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
       if (!(error instanceof AmenboError)) {
