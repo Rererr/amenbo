@@ -1,0 +1,87 @@
+[
+  {
+    "tool": "amenbo",
+    "id": "zenn",
+    "url": "https://zenn.dev/avaintelligence/articles/b7d4743a448485",
+    "ok": true,
+    "ms": 319,
+    "textTokens": 4679,
+    "images": 0,
+    "head": "title: APIもDBも東京なのに、全クエリが太平洋横断していた話\nurl: https://zenn.dev/avaintelligence/articles/b7d4743a448485\nmode_used: markdown\ncache: miss\ntokens: 4414\npage: 1 of 1\nfetch_tier: http\npruned_blocks: 2\nadapter: zenn\n\n## [](#%E3%81%AF%E3%81%98%E3%82%81%E3%81%AB)はじめに\n\nAI x 旅行アプリのアバトラベル([iOS](https://apps.apple.com/jp/app/%E3%82%A2%E3%83%90%E3%83%88%E3%83%A9%E3%83%99%E3%83%AB-%E6%B5%B7%E5%A4%96%E6%97%85%E8%A1%8C",
+    "tableRows": 24,
+    "codeBlocks": 5
+  },
+  {
+    "tool": "amenbo",
+    "id": "wiki",
+    "url": "https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7",
+    "ok": true,
+    "ms": 7081,
+    "textTokens": 100,
+    "images": 10,
+    "head": "title: 都道府県の人口一覧 - Wikipedia\nurl: https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7\nmode_used: screenshot\ncache: miss\nreason: 表/canvas/svgの要素占有率が高いです(0.36 > 0.3)\ntiles: 10\npage_size: 1280x21821\nfetch_tier: browser\ntruncated: true(MAX_TILES枚を超えるため切り捨てました)\n",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "amenbo",
+    "id": "aozora",
+    "url": "https://www.aozora.gr.jp/cards/000148/files/789_14547.html",
+    "ok": true,
+    "ms": 2588,
+    "textTokens": 7992,
+    "images": 0,
+    "head": "title: 吾輩は猫である\nurl: https://www.aozora.gr.jp/cards/000148/files/789_14547.html\nmode_used: markdown\ncache: miss\ntokens: 7947\npage: 1 of 25\nfetch_tier: http\npruned_blocks: 0\n\n#### 一\n\n吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて人間というものを見た。しかもあとで聞くとそれは書生という人間中で一番獰悪な種族であったそうだ。この書生というのは時々我々を捕えて煮て食うという話である。しかしその当時は何という考もなかったから別段恐しいとも思わなかった。ただ彼の掌に載せられてスーと持ち上げられた時何だかフワフワした",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "amenbo",
+    "id": "gov",
+    "url": "https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html",
+    "ok": true,
+    "ms": 3878,
+    "textTokens": 98,
+    "images": 10,
+    "head": "title: 介護サービスの情報公表システム　オープンデータ｜厚生労働省\nurl: https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html\nmode_used: screenshot\ncache: miss\nreason: 抽出テキスト密度が低いです(0.00 < 0.6)\ntiles: 10\npage_size: 1280x10893\nfetch_tier: browser\ntruncated: true(MAX_TILES枚を超えるため切り捨てました)\n",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "amenbo",
+    "id": "pdf",
+    "url": "https://www.mhlw.go.jp/content/000778218.pdf",
+    "ok": true,
+    "ms": 355,
+    "textTokens": 810,
+    "images": 0,
+    "head": "title: (なし)\nurl: https://www.mhlw.go.jp/content/000778218.pdf\nmode_used: markdown\ncache: miss\ntokens: 775\npage: 1 of 1\nfetch_tier: pdf\npdf_pages: 1\n\n## ページ 1\n\n※補足給付は、原 則、 世帯 全 員（ 世 帯 を分 離し て い る 配偶 者を 含 みま す） が 市 町村 民 税非 課 税の 方 が対 象 です。居住費に要する平均的な費用の額（基準費用額）についても、 60円（日額）引き上がります。第 １ 段 階 第 2 段 階 第 3 段 階 ① ・ ②介護保険施設（介護老人福祉施設、介護老人保健施設、介護医療院）やショートステイを利用する方の食費・居住費については、低所得の方への補助 （ 補 足 給 付 ） を行っています。近年の",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "amenbo",
+    "id": "csv",
+    "url": "https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv",
+    "ok": true,
+    "ms": 739,
+    "textTokens": 909,
+    "images": 0,
+    "head": "content_type: text/csv\nsize: 3909630\nurl: https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv\nmode_used: handoff\n\n都道府県コード又は市町村コード,No,都道府県名,市区町村名,事業所名,事業所名カナ,サービスの種類,住所,方書（ビル名等）,緯度,経度,電話番号,FAX番号,法人番号,法人の名称,事業所番号,利用可能曜日,利用可能曜日特記事項,定員,URL,高齢者の方と障害者の方が同時一体的に利用できるサービス,介護保険の通常の指定基準を満たしている,障害福祉の通常の指定基準を満たしている,備考\n011011,0170101950,北海道,札幌市中央区,訪問介護事業所　心輪,ホウモンカイゴジギョウショ　シンワ,訪問介護,札幌市中央区南14条西1丁目2-22,,43.04",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "amenbo",
+    "id": "err",
+    "url": "https://initial.inc/",
+    "ok": false,
+    "ms": 318,
+    "textTokens": 72,
+    "images": 0,
+    "head": "接続に失敗しました(接続拒否/リセット): https://initial.inc/ — サイト側がボットアクセスを遮断している可能性があります。mode: screenshot(ブラウザ経由)で再試行すると通る場合があります\n",
+    "tableRows": 0,
+    "codeBlocks": 0,
+    "error": "接続に失敗しました(接続拒否/リセット): https://initial.inc/ — サイト側がボットアクセスを遮断している可能性があります。mode: screenshot(ブラウザ経由)で再試行すると通る場合があります\n"
+  }
+]

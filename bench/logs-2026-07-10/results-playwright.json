@@ -1,0 +1,86 @@
+[
+  {
+    "tool": "playwright-mcp",
+    "id": "zenn",
+    "url": "https://zenn.dev/avaintelligence/articles/b7d4743a448485",
+    "ok": true,
+    "ms": 6524,
+    "textTokens": 119,
+    "images": 0,
+    "head": "### Ran Playwright code\n```js\nawait page.goto('https://zenn.dev/avaintelligence/articles/b7d4743a448485');\n```\n### Page\n- Page URL: https://zenn.dev/avaintelligence/articles/b7d4743a448485\n- Page Title: APIもDBも東京なのに、全クエリが太平洋横断していた話\n- Console: 1 errors, 0 warnings\n### Snapshot\n- [Snapshot](.playwright-mcp/page-2026-07-10T01-19-54-693Z.yml)\n### Events\n- New console entries: .playwright-mcp/console-2",
+    "tableRows": 0,
+    "codeBlocks": 1
+  },
+  {
+    "tool": "playwright-mcp",
+    "id": "wiki",
+    "url": "https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7",
+    "ok": true,
+    "ms": 2303,
+    "textTokens": 138,
+    "images": 0,
+    "head": "### Ran Playwright code\n```js\nawait page.goto('https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7');\n```\n### Page\n- Page URL: https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7\n- Page Title: 都道府県の人口一覧 - Wikipedia\n- Console: 0 errors, 3 warnings\n### Snapshot\n- [Snapshot](.playwr",
+    "tableRows": 0,
+    "codeBlocks": 1
+  },
+  {
+    "tool": "playwright-mcp",
+    "id": "aozora",
+    "url": "https://www.aozora.gr.jp/cards/000148/files/789_14547.html",
+    "ok": true,
+    "ms": 2871,
+    "textTokens": 80,
+    "images": 0,
+    "head": "### Ran Playwright code\n```js\nawait page.goto('https://www.aozora.gr.jp/cards/000148/files/789_14547.html');\n```\n### Page\n- Page URL: https://www.aozora.gr.jp/cards/000148/files/789_14547.html\n- Page Title: 夏目漱石 吾輩は猫である\n### Snapshot\n- [Snapshot](.playwright-mcp/page-2026-07-10T01-19-59-867Z.yml)\n",
+    "tableRows": 0,
+    "codeBlocks": 1
+  },
+  {
+    "tool": "playwright-mcp",
+    "id": "gov",
+    "url": "https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html",
+    "ok": true,
+    "ms": 665,
+    "textTokens": 93,
+    "images": 0,
+    "head": "### Ran Playwright code\n```js\nawait page.goto('https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html');\n```\n### Page\n- Page URL: https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html\n- Page Title: 介護サービスの情報公表システム　オープンデータ｜厚生労働省\n### Snapshot\n- [Snapshot](.playwright-mcp/page-2026-07-10T01-20-00-534Z.yml)\n",
+    "tableRows": 0,
+    "codeBlocks": 1
+  },
+  {
+    "tool": "playwright-mcp",
+    "id": "pdf",
+    "url": "https://www.mhlw.go.jp/content/000778218.pdf",
+    "ok": true,
+    "ms": 190,
+    "textTokens": 59,
+    "images": 0,
+    "head": "### Ran Playwright code\n```js\nawait page.goto('https://www.mhlw.go.jp/content/000778218.pdf');\n```\n### Page\n- Page URL: https://www.mhlw.go.jp/content/000778218.pdf\n### Snapshot\n- [Snapshot](.playwright-mcp/page-2026-07-10T01-20-00-725Z.yml)\n",
+    "tableRows": 0,
+    "codeBlocks": 1
+  },
+  {
+    "tool": "playwright-mcp",
+    "id": "csv",
+    "url": "https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv",
+    "ok": true,
+    "ms": 571,
+    "textTokens": 74,
+    "images": 0,
+    "head": "### Ran Playwright code\n```js\nawait page.goto('https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv');\n```\n### Page\n- Page URL: https://www.mhlw.go.jp/content/000778218.pdf\n### Snapshot\n- [Snapshot](.playwright-mcp/page-2026-07-10T01-20-01-296Z.yml)\n### Events\n- Downloading file jigyosho_110.csv ...\n",
+    "tableRows": 0,
+    "codeBlocks": 1
+  },
+  {
+    "tool": "playwright-mcp",
+    "id": "err",
+    "url": "https://initial.inc/",
+    "ok": true,
+    "ms": 2179,
+    "textTokens": 113,
+    "images": 0,
+    "head": "### Ran Playwright code\n```js\nawait page.goto('https://initial.inc/');\n```\n### Page\n- Page URL: https://initial.inc/\n- Page Title: スピーダ スタートアップ情報リサーチ\n- Console: 27 errors, 1 warnings\n### Snapshot\n- [Snapshot](.playwright-mcp/page-2026-07-10T01-20-03-475Z.yml)\n### Events\n- New console entries: .playwright-mcp/console-2026-07-10T01-20-01-298Z.log#L1-L220\n- Downloaded file jigyosho_110.csv to \".playw",
+    "tableRows": 0,
+    "codeBlocks": 1
+  }
+]

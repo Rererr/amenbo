@@ -1,0 +1,79 @@
+[
+  {
+    "tool": "pixelshot",
+    "id": "zenn",
+    "url": "https://zenn.dev/avaintelligence/articles/b7d4743a448485",
+    "ok": true,
+    "ms": 6112,
+    "images": 10,
+    "visionTokens": 11462,
+    "bytes": 1172533,
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-1l973K"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "wiki",
+    "url": "https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7",
+    "ok": true,
+    "ms": 6652,
+    "images": 1,
+    "visionTokens": 1178,
+    "bytes": 204569,
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-z55fYn"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "aozora",
+    "url": "https://www.aozora.gr.jp/cards/000148/files/789_14547.html",
+    "ok": true,
+    "ms": 17896,
+    "images": 221,
+    "visionTokens": 263819,
+    "bytes": 60925063,
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-QawSck"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "gov",
+    "url": "https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html",
+    "ok": true,
+    "ms": 5221,
+    "images": 12,
+    "visionTokens": 13355,
+    "bytes": 1977925,
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-ZLiUon"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "pdf",
+    "url": "https://www.mhlw.go.jp/content/000778218.pdf",
+    "ok": true,
+    "ms": 4277,
+    "images": 1,
+    "visionTokens": 2,
+    "bytes": 847,
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-Wa5QJt"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "csv",
+    "url": "https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv",
+    "ok": true,
+    "ms": 4125,
+    "images": 1,
+    "visionTokens": 1186,
+    "bytes": 14707,
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-yOrKaL"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "err",
+    "url": "https://initial.inc/",
+    "ok": true,
+    "ms": 4074,
+    "images": 1,
+    "visionTokens": 536,
+    "bytes": 18595,
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-zcu6Lp"
+  }
+]
