@@ -1,6 +1,6 @@
 {
   "name": "amenbo",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "mcpName": "io.github.Rererr/amenbo",
   "description": "Skims the web without making waves — a Japanese-web-native MCP server for low-impact, token-efficient web collection",
   "type": "module",
