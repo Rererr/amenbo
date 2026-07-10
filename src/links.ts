@@ -9,7 +9,7 @@
  * が指すRSS/Atomフィード → 最終手段としてページ内の<a>リンク抽出。
  */
 import { parseHTML } from "linkedom";
-import { HttpStatusError, PrivateAddressError, RobotsDeniedError } from "./errors.js";
+import { HttpStatusError, PrivateAddressError, RobotsDeniedError, UnsupportedContentError } from "./errors.js";
 import { fetchPage } from "./fetcher/index.js";
 import { assertHttpScheme, httpGet } from "./fetcher/http.js";
 import type { PolitenessManager } from "./politeness.js";
@@ -170,7 +170,8 @@ async function tryParseFeed(feedUrl: string, politeness: PolitenessManager, time
   return null;
 }
 
-function extractPageLinks(html: string, baseUrl: string): LinkEntry[] {
+/** ページ内の&lt;a href&gt;リンクを抽出する(機能C: extract/dataSources.tsからも再利用される)。 */
+export function extractPageLinks(html: string, baseUrl: string): LinkEntry[] {
   const { document } = parseHTML(html);
   const anchors = Array.from(document.querySelectorAll("a[href]"));
   const seen = new Set<string>();
@@ -242,6 +243,12 @@ export async function discoverLinks(url: string, politeness: PolitenessManager, 
   const pageResult = await fetchPage(url, { timeoutMs });
   if ("notModified" in pageResult) {
     return finalize("page", [], options.filter);
+  }
+  // 機能B: 非HTMLコンテンツはハンドオフ応答(fetchツール向け)の対象であり、linksツールでは
+  // DOMが無くリンク抽出できない。以前のfetchPage(HTML以外はUnsupportedContentError)と
+  // 同じ挙動を維持する(linksツールの応答形式は変えない)。
+  if ("handoff" in pageResult) {
+    throw new UnsupportedContentError(pageResult.finalUrl, pageResult.contentType ?? "(不明)");
   }
 
   const { document } = parseHTML(pageResult.html);

@@ -274,6 +274,28 @@ describe("discoverLinks - 公開品質バグ修正: 非http(s)スキームはrob
   });
 });
 
+describe("discoverLinks - 機能B: fetchPageがハンドオフ(非HTML)を返した場合", () => {
+  it("DOMが無くリンク抽出できないため、UnsupportedContentErrorを投げる(既存挙動を維持)", async () => {
+    const { UnsupportedContentError } = await import("../src/errors.js");
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return notFound();
+      if (url === "http://example.com/sitemap.xml") return notFound();
+      throw new Error(`unexpected url: ${url}`);
+    });
+    fetchPageMock.mockResolvedValue({
+      handoff: true,
+      finalUrl: "http://example.com/data.csv",
+      status: 200,
+      contentType: "text/csv",
+      bytes: new Uint8Array([1, 2, 3]),
+      declaredSize: 3,
+      truncated: false,
+    });
+
+    await expect(discoverLinks("http://example.com/data.csv", makePoliteness())).rejects.toThrow(UnsupportedContentError);
+  });
+});
+
 describe("discoverLinks - M5: AmenboErrorは握りつぶさず再送出する", () => {
   it("宣言されたsitemap URL自体がrobots.txtで拒否されている場合、RobotsDeniedErrorを再送出する(ページ内リンクへ黙ってフォールバックしない)", async () => {
     httpGetMock.mockImplementation(async (url: string) => {
