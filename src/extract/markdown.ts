@@ -27,6 +27,7 @@ import { findAdapter } from "../adapters/index.js";
 import { ExtractionError } from "../errors.js";
 import { normalizeCjkText, stripRubyAnnotations } from "../jp/normalize.js";
 import { removeConsentBanners, type ConsentBannerHostDocument } from "../jp/consentBanner.js";
+import { estimateTokens } from "../tokens.js";
 import { computeVisualAreaRatio, selectMainContentCluster, type PageGeometrySnapshot } from "./geometry.js";
 import { type QualityScoreInput } from "./qualityScore.js";
 import { pruneLowValueBlocks, type PruneHostElement } from "./pruning.js";
@@ -111,6 +112,7 @@ function collectQualityInput(document: { body: QualityHostElement | null }, geom
       imgCount: 0,
       imgMissingAltCount: 0,
       imgAreaRatio: 0,
+      extractedTokenEstimate: 0,
     };
   }
 
@@ -127,11 +129,20 @@ function collectQualityInput(document: { body: QualityHostElement | null }, geom
   const totalLeafElementCount = body.querySelectorAll(LEAF_ELEMENT_SELECTOR).length;
   const imageStats = collectImageStats(body);
 
-  // Phase 4: ブラウザ昇格時は実ジオメトリから視覚要素占有率を計算し、近似値より優先させる
-  const realVisualAreaRatio =
-    geometry && geometry.pageWidth > 0 && geometry.pageHeight > 0
-      ? computeVisualAreaRatio(geometry.visualElements, geometry.pageWidth, geometry.pageHeight)
-      : undefined;
+  // Phase 4: ブラウザ昇格時は実ジオメトリから視覚要素占有率を計算し、近似値より優先させる。
+  // table要素分の占有率も別途計算し、qualityScore.ts側で表由来分/canvas・svg由来分を
+  // 分離できるようにする(表がGFMテーブルとして正しく抽出できているページの誤判定対策)。
+  const validGeometry = geometry && geometry.pageWidth > 0 && geometry.pageHeight > 0 ? geometry : null;
+  const geometryAreaRatios = validGeometry
+    ? {
+        realVisualAreaRatio: computeVisualAreaRatio(validGeometry.visualElements, validGeometry.pageWidth, validGeometry.pageHeight),
+        realTableAreaRatio: computeVisualAreaRatio(
+          validGeometry.visualElements.filter((el) => el.tag === "table"),
+          validGeometry.pageWidth,
+          validGeometry.pageHeight,
+        ),
+      }
+    : null;
 
   return {
     extractedTextLength: 0, // Markdown生成後に上書きする
@@ -141,7 +152,8 @@ function collectQualityInput(document: { body: QualityHostElement | null }, geom
     svgCount,
     totalLeafElementCount,
     ...imageStats,
-    ...(realVisualAreaRatio !== undefined ? { realVisualAreaRatio } : {}),
+    extractedTokenEstimate: 0, // Markdown生成後に上書きする
+    ...(geometryAreaRatios ?? {}),
   };
 }
 
@@ -273,7 +285,7 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
     title,
     markdown,
     prunedBlockCount,
-    qualityInput: { ...qualityInput, extractedTextLength: markdown.length },
+    qualityInput: { ...qualityInput, extractedTextLength: markdown.length, extractedTokenEstimate: estimateTokens(markdown) },
     adapterName,
     extractionMethod,
   };

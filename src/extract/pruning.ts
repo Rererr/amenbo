@@ -106,15 +106,25 @@ function collectLinkText(element: PruneHostElement): string {
 
 /**
  * DOM上の低価値ブロックを除去する(document.body等をrootに渡す想定)。
- * トップダウンに走査し、除去したブロックの子孫は再帰評価しない。
- * 除去したブロック数を返す。
+ * 常に除去するタグ(nav/aside/footer/header/form)はその場で除去し子孫を再帰評価しない。
+ * それ以外は先に子孫を再帰評価してから自身をスコアリングするボトムアップ走査にする
+ * (ページ全体が単一のラッパーdivに包まれている実サイト構成では、内部のnav/footer等を
+ * 先に除去してからでないとラッパー全体が「リンク密度の高い1ブロック」として誤って
+ * 丸ごと刈られてしまうため。トップダウンのままだと本文まで巻き添えで消える回帰があった)。
+ *
+ * 戻り値は「独立して刈られた部分木の数」。ある要素が最終的に丸ごと除去される場合、
+ * その内部で先に個別除去された子孫(nav/footer等)は既に除去済みの部分木に含まれて
+ * しまっており、外側の除去と二重にカウントすべきではない。そのため子の内部除去数
+ * (descendantPrunedCount)は、その子自身が生き残った場合にのみ合算し、子自身が
+ * 除去された場合は破棄して「1(その子1個の除去)」として数える。
  */
 export function pruneLowValueBlocks(root: PruneHostElement, options: PruneOptions = {}): number {
   const minTextLength = options.minTextLength ?? DEFAULT_MIN_TEXT_LENGTH;
   const scoreThreshold = options.scoreThreshold ?? DEFAULT_SCORE_THRESHOLD;
-  let prunedCount = 0;
 
-  const walk = (element: PruneHostElement): void => {
+  const walk = (element: PruneHostElement): number => {
+    let prunedCount = 0;
+
     for (const child of Array.from(element.children)) {
       const tag = child.tagName;
 
@@ -124,22 +134,29 @@ export function pruneLowValueBlocks(root: PruneHostElement, options: PruneOption
         continue;
       }
 
+      // 先に子孫を刈ってから自身を評価する(ボトムアップ)。子孫のnav/footer等が
+      // 除去された後の「クリーンな」テキスト/リンク密度で自身のスコアを判定するため。
+      const descendantPrunedCount = walk(child);
+
       if (SCORE_CANDIDATE_TAGS.has(tag)) {
         const text = child.textContent ?? "";
         if (text.trim().length >= minTextLength) {
           const stats: BlockTextStats = { text, linkText: collectLinkText(child) };
           if (scoreBlock(stats).score < scoreThreshold) {
             child.remove();
+            // 子自身が丸ごと除去されるため、内部の個別除去数は合算しない(二重カウント回避)。
             prunedCount++;
             continue;
           }
         }
       }
 
-      walk(child);
+      // 子は生き残ったので、その内部で独立して除去されたぶんはそのまま加算する。
+      prunedCount += descendantPrunedCount;
     }
+
+    return prunedCount;
   };
 
-  walk(root);
-  return prunedCount;
+  return walk(root);
 }
