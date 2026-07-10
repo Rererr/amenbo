@@ -13,7 +13,7 @@
  *   共有する。CLIは1コマンド=1プロセスのため、politenessのドメイン毎レート制御は
  *   core.ts側でcacheをstoreとして注入したPolitenessManagerがプロセス間永続化する。
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -382,9 +382,13 @@ export async function run(argv: string[]): Promise<number> {
   }
 }
 
-/** server.tsのisDirectlyExecutedと同様、テストからparseCliArgs等をimportした際にrun()が走らないようにするガード。 */
+/**
+ * server.tsのisDirectlyExecutedと同様、テストからparseCliArgs等をimportした際にrun()が走らないようにするガード。
+ * npm/npx経由の実行ではprocess.argv[1]がnode_modules/.bin配下のシンボリックリンクのパスになるため、
+ * realpathSyncで解決してからfileURLToPath(import.meta.url)と比較する。
+ */
 function isDirectlyExecuted(): boolean {
-  return typeof process.argv[1] === "string" && fileURLToPath(import.meta.url) === process.argv[1];
+  return typeof process.argv[1] === "string" && fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
 }
 
 if (isDirectlyExecuted()) {
