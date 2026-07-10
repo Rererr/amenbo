@@ -8,6 +8,8 @@
 - 「ページをスクショで読む」PixelRAG系のアプローチは、単一ページのライブ閲覧ではMarkdown比**2.4〜33倍**のトークンを消費し、Wikipediaでは寄付バナーが1枚目を占領した
 - 比較調査そのものもamenboで行い、記事10本・約57,000トークン分の本文を約1/10のトークンで読んだ
 
+![3.9MBのCSVを渡したときに各ツールが返すトークン数の比較。amenbo 909に対しJina Readerは4,593,027で約5,000倍](https://raw.githubusercontent.com/Rererr/amenbo/main/docs/images/bench-tokens-csv.png)
+
 計測手順は記事内に、ハーネスと生ログは[リポジトリの `bench/`](https://github.com/Rererr/amenbo/tree/main/bench) にあります。
 
 ## この記事は何
@@ -104,6 +106,8 @@ child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", 
 - **mcp-server-fetch**: 文字化けした1,400トークン（後述）
 - **Jina Reader**: 503エラー
 
+![1.2MBのShift_JIS長文HTMLを渡したときに各ツールが返すトークン数の比較。amenbo 7,992に対しPlaywright MCPは453,263](https://raw.githubusercontent.com/Rererr/amenbo/main/docs/images/bench-tokens-aozora.png)
+
 「1ページの上限が保証されている」ことは、エージェントの安定運用ではトークン総量そのものより効きます。1回の `fetch` が45万トークンを返す可能性があるツールは、コンテキスト管理の前提が立ちません。
 
 ## 結果: 本文抽出品質
@@ -137,6 +141,9 @@ data_sources:
 ### pixelshotのWikipediaで起きたこと
 
 pixelshot（875px幅でレンダリングして固定高さタイルに分割）にWikipediaを渡したところ、返ってきた1枚目のタイルは**画面の大半がWikipediaの寄付バナー**でした。さらにキャプチャがページ高さ1,009pxで完了扱いになり、**肝心の人口一覧表は1行も画像に入っていませんでした**。
+
+![pixelshotが返したWikipediaの1枚目のタイル。画面の大半を寄付バナーが占め、記事タイトルが最下部に見えるだけで人口一覧表は含まれていない](https://raw.githubusercontent.com/Rererr/amenbo/main/docs/images/pixelshot-wiki-tile1.jpg)
+*pixelshotが返した唯一のタイル（無加工）。このタイルでキャプチャは完了扱いになる。*
 
 これはpixelshotの実装バグというより、「見たままを切り取る」アプローチの構造的な弱点です。人間向けの画面には、本文以外の視覚要素（バナー・追従ヘッダ・クッキー同意）が大量に混ざります。PixelRAGの論文自身も、固定高さで表や段落が分断される「visual chunking」を未解決課題として挙げています。テキスト抽出には20年分の資産（Readability系）がありますが、視覚チャンキングはまだこれからです。
 
