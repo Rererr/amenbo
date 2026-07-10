@@ -1,6 +1,6 @@
 # 競合比較ベンチ(2026-07-10)
 
-docs/article-draft.md(比較記事)の実測に使ったハーネスと生ログ。
+記事「[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)」の実測に使ったハーネスと生ログ。草案は docs/article-draft.md。
 
 ## 使い方
 
