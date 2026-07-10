@@ -1,5 +1,7 @@
 # amenbo 🐜💧
 
+[English](./README.en.md) | 日本語
+
 **Skims the web without making waves** — a Japanese-web-native MCP server for low-impact, token-efficient web collection.
 
 amenbo(アメンボ / water strider)は、Claude Code や Codex のようなコーディングエージェント向けの [MCP](https://modelcontextprotocol.io) サーバーです。水面に波を立てずに滑る虫のように、**収集先に負荷をかけず、少ないトークンで** Web から情報を集めます。とりわけ**日本語サイト**に最適化しています。MCP クライアントを持たないシェル環境からは、同じコアを共有する CLI としても使えます([CLIとして使う](#cliとして使う)参照)。

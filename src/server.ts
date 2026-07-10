@@ -46,6 +46,10 @@ server.registerTool(
       max_tokens: z.number().int().positive().optional().describe("1ページの概算トークン上限(既定8000)"),
       force_full: z.boolean().optional().describe("既定false。trueで差分応答(unchanged/diff)と定型ブロック除去を無効化し常に全文を返す"),
     },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
   },
   async ({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull }) => {
     try {
@@ -69,6 +73,10 @@ server.registerTool(
     inputSchema: {
       url: z.string().url().describe("起点URL"),
       filter: z.string().optional().describe("URL/リンクテキストの部分一致、または*を使ったglob"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: true,
     },
   },
   async ({ url, filter }) => {
@@ -95,6 +103,10 @@ server.registerTool(
       fullPage: z.boolean().optional().describe("既定true。falseの場合は最初のビューポート分(1タイル)のみ撮影する"),
       width: z.number().int().positive().optional().describe("タイル幅(px)。既定1280"),
       scale: z.number().min(0.5).max(1.0).optional().describe("解像度スケール(0.5〜1.0、既定1.0)。小さいほど画像サイズ(トークン)が減る"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: true,
     },
   },
   async ({ url, fullPage, width, scale }) => {
