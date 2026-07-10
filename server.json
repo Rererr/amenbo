@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.rererr/amenbo",
-  "description": "Skims the web without making waves — a Japanese-web-native MCP server for low-impact, token-efficient web collection",
+  "name": "io.github.Rererr/amenbo",
+  "description": "Japanese-web-native MCP server for low-impact, token-efficient web collection",
   "repository": {
     "url": "https://github.com/Rererr/amenbo",
     "source": "github"
   },
-  "version": "0.1.3",
+  "version": "0.1.4",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "amenbo",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "transport": {
         "type": "stdio"
       }
