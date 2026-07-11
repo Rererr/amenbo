@@ -38,6 +38,17 @@ function main() {
     entries.push({ label: "git tag", version: tagVersion });
   }
 
+  // code-reviewer指摘: package.json/server.json双方でversionキーが欠落すると
+  // entries.map((e) => e.version) が全てundefinedになり、Setのサイズが1のまま
+  // 「一致している」と誤って成功してしまう。各エントリが非空文字列であることを
+  // 先に検証し、欠落していれば「どのファイルのどのフィールドが欠落か」を明示して失敗させる。
+  const missing = entries.filter((e) => typeof e.version !== "string" || e.version.trim().length === 0);
+  if (missing.length > 0) {
+    const detail = missing.map((e) => `  - ${e.label}: バージョンが欠落しています(値: ${JSON.stringify(e.version)})`).join("\n");
+    console.error(`バージョンフィールドの欠落を検出しました:\n${detail}`);
+    process.exit(1);
+  }
+
   const versions = new Set(entries.map((e) => e.version));
   if (versions.size > 1) {
     const detail = entries.map((e) => `  - ${e.label}: ${e.version}`).join("\n");

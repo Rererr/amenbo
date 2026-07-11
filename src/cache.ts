@@ -22,6 +22,11 @@
  * 最終リクエスト時刻を永続化し、PolitenessManagerのstoreオプションとして注入することで
  * MCPサーバー/CLIの複数プロセス間で共有する(再起動直後の連続アクセスも守れる副次効果あり)。
  * journal_mode=WAL は複数プロセスからの同時アクセスを想定して設定している。
+ *
+ * node:sqliteの制約: better-sqlite3はNumber.MAX_SAFE_INTEGERを超えるINTEGER列を読むと
+ * 例外を投げたが、node:sqliteは黙ってbigintを返す(上流の挙動差)。本ファイルの整数列
+ * (fetched_at/last_request_at)は全てDate.now()由来でMAX_SAFE_INTEGERを超えないため、
+ * number型へのキャストのみで安全に扱える。
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";

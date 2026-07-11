@@ -106,9 +106,10 @@ server.registerTool(
       openWorldHint: true,
     },
   },
-  async ({ url, filter }) => {
+  async ({ url, filter }, extra) => {
     try {
-      const result = await discoverLinks(url, politeness, filter ? { filter } : {});
+      const onProgress = buildProgressNotifier(extra);
+      const result = await discoverLinks(url, politeness, { ...(filter ? { filter } : {}), onProgress });
       return { content: [{ type: "text" as const, text: formatLinksResponse(url, result) }] };
     } catch (error) {
       const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
