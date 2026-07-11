@@ -1,7 +1,9 @@
 # Glama等のコンテナホスティング用イメージ。
 # ベースはplaywright公式イメージ(Chromium本体と依存ライブラリを同梱)。タグのバージョンは
-# package-lock.jsonのplaywrightと一致させること。一致していればpostinstallの
-# `playwright install chromium`はダウンロード済みを検知してno-opになる。
+# package-lock.jsonのplaywrightと一致させること。amenboはpostinstallでChromiumを取得しない
+# (Chromium遅延化。README/`amenbo install-browser`参照)ため、このベースイメージが同梱する
+# Chromiumがそのまま使われる。バージョンが食い違うと同梱ブラウザをplaywrightが認識できない
+# ため、タグ更新時はpackage-lock.jsonのplaywrightバージョンとの一致を維持すること。
 FROM mcr.microsoft.com/playwright:v1.61.1-noble
 
 WORKDIR /app

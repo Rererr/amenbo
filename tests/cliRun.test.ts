@@ -42,6 +42,11 @@ vi.mock("../src/fetcher/browser.js", async (importOriginal) => {
   return { ...actual, closeBrowser: () => closeBrowserMock() };
 });
 
+const installBrowserMock = vi.fn();
+vi.mock("../src/installBrowser.js", () => ({
+  installBrowser: () => installBrowserMock(),
+}));
+
 // core.tsはモジュール読み込み時にPageCacheを既定のキャッシュディレクトリに生成する副作用を持つ
 // (上のvi.mockはimportOriginal()経由で実core.tsを一度読み込むため、この副作用は避けられない)。
 // 実ユーザーのキャッシュを汚さないよう一時ディレクトリへ退避してからimportする。
@@ -70,6 +75,7 @@ beforeEach(() => {
   runServerMock.mockReset();
   closeBrowserMock.mockReset().mockResolvedValue(undefined);
   cacheCloseMock.mockReset();
+  installBrowserMock.mockReset();
 });
 
 afterEach(() => {
@@ -154,6 +160,25 @@ describe("run() - CLIサブコマンドの主要経路", () => {
     expect(writtenChunks).toContain("https://example.com/a");
     expect(closeBrowserMock).toHaveBeenCalledTimes(1);
     expect(cacheCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("install-browserコマンドはinstallBrowser()を呼び、その終了コードをそのまま返す", async () => {
+    installBrowserMock.mockResolvedValue(0);
+
+    const exitCode = await run(["install-browser"]);
+
+    expect(exitCode).toBe(0);
+    expect(installBrowserMock).toHaveBeenCalledTimes(1);
+    expect(closeBrowserMock).toHaveBeenCalledTimes(1);
+    expect(cacheCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("install-browserが非0終了した場合はその終了コードをそのまま返す", async () => {
+    installBrowserMock.mockResolvedValue(1);
+
+    const exitCode = await run(["install-browser"]);
+
+    expect(exitCode).toBe(1);
   });
 
   it("serveコマンド(引数なし)はrunServerを呼び、closeBrowser/cache.closeは呼ばない(プロセス継続のため)", async () => {

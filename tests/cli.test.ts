@@ -134,6 +134,24 @@ describe("parseCliArgs", () => {
     });
   });
 
+  describe("install-browser", () => {
+    it("引数なしはinstall-browserと判定する", () => {
+      expect(parseCliArgs(["install-browser"])).toEqual({ kind: "install-browser" });
+    });
+
+    it("install-browser --helpはhelp(topic: install-browser)と判定する", () => {
+      expect(parseCliArgs(["install-browser", "--help"])).toEqual({ kind: "help", topic: "install-browser" });
+    });
+
+    it("不明な位置引数はCliUsageErrorを投げる", () => {
+      expect(() => parseCliArgs(["install-browser", "chromium"])).toThrow(CliUsageError);
+    });
+
+    it("不明なオプションはCliUsageErrorを投げる", () => {
+      expect(() => parseCliArgs(["install-browser", "--bogus-flag"])).toThrow(CliUsageError);
+    });
+  });
+
   describe("screenshot", () => {
     it("URLのみを解析する(fullPage既定なのでviewportOnlyは付与しない)", () => {
       expect(parseCliArgs(["screenshot", "https://example.com/"])).toEqual({
