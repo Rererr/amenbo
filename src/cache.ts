@@ -127,6 +127,7 @@ export class PageCache {
   private readonly cacheDir: string;
   private readonly ttlMs: number;
   private readonly now: () => number;
+  private closed = false;
 
   constructor(options: { dbPath?: string; cacheDir?: string; ttlMs?: number; now?: () => number } = {}) {
     this.cacheDir = options.cacheDir ?? resolveCacheDir();
@@ -380,7 +381,14 @@ export class PageCache {
       .run({ host, lastRequestAt: at });
   }
 
+  /**
+   * 冪等なclose。better-sqlite3のclose()は閉鎖済みでも安全だったが、node:sqliteは
+   * "database is not open" を投げるため、CLIのfinallyとprocess 'exit'ハンドラの両方から
+   * 呼ばれる二重close経路(core.ts参照)を自前のフラグで吸収する。
+   */
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.db.close();
   }
 }
