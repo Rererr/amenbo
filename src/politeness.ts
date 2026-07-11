@@ -94,10 +94,13 @@ export class PolitenessManager {
     this.store = options.store;
   }
 
-  /** robots.txtとレート制御の両方を確認し、アクセス可能になるまで待機する。拒否時はRobotsDeniedErrorを投げる。 */
-  async guard(url: string): Promise<void> {
+  /**
+   * robots.txtとレート制御の両方を確認し、アクセス可能になるまで待機する。拒否時はRobotsDeniedErrorを投げる。
+   * onProgress: MCP progress notifications用。実際に待機が発生する場合のみ呼ばれる(待機0の場合は呼ばれない)。
+   */
+  async guard(url: string, onProgress?: ((message: string) => void) | undefined): Promise<void> {
     await this.checkRobotsAllowed(url);
-    await this.waitTurn(url);
+    await this.waitTurn(url, onProgress);
   }
 
   /** robots.txtのみ確認する(waitTurnは行わない)。 */
@@ -119,8 +122,9 @@ export class PolitenessManager {
    * 直列キュー(locks)による直列化はプロセス内のみ有効。store(PolitenessStore)経由の
    * プロセス間共有はread-modify-writeがアトミックではないベストエフォート(PolitenessStoreの
    * JSDoc参照)。
+   * onProgress: 実際にsleepが発生する場合のみ呼ばれる(待機0のときは呼ばれない)。
    */
-  async waitTurn(url: string): Promise<void> {
+  async waitTurn(url: string, onProgress?: ((message: string) => void) | undefined): Promise<void> {
     this.pruneStaleHostState();
     const host = new URL(url).host;
     const crawlDelayMs = await this.getCrawlDelayMs(url);
@@ -144,6 +148,7 @@ export class PolitenessManager {
       const lastAt = Math.max(memoryLastAt, storeLastAt);
       const elapsed = this.now() - lastAt;
       if (elapsed < intervalMs) {
+        onProgress?.("アクセス間隔を確保するため待機しています…");
         await this.sleep(intervalMs - elapsed);
       }
       const requestAt = this.now();

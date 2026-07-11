@@ -91,6 +91,8 @@ function detectSpaSignals(html: string): { escalate: boolean; reason: string | n
 export interface FetchPageOptions extends HttpGetOptions {
   /** trueの場合、SPA判定を行わず常にブラウザで取得する(将来のmode指定等で利用)。 */
   forceBrowser?: boolean;
+  /** MCP progress notifications用。headlessブラウザへ昇格する直前にのみ呼ばれる。 */
+  onProgress?: ((message: string) => void) | undefined;
 }
 
 /** 二段フェッチ本体。条件付きGETでstatus 304が返った場合はNotModifiedResultを返す。 */
@@ -136,6 +138,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
     };
   }
 
+  options.onProgress?.("ブラウザで再取得しています…");
   const browserResult = await fetchWithBrowser(routed.finalUrl, options.timeoutMs);
   return {
     finalUrl: browserResult.finalUrl,
