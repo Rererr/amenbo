@@ -52,13 +52,22 @@ function proxyHttpGet(proxyPort: number, absoluteUrl: string): Promise<{ status:
   });
 }
 
-/** proxyへCONNECTし、確立できたトンネルSocketを返す(非2xxはrejectする)。 */
+/**
+ * proxyへCONNECTし、確立できたトンネルSocketを返す(非2xxはrejectする)。
+ * 200応答ヘッダと同一TCPセグメントで先行到着したトンネルデータはhead引数に入り、
+ * 以後のdataイベントには流れない(CIランナーでは書き込みが合体しやすく恒常的に発生する)ため、
+ * unshiftでソケットの読み取りバッファへ戻してから返す。
+ */
 function proxyConnect(proxyPort: number, hostPort: string): Promise<Socket> {
   return new Promise((resolve, reject) => {
     const req = httpRequest({ host: "127.0.0.1", port: proxyPort, method: "CONNECT", path: hostPort });
-    req.on("connect", (res, socket) => {
-      if (res.statusCode === 200) resolve(socket as Socket);
-      else reject(new Error(`CONNECT status ${res.statusCode}`));
+    req.on("connect", (res, socket, head) => {
+      if (res.statusCode !== 200) {
+        reject(new Error(`CONNECT status ${res.statusCode}`));
+        return;
+      }
+      if (head.length > 0) socket.unshift(head);
+      resolve(socket as Socket);
     });
     req.on("error", reject);
     req.end();
