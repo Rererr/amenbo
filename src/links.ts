@@ -93,10 +93,11 @@ async function tryParseSitemap(
   politeness: PolitenessManager,
   timeoutMs: number,
   depth = 0,
+  onProgress?: ((message: string) => void) | undefined,
 ): Promise<LinkEntry[] | null> {
   let document: XmlLikeDocument;
   try {
-    await politeness.guard(sitemapUrl);
+    await politeness.guard(sitemapUrl, onProgress);
     document = await fetchXml(sitemapUrl, timeoutMs);
   } catch (error) {
     if (isFallbackBlockingError(error)) throw error;
@@ -115,7 +116,7 @@ async function tryParseSitemap(
     for (const loc of childLocs.slice(0, MAX_SITEMAP_CHILDREN)) {
       const childUrl = loc.textContent.trim();
       if (!childUrl) continue;
-      const childLinks = await tryParseSitemap(childUrl, politeness, timeoutMs, depth + 1);
+      const childLinks = await tryParseSitemap(childUrl, politeness, timeoutMs, depth + 1, onProgress);
       if (childLinks) results.push(...childLinks);
       if (results.length >= MAX_LINKS) break;
     }
@@ -127,10 +128,15 @@ async function tryParseSitemap(
   return urlLocs.map((loc) => ({ url: loc.textContent.trim(), title: null })).filter((entry) => entry.url.length > 0);
 }
 
-async function tryParseFeed(feedUrl: string, politeness: PolitenessManager, timeoutMs: number): Promise<LinkEntry[] | null> {
+async function tryParseFeed(
+  feedUrl: string,
+  politeness: PolitenessManager,
+  timeoutMs: number,
+  onProgress?: ((message: string) => void) | undefined,
+): Promise<LinkEntry[] | null> {
   let document: XmlLikeDocument;
   try {
-    await politeness.guard(feedUrl);
+    await politeness.guard(feedUrl, onProgress);
     // RSS 2.0の<link>はHTMLパーサにvoid要素として扱われるためリネームして回避する(下記コメント参照)
     document = await fetchXml(feedUrl, timeoutMs, escapeRssLinkTag);
   } catch (error) {
@@ -217,6 +223,12 @@ function finalize(source: LinkSource, links: LinkEntry[], filter: string | undef
 export interface DiscoverLinksOptions {
   filter?: string;
   timeoutMs?: number;
+  /**
+   * MCP progress notifications用。sitemapindexの子sitemap再帰・フィード取得を含め
+   * politeness待機が複数回発生しうる経路のため、累積待機が最も長引きうる。
+   * server.tsがprogressToken有無に応じて組み立てて渡す(CLIは渡さない=未指定で後方互換)。
+   */
+  onProgress?: ((message: string) => void) | undefined;
 }
 
 /** URLからリンク一覧を発見する。sitemap → RSS/Atom → ページ内リンクの優先順で試す。 */
@@ -232,14 +244,14 @@ export async function discoverLinks(url: string, politeness: PolitenessManager, 
   const declaredSitemaps = await politeness.getSitemaps(url);
   const candidateSitemaps = declaredSitemaps.length > 0 ? declaredSitemaps : [`${origin}/sitemap.xml`];
   for (const sitemapUrl of candidateSitemaps) {
-    const links = await tryParseSitemap(sitemapUrl, politeness, timeoutMs);
+    const links = await tryParseSitemap(sitemapUrl, politeness, timeoutMs, 0, options.onProgress);
     if (links && links.length > 0) {
       return finalize("sitemap", links, options.filter);
     }
   }
 
   // 2. ページを取得し、<link rel=alternate>が指すRSS/Atomフィードを試す
-  await politeness.guard(url);
+  await politeness.guard(url, options.onProgress);
   const pageResult = await fetchPage(url, { timeoutMs });
   if ("notModified" in pageResult) {
     return finalize("page", [], options.filter);
@@ -258,7 +270,7 @@ export async function discoverLinks(url: string, politeness: PolitenessManager, 
   const feedHref = feedLinkEl?.getAttribute("href");
   if (feedHref) {
     const feedUrl = new URL(feedHref, pageResult.finalUrl).toString();
-    const feedLinks = await tryParseFeed(feedUrl, politeness, timeoutMs);
+    const feedLinks = await tryParseFeed(feedUrl, politeness, timeoutMs, options.onProgress);
     if (feedLinks && feedLinks.length > 0) {
       return finalize("rss", feedLinks, options.filter);
     }

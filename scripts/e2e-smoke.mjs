@@ -71,8 +71,11 @@ const CASES = [
   },
   {
     id: "robots-txt-handoff",
-    // 注意: wwwなしのkaigokensaku.mhlw.go.jpはDNS解決不可(実機確認済み)。www付きが正。
-    url: "https://www.kaigokensaku.mhlw.go.jp/robots.txt",
+    // code-reviewer指摘: 以前はmhlw.go.jp系(kaigokensaku)を使っており、csv-handoffケースと
+    // 合わせてmhlw.go.jpに2件集中していた(1ドメインのWAFブロックでCI全体が落ちるリスク集中)。
+    // qiita.com/robots.txtがtext/plainハンドオフになることをdist/server.js直叩きで実証済み
+    // (2026-07-11)。4ケースが4ドメイン(wikipedia/aozora/qiita/mhlw)に分散するよう変更した。
+    url: "https://qiita.com/robots.txt",
     check: (text) => text.includes("mode_used: handoff") || "ハンドオフ応答になっていない(mode_used: handoffなし)",
   },
   {
