@@ -59,7 +59,7 @@ export const cache = new PageCache(cacheTtlMs !== undefined ? { ttlMs: cacheTtlM
 // code-reviewer指摘: MCPサーバー単体運用時(CLIを使わない場合)でも、このstore注入により
 // waitTurn毎にSQLite I/O(host_requestsの読み取り+書き込み)が発生する。CLIとの
 // プロセス間共有が不要な単一プロセス運用ではインメモリのlastRequestAtだけで十分だったところに、
-// 常時わずかなディスクI/Oコストを払うトレードオフになる(better-sqlite3は同期I/Oで
+// 常時わずかなディスクI/Oコストを払うトレードオフになる(node:sqliteも同期I/Oで
 // 小さな1行read/writeのため実測上は無視できるレベルだが、"低負荷優先"の設計原則上は
 // 意図的なトレードオフとして明記しておく)。
 export const politeness = new PolitenessManager({

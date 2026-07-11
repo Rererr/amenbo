@@ -8,8 +8,8 @@
  * 無効化されており、`page.goto(pdfUrl)`は描画されずダウンロード扱いになることを実機検証で
  * 確認した(`<embed type="application/pdf">`経由でも "Couldn't load plugin" となり失敗)。
  * そのためPDFページの画像化にはPlaywrightを使わず、pdfjs-dist(パース・描画)+
- * @napi-rs/canvas(cairo等のシステム依存が無いprebuiltネイティブモジュール。
- * better-sqlite3と同様の配布容易性)を組み合わせる。
+ * @napi-rs/canvas(cairo等のシステム依存が無いprebuiltネイティブモジュール)を
+ * 組み合わせる。
  */
 import { createCanvas } from "@napi-rs/canvas";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
