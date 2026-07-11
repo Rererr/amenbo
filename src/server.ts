@@ -60,17 +60,17 @@ server.registerTool(
   {
     title: "Fetch a web page as Markdown",
     description:
-      "日本語Webページを低負荷・省トークンで取得(robots.txt/レート制御/キャッシュ内蔵)。" +
-      "mode: auto(既定,品質スコアでMarkdown/screenshot自動切替)/markdown/outline(見出し要約)/screenshot。" +
-      "再取得時はcache: unchanged(無変更)/diff(変更節のみ)で省トークン応答。PDFはURLで自動判定。",
+      "Fetch a web page (Japanese-web-native) as low-impact, token-efficient Markdown. Built-in robots.txt compliance, rate limiting, and caching. " +
+      "mode: auto (default; quality score picks Markdown or screenshot) / markdown / outline (heading summary) / screenshot. " +
+      "Refetching a cached URL returns cache: unchanged, or diff (changed sections only), to save tokens. PDF URLs are handled automatically.",
     inputSchema: {
-      url: z.string().url().describe("取得対象URL(http/httpsのみ。PDFも可)"),
-      mode: z.enum(["auto", "markdown", "outline", "screenshot"]).optional().describe("既定auto"),
-      selector: z.string().optional().describe("本文を絞り込むCSSセレクタ"),
-      section: z.string().optional().describe("outlineで得たsection ID。指定時はその節のMarkdownのみ返す"),
-      page: z.number().int().positive().optional().describe("ページ番号(既定1)"),
-      max_tokens: z.number().int().positive().optional().describe("1ページの概算トークン上限(既定8000)"),
-      force_full: z.boolean().optional().describe("既定false。trueで差分応答(unchanged/diff)と定型ブロック除去を無効化し常に全文を返す"),
+      url: z.string().url().describe("Target URL (http/https only; PDF supported)"),
+      mode: z.enum(["auto", "markdown", "outline", "screenshot"]).optional().describe("Default: auto"),
+      selector: z.string().optional().describe("CSS selector to narrow the content"),
+      section: z.string().optional().describe("Section ID obtained from outline mode; returns only that section's Markdown"),
+      page: z.number().int().positive().optional().describe("Page number (default 1)"),
+      max_tokens: z.number().int().positive().optional().describe("Approximate token budget per page (default 8000)"),
+      force_full: z.boolean().optional().describe("Default false. If true, disables diff responses (unchanged/diff) and boilerplate-block removal, always returning the full content"),
     },
     annotations: {
       readOnlyHint: true,
@@ -96,10 +96,10 @@ server.registerTool(
   "links",
   {
     title: "List links from a page (sitemap/RSS-first)",
-    description: "sitemap.xml/RSS・Atomフィードがあれば優先し、無ければページ内リンクを抽出する低負荷なリンク列挙。",
+    description: "Low-impact link discovery: prefers sitemap.xml / RSS / Atom feeds when available, otherwise extracts in-page links.",
     inputSchema: {
-      url: z.string().url().describe("起点URL"),
-      filter: z.string().optional().describe("URL/リンクテキストの部分一致、または*を使ったglob"),
+      url: z.string().url().describe("Starting URL"),
+      filter: z.string().optional().describe("Substring match against URL/link text, or a glob using *"),
     },
     annotations: {
       readOnlyHint: true,
@@ -125,12 +125,12 @@ server.registerTool(
   "screenshot",
   {
     title: "Capture a tiled screenshot of a web page",
-    description: "明示的な視覚確認用。Playwrightでページをレンダリングし、タイル分割したPNGスクリーンショットを返す。robots.txt/レート制御/キャッシュを内蔵する。",
+    description: "For explicit visual inspection. Renders the page with a headless browser and returns tiled PNG screenshots. Built-in robots.txt compliance, rate limiting, and caching.",
     inputSchema: {
-      url: z.string().url().describe("撮影対象のURL(http/httpsのみ)"),
-      fullPage: z.boolean().optional().describe("既定true。falseの場合は最初のビューポート分(1タイル)のみ撮影する"),
-      width: z.number().int().positive().optional().describe("タイル幅(px)。既定1280"),
-      scale: z.number().min(0.5).max(1.0).optional().describe("解像度スケール(0.5〜1.0、既定1.0)。小さいほど画像サイズ(トークン)が減る"),
+      url: z.string().url().describe("Target URL (http/https only)"),
+      fullPage: z.boolean().optional().describe("Default true. If false, captures only the first viewport (1 tile)"),
+      width: z.number().int().positive().optional().describe("Tile width in px (default 1280)"),
+      scale: z.number().min(0.5).max(1.0).optional().describe("Resolution scale (0.5-1.0, default 1.0); lower reduces image tokens"),
     },
     annotations: {
       readOnlyHint: true,
