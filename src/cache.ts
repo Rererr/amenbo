@@ -1,5 +1,5 @@
 /**
- * cache.ts — better-sqlite3によるURL単位のローカルキャッシュ。
+ * cache.ts — node:sqlite(DatabaseSync)によるURL単位のローカルキャッシュ。
  *
  * 保存場所: $AMENBO_CACHE_DIR または ~/.cache/amenbo/cache.sqlite
  * URL毎にETag/Last-Modified/本文ハッシュ/変換済みMarkdown/取得時刻を保存する。
@@ -27,7 +27,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 
 export type CacheStatus = "fresh" | "revalidated" | "miss";
 export type ScreenshotCacheStatus = "fresh" | "miss";
@@ -118,7 +118,7 @@ export interface ScreenshotWriteInput {
 }
 
 export class PageCache {
-  private readonly db: Database.Database;
+  private readonly db: DatabaseSync;
   private readonly cacheDir: string;
   private readonly ttlMs: number;
   private readonly now: () => number;
@@ -128,10 +128,10 @@ export class PageCache {
     if (!existsSync(this.cacheDir)) {
       mkdirSync(this.cacheDir, { recursive: true });
     }
-    this.db = new Database(options.dbPath ?? join(this.cacheDir, "cache.sqlite"));
+    this.db = new DatabaseSync(options.dbPath ?? join(this.cacheDir, "cache.sqlite"));
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.now = options.now ?? Date.now;
-    this.db.pragma("journal_mode = WAL");
+    this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS pages (
         url TEXT PRIMARY KEY,
@@ -187,7 +187,7 @@ export class PageCache {
     // 無制限増加テーブルという点でdomain_pages等と同じ性質を持つため、他テーブルと一貫させる)。
     this.db.prepare("DELETE FROM host_requests WHERE last_request_at < ?").run(cutoff);
 
-    const expiredScreenshots = this.db.prepare<[number], ScreenshotRow>("SELECT * FROM screenshots WHERE fetched_at < ?").all(cutoff);
+    const expiredScreenshots = this.db.prepare("SELECT * FROM screenshots WHERE fetched_at < ?").all(cutoff) as unknown as ScreenshotRow[];
     for (const row of expiredScreenshots) {
       const tilePaths = JSON.parse(row.tile_paths) as string[];
       for (const filePath of tilePaths) {
@@ -203,7 +203,7 @@ export class PageCache {
 
   /** 保存済みエントリを取得する(TTL判定は行わない。判定は isFresh を使う)。 */
   get(url: string): CacheEntry | undefined {
-    const row = this.db.prepare<[string], PageRow>("SELECT * FROM pages WHERE url = ?").get(url);
+    const row = this.db.prepare("SELECT * FROM pages WHERE url = ?").get(url) as PageRow | undefined;
     if (!row) return undefined;
     return {
       url: row.url,
@@ -223,7 +223,7 @@ export class PageCache {
 
   /** 保存済みスクリーンショットエントリを取得する(TTL判定は isFresh を使う)。 */
   getScreenshot(cacheKey: string): ScreenshotCacheEntry | undefined {
-    const row = this.db.prepare<[string], ScreenshotRow>("SELECT * FROM screenshots WHERE cache_key = ?").get(cacheKey);
+    const row = this.db.prepare("SELECT * FROM screenshots WHERE cache_key = ?").get(cacheKey) as ScreenshotRow | undefined;
     if (!row) return undefined;
     return {
       cacheKey: row.cache_key,
@@ -327,8 +327,8 @@ export class PageCache {
    */
   getTemplateBlockHashes(domain: string, recentPages: number = DEFAULT_TEMPLATE_RECENT_PAGES): Set<string> {
     const rows = this.db
-      .prepare<[string, number], DomainPageRow>("SELECT * FROM domain_pages WHERE domain = ? ORDER BY fetched_at DESC LIMIT ?")
-      .all(domain, recentPages);
+      .prepare("SELECT * FROM domain_pages WHERE domain = ? ORDER BY fetched_at DESC LIMIT ?")
+      .all(domain, recentPages) as unknown as DomainPageRow[];
 
     if (rows.length < recentPages) return new Set();
 
@@ -352,7 +352,7 @@ export class PageCache {
    * PolitenessManagerのstoreオプションとして注入し、プロセス間でレート制御状態を共有するために使う。
    */
   getHostLastRequestAt(host: string): number | null {
-    const row = this.db.prepare<[string], HostRequestRow>("SELECT * FROM host_requests WHERE host = ?").get(host);
+    const row = this.db.prepare("SELECT * FROM host_requests WHERE host = ?").get(host) as HostRequestRow | undefined;
     return row ? row.last_request_at : null;
   }
 

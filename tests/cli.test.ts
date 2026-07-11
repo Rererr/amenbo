@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-// cli.tsはcore.tsをimportし、core.tsはモジュール読み込み時にPageCache(better-sqlite3)を
+// cli.tsはcore.tsをimportし、core.tsはモジュール読み込み時にPageCache(node:sqlite)を
 // 既定のキャッシュディレクトリ(~/.cache/amenbo)に生成する副作用を持つ。他のテストファイルと
 // 同様、テスト用の一時ディレクトリへ退避させてからimportする(実ユーザーのキャッシュを汚さないため)。
 // cli.ts側はisDirectlyExecutedガードによりrun()を直接実行時のみ走らせるため、importしてもハングしない。

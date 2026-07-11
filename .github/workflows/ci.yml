@@ -51,7 +51,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
       # pnpm 10のビルドスクリプトデフォルトブロック(過去実害: better-sqlite3不動作)を
-      # 追加の緩和なしで検出する。package.jsonのpnpm.onlyBuiltDependenciesが効くことの検証を兼ねる。
+      # 追加の緩和なしで検出する。ネイティブビルド依存の再混入をこのデフォルトブロックで検出する。
       - run: pnpm install
       - run: pnpm run build
       - run: node scripts/mcp-init-smoke.mjs

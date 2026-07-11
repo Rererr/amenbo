@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-// core.tsはモジュール読み込み時にPageCache(better-sqlite3)を既定のキャッシュディレクトリ
+// core.tsはモジュール読み込み時にPageCache(node:sqlite)を既定のキャッシュディレクトリ
 // (~/.cache/amenbo)に生成する副作用を持つため、テスト用の一時ディレクトリへ退避させてから
 // importする(実ユーザーのキャッシュを汚さないため)。stdio接続(server.tsのrunServer())は
 // isDirectlyExecutedガードにより直接実行時のみ走るため、core.tsをimportしてもハングしない。
