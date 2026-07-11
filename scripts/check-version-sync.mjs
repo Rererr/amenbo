@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+// package.json / server.json (トップレベル+packages[].version) / (任意で)タグ の版数一致を検証する。
+// リリース時の同期漏れ(v0.6.0全配布実害あり)を機械的に検出するためのゲート。
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+function readJson(relPath) {
+  const abs = join(rootDir, relPath);
+  return JSON.parse(readFileSync(abs, "utf8"));
+}
+
+function parseTagArg(argv) {
+  const idx = argv.indexOf("--tag");
+  if (idx === -1) return null;
+  const raw = argv[idx + 1];
+  if (!raw) {
+    throw new Error("--tag オプションには値が必要です(例: --tag v0.1.5)");
+  }
+  return raw.replace(/^refs\/tags\//, "").replace(/^v/, "");
+}
+
+function main() {
+  const pkg = readJson("package.json");
+  const server = readJson("server.json");
+  const tagVersion = parseTagArg(process.argv.slice(2));
+
+  const entries = [
+    { label: "package.json", version: pkg.version },
+    { label: "server.json (top-level)", version: server.version },
+  ];
+  for (const [i, p] of (server.packages ?? []).entries()) {
+    entries.push({ label: `server.json packages[${i}].version`, version: p.version });
+  }
+  if (tagVersion !== null) {
+    entries.push({ label: "git tag", version: tagVersion });
+  }
+
+  const versions = new Set(entries.map((e) => e.version));
+  if (versions.size > 1) {
+    const detail = entries.map((e) => `  - ${e.label}: ${e.version}`).join("\n");
+    console.error(`バージョン不一致を検出しました:\n${detail}`);
+    process.exit(1);
+  }
+
+  console.log(`OK: 全バージョンが一致しています (${pkg.version})`);
+}
+
+main();
