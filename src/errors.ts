@@ -95,6 +95,24 @@ export class BrowserLaunchError extends AmenboError {
   }
 }
 
+/**
+ * Chromium遅延化(§4)対応: postinstallを廃止したため、`npx -y amenbo install-browser`を
+ * 未実行の環境ではChromiumが存在しない。BrowserLaunchErrorの単なる一種として握り潰さず、
+ * LLM/利用者が次に取るべき行動(install-browserコマンド)を明示するために型を分ける。
+ */
+export class BrowserUnavailableError extends AmenboError {
+  readonly code = "BROWSER_UNAVAILABLE";
+
+  constructor(options?: { cause?: unknown }) {
+    super(
+      "この操作にはChromiumが必要ですが、まだインストールされていません。" +
+        "`npx -y amenbo install-browser` を実行してください(初回のみ、約170MBのダウンロード)。" +
+        "通常のHTTP取得(mode: markdown/outline等)はブラウザなしで動作します。",
+      options,
+    );
+  }
+}
+
 /** Readability/Turndown等による本文抽出に失敗した。 */
 export class ExtractionError extends AmenboError {
   readonly code = "EXTRACTION_FAILED";

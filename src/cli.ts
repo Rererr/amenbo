@@ -8,6 +8,8 @@
  * - `amenbo fetch/links/screenshot <url> [options]` は対応するcore.tsのハンドラを呼び、
  *   TextBlockはそのまま標準出力へ、ImageBlock(スクリーンショット/スキャンPDF画像)は
  *   --out-dir配下へファイル保存しパスを列挙する(エージェント/ユーザーがそのまま開けるように)。
+ * - `amenbo install-browser` はChromium遅延化(postinstall廃止)対応で追加したコマンド。
+ *   core.tsは経由せず、installBrowser.tsが同梱playwrightのCLIをspawnする。
  * - 引数パース(parseCliArgs)は純関数として切り出し、ユニットテストできるようにしている。
  * - キャッシュ・差分応答・レート制御の状態はMCPサーバーと同じ ~/.cache/amenbo (cache.ts)を
  *   共有する。CLIは1コマンド=1プロセスのため、politenessのドメイン毎レート制御は
@@ -31,6 +33,7 @@ import {
 } from "./core.js";
 import { AmenboError } from "./errors.js";
 import { closeBrowser } from "./fetcher/browser.js";
+import { installBrowser } from "./installBrowser.js";
 import { discoverLinks } from "./links.js";
 import { runServer } from "./server.js";
 
@@ -45,7 +48,8 @@ export type CliFetchMode = (typeof FETCH_MODES)[number];
 export type ParsedCommand =
   | { kind: "serve" }
   | { kind: "version" }
-  | { kind: "help"; topic?: "fetch" | "links" | "screenshot" }
+  | { kind: "help"; topic?: "fetch" | "links" | "screenshot" | "install-browser" }
+  | { kind: "install-browser" }
   | ParsedFetchCommand
   | ParsedLinksCommand
   | ParsedScreenshotCommand;
@@ -191,6 +195,16 @@ function parseScreenshotArgs(args: string[]): ParsedCommand {
   };
 }
 
+function parseInstallBrowserArgs(args: string[]): ParsedCommand {
+  const { values, positionals } = safeParseArgs(args, "install-browser", { help: { type: "boolean", short: "h" } });
+
+  if (values.help) return { kind: "help", topic: "install-browser" };
+  if (positionals.length > 0) {
+    throw new CliUsageError(`install-browser: 不明な引数です: ${positionals[0]}`);
+  }
+  return { kind: "install-browser" };
+}
+
 /** CLI引数(process.argv.slice(2)相当)をコマンドへパースする純関数。 */
 export function parseCliArgs(argv: string[]): ParsedCommand {
   if (argv.length === 0) return { kind: "serve" };
@@ -203,6 +217,7 @@ export function parseCliArgs(argv: string[]): ParsedCommand {
   if (first === "fetch") return parseFetchArgs(rest);
   if (first === "links") return parseLinksArgs(rest);
   if (first === "screenshot") return parseScreenshotArgs(rest);
+  if (first === "install-browser") return parseInstallBrowserArgs(rest);
 
   throw new CliUsageError(`不明なコマンドです: ${first}`);
 }
@@ -218,6 +233,7 @@ function usageText(): string {
     "  fetch <url> [options]          ページをMarkdownとして取得する",
     "  links <url> [options]          ページ内のリンクを列挙する(sitemap/RSS優先)",
     "  screenshot <url> [options]     ページのスクリーンショットを撮影する",
+    "  install-browser                スクリーンショット/SPA取得に必要なChromiumをインストールする(初回のみ)",
     "",
     "Options:",
     "  -h, --help       ヘルプを表示する",
@@ -258,10 +274,22 @@ function screenshotHelpText(): string {
   ].join("\n");
 }
 
-function helpText(topic: "fetch" | "links" | "screenshot" | undefined): string {
+function installBrowserHelpText(): string {
+  return [
+    "amenbo install-browser",
+    "",
+    "スクリーンショット撮影やSPA(JavaScriptレンダリング必須)ページの取得に必要なChromiumを",
+    "インストールする(初回のみ、約170MBのダウンロード)。通常のHTTP取得(fetch/linksの大半)は",
+    "この操作なしで動作する。amenboに同梱されたバージョンのplaywright CLIを使うため、",
+    "バージョン不一致は起こらない。",
+  ].join("\n");
+}
+
+function helpText(topic: "fetch" | "links" | "screenshot" | "install-browser" | undefined): string {
   if (topic === "fetch") return fetchHelpText();
   if (topic === "links") return linksHelpText();
   if (topic === "screenshot") return screenshotHelpText();
+  if (topic === "install-browser") return installBrowserHelpText();
   return usageText();
 }
 
@@ -365,6 +393,9 @@ export async function run(argv: string[]): Promise<number> {
   }
 
   try {
+    if (command.kind === "install-browser") {
+      return await installBrowser();
+    }
     await dispatch(command);
     return 0;
   } catch (error) {

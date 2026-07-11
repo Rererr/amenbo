@@ -37,7 +37,12 @@ For a measured comparison against similar tools (official fetch MCP / Jina Reade
 
 ```bash
 npm install -g amenbo
-# postinstall downloads Chromium (for SPA rendering & screenshots)
+```
+
+That's enough for plain Markdown fetching (`fetch` / `links`). If you also want browser-based fetching — SPA escalation or screenshots — run this once (a ~170MB download the first time):
+
+```bash
+npx -y amenbo install-browser
 ```
 
 Or for development:

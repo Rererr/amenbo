@@ -32,8 +32,7 @@
     "dev": "tsx src/server.ts",
     "dev:cli": "tsx src/cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "postinstall": "playwright install chromium"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@joplin/turndown-plugin-gfm": "^1.0.67",

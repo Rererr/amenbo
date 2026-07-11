@@ -14,7 +14,7 @@ import {
   type Response as PlaywrightResponse,
   type Route,
 } from "playwright";
-import { AmenboError, BrowserLaunchError, FetchTimeoutError, InvalidUrlError } from "../errors.js";
+import { AmenboError, BrowserLaunchError, BrowserUnavailableError, FetchTimeoutError, InvalidUrlError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { guardPublicAddress, USER_AGENT } from "./http.js";
 import { closeSharedSsrfProxy, getSharedSsrfProxyUrl } from "./ssrfProxy.js";
@@ -48,6 +48,19 @@ function isMissingExecutableError(error: unknown): boolean {
 }
 
 /**
+ * Chromium遅延化(§4)対応: 同梱chromiumが未インストール(`npx -y amenbo install-browser`未実行)の場合、
+ * playwright-coreは"Executable doesn't exist at ..."とインストール手順(`playwright install`)を
+ * 含むメッセージを投げる(node_modules/playwright-core/lib/coreBundle.jsで確認)。単一の文字列に
+ * 頼るとメッセージ文言の些細な変更や偶然の一致で誤判定しうるため、2つの既知マーカーが両方
+ * 含まれる場合のみ「未インストール」と判定する(それ以外の起動失敗は汎用のBrowserLaunchErrorのまま扱う)。
+ */
+const CHROMIUM_MISSING_MARKERS = [/Executable doesn't exist/, /playwright install/];
+
+function isMissingChromiumExecutableError(error: unknown): boolean {
+  return error instanceof Error && CHROMIUM_MISSING_MARKERS.every((pattern) => pattern.test(error.message));
+}
+
+/**
  * M2: 以前はcleanup内でclose後にprocess.exit()を呼んでおらず、chromium起動後は
  * SIGINTの既定動作(即終了)がこのリスナーに上書きされたままハングしていた
  * (closeBrowser()はPromiseを返すだけで、'exit'イベントは同期処理しか待てないため
@@ -75,6 +88,9 @@ export async function getBrowser(): Promise<Browser> {
       .then((proxyServer) => chromium.launch({ headless: true, proxy: { server: proxyServer } }))
       .catch((cause: unknown) => {
         browserPromise = null;
+        if (isMissingChromiumExecutableError(cause)) {
+          throw new BrowserUnavailableError({ cause });
+        }
         throw new BrowserLaunchError("chromiumの起動に失敗しました", { cause });
       });
   }
