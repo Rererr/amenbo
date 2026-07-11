@@ -131,8 +131,9 @@ async function fetchAndExtract(
   url: string,
   selector: string | undefined,
   conditionalHeaders: Record<string, string> | undefined,
+  onProgress?: ((message: string) => void) | undefined,
 ): Promise<FetchAndExtractResult> {
-  const fetchResult = await fetchPage(url, conditionalHeaders ? { headers: conditionalHeaders } : {});
+  const fetchResult = await fetchPage(url, conditionalHeaders ? { headers: conditionalHeaders, onProgress } : { onProgress });
   if ("notModified" in fetchResult) {
     return { status: "not_modified" };
   }
@@ -156,8 +157,8 @@ async function fetchAndExtract(
   // ジオメトリでも改善しなかった場合はHTTP tierの結果(body-fallback)をそのまま使う。
   if (!selector && fetchResult.tier === "http" && extracted.extractionMethod === "body-fallback") {
     try {
-      await politeness.waitTurn(url); // 追加のブラウザ遷移が発生するため、律速のため再度順番を待つ
-      const browserFetchResult = await fetchPage(url, { forceBrowser: true });
+      await politeness.waitTurn(url, onProgress); // 追加のブラウザ遷移が発生するため、律速のため再度順番を待つ
+      const browserFetchResult = await fetchPage(url, { forceBrowser: true, onProgress });
       if (!("notModified" in browserFetchResult) && !("handoff" in browserFetchResult)) {
         const browserExtracted = extractMarkdown(browserFetchResult.html, { url: browserFetchResult.finalUrl, geometry: browserFetchResult.geometry });
         if (browserExtracted.extractionMethod === "geometry") {
@@ -240,9 +241,13 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
  * メタデータへ保存し、'fresh'なキャッシュ応答時にも再フェッチ無しでmode:autoの判定を再現する。
  * 機能B: 非HTMLコンテンツ(ハンドオフ対象)を取得した場合は { kind: "handoff" } を返す。
  */
-async function resolvePage(url: string, selector: string | undefined): Promise<ResolvePageResult> {
+async function resolvePage(
+  url: string,
+  selector: string | undefined,
+  onProgress?: ((message: string) => void) | undefined,
+): Promise<ResolvePageResult> {
   if (selector) {
-    const result = await fetchAndExtract(url, selector, undefined);
+    const result = await fetchAndExtract(url, selector, undefined, onProgress);
     if (result.status === "not_modified") {
       throw new UnexpectedNotModifiedError(url);
     }
@@ -274,7 +279,12 @@ async function resolvePage(url: string, selector: string | undefined): Promise<R
   if (cached?.etag) conditionalHeaders["If-None-Match"] = cached.etag;
   if (cached?.lastModified) conditionalHeaders["If-Modified-Since"] = cached.lastModified;
 
-  const result = await fetchAndExtract(url, undefined, Object.keys(conditionalHeaders).length > 0 ? conditionalHeaders : undefined);
+  const result = await fetchAndExtract(
+    url,
+    undefined,
+    Object.keys(conditionalHeaders).length > 0 ? conditionalHeaders : undefined,
+    onProgress,
+  );
 
   if (result.status === "not_modified") {
     if (!cached) throw new UnexpectedNotModifiedError(url);
@@ -356,6 +366,8 @@ interface ResolveScreenshotOptions {
    * 省略する。screenshotツール単体(事前guard無し)は既定false(guardを実行する)のまま。
    */
   skipGuard?: boolean;
+  /** MCP progress notifications用。politeness待機発生時・撮影開始時に呼ばれる。 */
+  onProgress?: ((message: string) => void) | undefined;
 }
 
 /**
@@ -382,7 +394,7 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
   // 実URLへの独立したブラウザ遷移が発生するため、markdown抽出時とは別にpolitenessの順番待ちを行う。
   // ただし呼び出し元(handleFetchTool)で既にguard済みの場合はskipGuardで二重待機を避ける。
   if (!options.skipGuard) {
-    await politeness.guard(url);
+    await politeness.guard(url, options.onProgress);
   }
 
   const cacheKey = computeScreenshotCacheKey(url, options.width, options.scale, options.fullPage);
@@ -402,6 +414,7 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
     // PNGファイル欠損: キャッシュmiss扱いで下の再撮影へフォールスルーする
   }
 
+  options.onProgress?.("スクリーンショットを撮影しています…");
   const captured = await captureTiledScreenshot(url, options);
   cache.setScreenshot({
     cacheKey,
@@ -639,7 +652,12 @@ function formatPdfTextResponse(title: string | null, finalUrl: string, cacheStat
 }
 
 /** PDFはキャッシュ層(§3-3等)を流用しつつ独立した経路で扱う。テキスト層があればMarkdown、無ければ画像タイル。 */
-async function handlePdfFetch(url: string, page: number, maxTokens: number): Promise<Array<TextBlock | ImageBlock>> {
+async function handlePdfFetch(
+  url: string,
+  page: number,
+  maxTokens: number,
+  onProgress?: ((message: string) => void) | undefined,
+): Promise<Array<TextBlock | ImageBlock>> {
   const cached = cache.get(url);
   if (cached && cache.isFresh(cached)) {
     const paginated = paginateMarkdown(cached.markdown, maxTokens, page);
@@ -650,6 +668,7 @@ async function handlePdfFetch(url: string, page: number, maxTokens: number): Pro
   }
 
   const binary = await httpGetBinary(url, { maxBytes: DEFAULT_PDF_MAX_BYTES });
+  onProgress?.("PDFを解析しています…");
   const textResult = await extractPdfText(binary.bytes);
 
   if (textResult.hasTextLayer) {
@@ -692,6 +711,8 @@ export interface FetchToolInput {
   page?: number | undefined;
   max_tokens?: number | undefined;
   force_full?: boolean | undefined;
+  /** MCP progress notifications用(server.tsがprogressToken有無に応じて組み立てて渡す。CLIは渡さない)。 */
+  onProgress?: ((message: string) => void) | undefined;
 }
 
 // テスト用export(既存スタイルに合わせた最小のテスト可能化。politeness.guard呼び出し回数の検証用)。
@@ -703,10 +724,10 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
   // resolveScreenshotのコメント参照)。zodの.url()はスキームを制限しないため、ここでの
   // 検証が実質的な最初の関門になる。
   assertHttpScheme(input.url);
-  await politeness.guard(input.url);
+  await politeness.guard(input.url, input.onProgress);
 
   if (looksLikePdf(input.url, null)) {
-    return handlePdfFetch(input.url, page, maxTokens);
+    return handlePdfFetch(input.url, page, maxTokens, input.onProgress);
   }
 
   // 公開品質バグ修正: mode: screenshot(section未指定時)はMarkdown抽出結果を一切使わないため、
@@ -721,11 +742,12 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
       width: DEFAULT_TILE_WIDTH,
       scale: DEFAULT_SCREENSHOT_SCALE,
       skipGuard: true, // 直前でこの関数冒頭のpoliteness.guard(input.url)を既に実行済み
+      onProgress: input.onProgress,
     });
     return buildScreenshotContent({ title: null }, screenshot, null);
   }
 
-  const resolvedOrHandoff = await resolvePage(input.url, input.selector);
+  const resolvedOrHandoff = await resolvePage(input.url, input.selector, input.onProgress);
 
   // 機能B: 非HTMLコンテンツはMarkdown抽出・キャッシュ・mode/selector/section等を適用せず、
   // メタデータ+プレビュー+curl誘導のハンドオフ応答を返す(PDFのURL判定と同様の独立経路)。
@@ -772,6 +794,7 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
       width: DEFAULT_TILE_WIDTH,
       scale: DEFAULT_SCREENSHOT_SCALE,
       skipGuard: true, // この関数冒頭のpoliteness.guard(input.url)を既に実行済み
+      onProgress: input.onProgress,
     });
     return buildScreenshotContent(resolved, screenshot, resolved.qualityReason);
   }
@@ -801,6 +824,8 @@ export interface ScreenshotToolInput {
   fullPage?: boolean | undefined;
   width?: number | undefined;
   scale?: number | undefined;
+  /** MCP progress notifications用(server.tsがprogressToken有無に応じて組み立てて渡す)。 */
+  onProgress?: ((message: string) => void) | undefined;
 }
 
 // テスト用export(既存スタイルに合わせた最小のテスト可能化。politeness.guard呼び出し回数の検証用)。
@@ -811,6 +836,7 @@ export async function handleScreenshotTool(input: ScreenshotToolInput): Promise<
     fullPage: input.fullPage ?? true,
     width: input.width ?? DEFAULT_TILE_WIDTH,
     scale: input.scale ?? DEFAULT_SCREENSHOT_SCALE,
+    onProgress: input.onProgress,
   });
   return buildScreenshotContent({ title: null }, screenshot, null);
 }

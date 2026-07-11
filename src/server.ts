@@ -16,6 +16,8 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   formatLinksResponse,
@@ -27,7 +29,31 @@ import {
 import { AmenboError } from "./errors.js";
 import { discoverLinks } from "./links.js";
 
-const server = new McpServer({ name: "amenbo", version: resolvePackageVersion() });
+// テスト用export(既存スタイルに合わせた最小のテスト可能化。InMemoryTransport経由の
+// MCP progress notifications統合テストでclient.connect()の相手として使う)。
+export const server = new McpServer({ name: "amenbo", version: resolvePackageVersion() });
+
+/**
+ * MCP progress notifications: リクエストにprogressToken(_meta.progressToken)が付いている
+ * クライアントに対してのみ、進捗メッセージをホストUIへ通知するコールバックを組み立てる。
+ * progressTokenが無い(=進捗通知に対応しない/希望しないクライアント)場合はundefinedを返し、
+ * core.ts側の各通知ポイントは呼び出し自体を行わない(条件分岐のみでオーバーヘッドは実質ゼロ)。
+ *
+ * sendNotificationはtotalを送らない(処理量が事前に不定なため)。失敗はツール本処理を
+ * 壊さないようベストエフォートで握りつぶし、原因のみstderrへ記録する。
+ */
+function buildProgressNotifier(extra: RequestHandlerExtra<ServerRequest, ServerNotification>): ((message: string) => void) | undefined {
+  const progressToken = extra._meta?.progressToken;
+  if (progressToken === undefined) return undefined;
+
+  let progress = 0;
+  return (message: string) => {
+    progress += 1;
+    void extra.sendNotification({ method: "notifications/progress", params: { progressToken, progress, message } }).catch((error: unknown) => {
+      console.error("進捗通知(notifications/progress)の送信に失敗しました:", error);
+    });
+  };
+}
 
 server.registerTool(
   "fetch",
@@ -51,9 +77,10 @@ server.registerTool(
       openWorldHint: true,
     },
   },
-  async ({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull }) => {
+  async ({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull }, extra) => {
     try {
-      const content = await handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull });
+      const onProgress = buildProgressNotifier(extra);
+      const content = await handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull, onProgress });
       return { content };
     } catch (error) {
       const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
@@ -109,9 +136,10 @@ server.registerTool(
       openWorldHint: true,
     },
   },
-  async ({ url, fullPage, width, scale }) => {
+  async ({ url, fullPage, width, scale }, extra) => {
     try {
-      const content = await handleScreenshotTool({ url, fullPage, width, scale });
+      const onProgress = buildProgressNotifier(extra);
+      const content = await handleScreenshotTool({ url, fullPage, width, scale, onProgress });
       return { content };
     } catch (error) {
       const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
