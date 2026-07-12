@@ -25,6 +25,10 @@
  * robotsStoreオプションとして注入する(CLIでの複数ページ一括収集時にコマンド毎の
  * robots.txt再取得を防ぐ)。journal_mode=WAL は複数プロセスからの同時アクセスを想定して設定している。
  *
+ * 性能: SQL文は全てコンストラクタで一度だけprepareし(this.statements)、以降は再利用する。
+ * node:sqliteのprepare()は呼び出しの度にSQLを再コンパイルするため、MCPサーバー常駐時の
+ * 反復実行やCLIバルク収集ループでの再コンパイルコストを避ける。
+ *
  * node:sqliteの制約: better-sqlite3はNumber.MAX_SAFE_INTEGERを超えるINTEGER列を読むと
  * 例外を投げたが、node:sqliteは黙ってbigintを返す(上流の挙動差)。本ファイルの整数列
  * (fetched_at/last_request_at)は全てDate.now()由来でMAX_SAFE_INTEGERを超えないため、
@@ -34,7 +38,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 
 export type CacheStatus = "fresh" | "revalidated" | "miss";
 export type ScreenshotCacheStatus = "fresh" | "miss";
@@ -61,6 +65,8 @@ export interface CacheWriteInput {
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15分
 /** Phase 4テンプレート学習: 定型ブロック判定に使う「直近ページ数」の既定値。 */
 const DEFAULT_TEMPLATE_RECENT_PAGES = 3;
+/** meta テーブルに前回prune時刻を記録するキー。 */
+const META_LAST_PRUNED_AT = "last_pruned_at";
 
 // レビュー指摘対応: cli.ts(fetch画像の保存先)がキャッシュディレクトリ解決ロジックを
 // 再利用できるようexportする(AMENBO_CACHE_DIR未指定時の既定値~/.cache/amenboとのずれを防ぐ)。
@@ -108,6 +114,28 @@ interface RobotsCacheRow {
   fetched_at: number;
 }
 
+/** コンストラクタで一度だけprepareし、以降のクエリで再利用するSQL文の束。 */
+interface PreparedStatements {
+  deletePagesExpired: StatementSync;
+  deleteDomainPagesExpired: StatementSync;
+  deleteHostRequestsExpired: StatementSync;
+  selectScreenshotsExpired: StatementSync;
+  deleteScreenshotsExpired: StatementSync;
+  getPage: StatementSync;
+  setPage: StatementSync;
+  touchPage: StatementSync;
+  getScreenshot: StatementSync;
+  setScreenshot: StatementSync;
+  recordDomainPage: StatementSync;
+  getDomainPages: StatementSync;
+  getHostRequest: StatementSync;
+  setHostRequest: StatementSync;
+  getRobots: StatementSync;
+  setRobots: StatementSync;
+  getMeta: StatementSync;
+  setMeta: StatementSync;
+}
+
 export function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -137,6 +165,7 @@ export class PageCache {
   private readonly cacheDir: string;
   private readonly ttlMs: number;
   private readonly now: () => number;
+  private readonly statements: PreparedStatements;
   private closed = false;
 
   constructor(options: { dbPath?: string; cacheDir?: string; ttlMs?: number; now?: () => number } = {}) {
@@ -194,26 +223,121 @@ export class PageCache {
         fetched_at INTEGER NOT NULL
       )
     `);
+    // 前回prune時刻等の単一値メタデータ。maybePruneExpired の間引き判定に使う。
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value INTEGER NOT NULL
+      )
+    `);
+
+    this.statements = this.prepareStatements();
 
     // M3: TTL超過削除・サイズ上限が無くディスクが無制限に増加する問題への対応。
-    // 起動(コンストラクタ)のたびにTTL超過エントリを掃除する。
-    this.pruneExpired();
+    // 起動のたびに掃除するとCLIバルク収集(1コマンド=1プロセス)で毎回DELETEが走るため、
+    // 前回pruneからTTL未満なら間引く(maybePruneExpired参照)。
+    this.maybePruneExpired();
+  }
+
+  /** 全SQL文を一度だけprepareする(DDL適用後・prune前に呼ぶ)。 */
+  private prepareStatements(): PreparedStatements {
+    return {
+      deletePagesExpired: this.db.prepare("DELETE FROM pages WHERE fetched_at < ?"),
+      deleteDomainPagesExpired: this.db.prepare("DELETE FROM domain_pages WHERE fetched_at < ?"),
+      deleteHostRequestsExpired: this.db.prepare("DELETE FROM host_requests WHERE last_request_at < ?"),
+      selectScreenshotsExpired: this.db.prepare("SELECT * FROM screenshots WHERE fetched_at < ?"),
+      deleteScreenshotsExpired: this.db.prepare("DELETE FROM screenshots WHERE fetched_at < ?"),
+      getPage: this.db.prepare("SELECT * FROM pages WHERE url = ?"),
+      setPage: this.db.prepare(
+        `INSERT INTO pages (url, etag, last_modified, content_hash, markdown, metadata, fetched_at)
+         VALUES (@url, @etag, @lastModified, @contentHash, @markdown, @metadata, @fetchedAt)
+         ON CONFLICT(url) DO UPDATE SET
+           etag = excluded.etag,
+           last_modified = excluded.last_modified,
+           content_hash = excluded.content_hash,
+           markdown = excluded.markdown,
+           metadata = excluded.metadata,
+           fetched_at = excluded.fetched_at`,
+      ),
+      touchPage: this.db.prepare("UPDATE pages SET fetched_at = ? WHERE url = ?"),
+      getScreenshot: this.db.prepare("SELECT * FROM screenshots WHERE cache_key = ?"),
+      setScreenshot: this.db.prepare(
+        `INSERT INTO screenshots (cache_key, url, tile_paths, metadata, fetched_at)
+         VALUES (@cacheKey, @url, @tilePaths, @metadata, @fetchedAt)
+         ON CONFLICT(cache_key) DO UPDATE SET
+           url = excluded.url,
+           tile_paths = excluded.tile_paths,
+           metadata = excluded.metadata,
+           fetched_at = excluded.fetched_at`,
+      ),
+      recordDomainPage: this.db.prepare(
+        `INSERT INTO domain_pages (domain, url, fetched_at, block_hashes)
+         VALUES (@domain, @url, @fetchedAt, @blockHashes)
+         ON CONFLICT(domain, url) DO UPDATE SET
+           fetched_at = excluded.fetched_at,
+           block_hashes = excluded.block_hashes`,
+      ),
+      getDomainPages: this.db.prepare("SELECT * FROM domain_pages WHERE domain = ? ORDER BY fetched_at DESC LIMIT ?"),
+      getHostRequest: this.db.prepare("SELECT * FROM host_requests WHERE host = ?"),
+      setHostRequest: this.db.prepare(
+        `INSERT INTO host_requests (host, last_request_at)
+         VALUES (@host, @lastRequestAt)
+         ON CONFLICT(host) DO UPDATE SET last_request_at = MAX(last_request_at, excluded.last_request_at)`,
+      ),
+      getRobots: this.db.prepare("SELECT * FROM robots_cache WHERE origin = ?"),
+      setRobots: this.db.prepare(
+        `INSERT INTO robots_cache (origin, body, fetched_at)
+         VALUES (@origin, @body, @fetchedAt)
+         ON CONFLICT(origin) DO UPDATE SET
+           body = excluded.body,
+           fetched_at = excluded.fetched_at`,
+      ),
+      getMeta: this.db.prepare("SELECT value FROM meta WHERE key = ?"),
+      setMeta: this.db.prepare(
+        `INSERT INTO meta (key, value) VALUES (@key, @value)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      ),
+    };
   }
 
   /**
-   * M3: TTL超過エントリを削除する(ディスク無制限増加の防止)。起動時に自動実行される。
+   * 前回pruneからTTL未満なら掃除を間引く。
+   *
+   * 起動のたびにpruneExpired(複数テーブルのDELETE+screenshots走査)を実行すると、CLIの
+   * 1コマンド=1プロセスでのバルク収集ループで毎回のプロセス起動に掃除コストが乗る。
+   * prune直後のTTL窓ではほとんど新規失効が無いため、前回pruneからの経過がTTL未満なら
+   * skipする(掃除間隔がTTL単位まで粗くなるだけで、ディスク無制限増加の防止という
+   * M3の目的は維持される。失効エントリの残留は最大でも約2×TTLに収まる)。
+   * meta未記録(新規DB/初回起動)では必ず実行するため、起動時掃除のテストは従来通り成立する。
+   */
+  private maybePruneExpired(): void {
+    const lastPrunedAt = this.getMetaValue(META_LAST_PRUNED_AT);
+    const at = this.now();
+    if (lastPrunedAt !== null && at - lastPrunedAt < this.ttlMs) return;
+    this.pruneExpired();
+    this.statements.setMeta.run({ key: META_LAST_PRUNED_AT, value: at });
+  }
+
+  /** meta テーブルの単一整数値を返す(未記録ならnull)。 */
+  private getMetaValue(key: string): number | null {
+    const row = this.statements.getMeta.get(key) as { value: number } | undefined;
+    return row ? Number(row.value) : null;
+  }
+
+  /**
+   * M3: TTL超過エントリを削除する(ディスク無制限増加の防止)。maybePruneExpired経由で呼ばれる。
    * screenshotsはSQLite行に加え、対応するPNGファイル(タイル)もあわせて削除する。
    */
   private pruneExpired(): void {
     const cutoff = this.now() - this.ttlMs;
 
-    this.db.prepare("DELETE FROM pages WHERE fetched_at < ?").run(cutoff);
-    this.db.prepare("DELETE FROM domain_pages WHERE fetched_at < ?").run(cutoff);
+    this.statements.deletePagesExpired.run(cutoff);
+    this.statements.deleteDomainPagesExpired.run(cutoff);
     // code-reviewer指摘: host_requestsもM3の対象から漏れていた(訪問ホスト毎に1行増える
     // 無制限増加テーブルという点でdomain_pages等と同じ性質を持つため、他テーブルと一貫させる)。
-    this.db.prepare("DELETE FROM host_requests WHERE last_request_at < ?").run(cutoff);
+    this.statements.deleteHostRequestsExpired.run(cutoff);
 
-    const expiredScreenshots = this.db.prepare("SELECT * FROM screenshots WHERE fetched_at < ?").all(cutoff) as unknown as ScreenshotRow[];
+    const expiredScreenshots = this.statements.selectScreenshotsExpired.all(cutoff) as unknown as ScreenshotRow[];
     for (const row of expiredScreenshots) {
       const tilePaths = JSON.parse(row.tile_paths) as string[];
       for (const filePath of tilePaths) {
@@ -224,12 +348,12 @@ export class PageCache {
         }
       }
     }
-    this.db.prepare("DELETE FROM screenshots WHERE fetched_at < ?").run(cutoff);
+    this.statements.deleteScreenshotsExpired.run(cutoff);
   }
 
   /** 保存済みエントリを取得する(TTL判定は行わない。判定は isFresh を使う)。 */
   get(url: string): CacheEntry | undefined {
-    const row = this.db.prepare("SELECT * FROM pages WHERE url = ?").get(url) as PageRow | undefined;
+    const row = this.statements.getPage.get(url) as PageRow | undefined;
     if (!row) return undefined;
     return {
       url: row.url,
@@ -249,7 +373,7 @@ export class PageCache {
 
   /** 保存済みスクリーンショットエントリを取得する(TTL判定は isFresh を使う)。 */
   getScreenshot(cacheKey: string): ScreenshotCacheEntry | undefined {
-    const row = this.db.prepare("SELECT * FROM screenshots WHERE cache_key = ?").get(cacheKey) as ScreenshotRow | undefined;
+    const row = this.statements.getScreenshot.get(cacheKey) as ScreenshotRow | undefined;
     if (!row) return undefined;
     return {
       cacheKey: row.cache_key,
@@ -281,23 +405,13 @@ export class PageCache {
     });
 
     const fetchedAt = this.now();
-    this.db
-      .prepare(
-        `INSERT INTO screenshots (cache_key, url, tile_paths, metadata, fetched_at)
-         VALUES (@cacheKey, @url, @tilePaths, @metadata, @fetchedAt)
-         ON CONFLICT(cache_key) DO UPDATE SET
-           url = excluded.url,
-           tile_paths = excluded.tile_paths,
-           metadata = excluded.metadata,
-           fetched_at = excluded.fetched_at`,
-      )
-      .run({
-        cacheKey: input.cacheKey,
-        url: input.url,
-        tilePaths: JSON.stringify(tilePaths),
-        metadata: JSON.stringify(input.metadata),
-        fetchedAt,
-      });
+    this.statements.setScreenshot.run({
+      cacheKey: input.cacheKey,
+      url: input.url,
+      tilePaths: JSON.stringify(tilePaths),
+      metadata: JSON.stringify(input.metadata),
+      fetchedAt,
+    });
 
     return { cacheKey: input.cacheKey, url: input.url, tilePaths, metadata: input.metadata, fetchedAt };
   }
@@ -306,27 +420,15 @@ export class PageCache {
   set(input: CacheWriteInput): CacheEntry {
     const contentHash = hashContent(input.markdown);
     const fetchedAt = this.now();
-    this.db
-      .prepare(
-        `INSERT INTO pages (url, etag, last_modified, content_hash, markdown, metadata, fetched_at)
-         VALUES (@url, @etag, @lastModified, @contentHash, @markdown, @metadata, @fetchedAt)
-         ON CONFLICT(url) DO UPDATE SET
-           etag = excluded.etag,
-           last_modified = excluded.last_modified,
-           content_hash = excluded.content_hash,
-           markdown = excluded.markdown,
-           metadata = excluded.metadata,
-           fetched_at = excluded.fetched_at`,
-      )
-      .run({
-        url: input.url,
-        etag: input.etag,
-        lastModified: input.lastModified,
-        contentHash,
-        markdown: input.markdown,
-        metadata: JSON.stringify(input.metadata),
-        fetchedAt,
-      });
+    this.statements.setPage.run({
+      url: input.url,
+      etag: input.etag,
+      lastModified: input.lastModified,
+      contentHash,
+      markdown: input.markdown,
+      metadata: JSON.stringify(input.metadata),
+      fetchedAt,
+    });
     return {
       url: input.url,
       etag: input.etag,
@@ -340,20 +442,12 @@ export class PageCache {
 
   /** 304再検証成功時: 本文は変えず取得時刻のみ更新する(再変換しない)。 */
   touch(url: string): void {
-    this.db.prepare("UPDATE pages SET fetched_at = ? WHERE url = ?").run(this.now(), url);
+    this.statements.touchPage.run(this.now(), url);
   }
 
   /** Phase 4テンプレート学習: このページの(除去前・全)ブロックハッシュ集合をドメイン別に記録する。 */
   recordDomainPageBlocks(domain: string, url: string, blockHashes: string[]): void {
-    this.db
-      .prepare(
-        `INSERT INTO domain_pages (domain, url, fetched_at, block_hashes)
-         VALUES (@domain, @url, @fetchedAt, @blockHashes)
-         ON CONFLICT(domain, url) DO UPDATE SET
-           fetched_at = excluded.fetched_at,
-           block_hashes = excluded.block_hashes`,
-      )
-      .run({ domain, url, fetchedAt: this.now(), blockHashes: JSON.stringify(blockHashes) });
+    this.statements.recordDomainPage.run({ domain, url, fetchedAt: this.now(), blockHashes: JSON.stringify(blockHashes) });
   }
 
   /**
@@ -362,9 +456,7 @@ export class PageCache {
    * 無い場合(コールドスタート)は誤除去を避けるため空集合を返す。
    */
   getTemplateBlockHashes(domain: string, recentPages: number = DEFAULT_TEMPLATE_RECENT_PAGES): Set<string> {
-    const rows = this.db
-      .prepare("SELECT * FROM domain_pages WHERE domain = ? ORDER BY fetched_at DESC LIMIT ?")
-      .all(domain, recentPages) as unknown as DomainPageRow[];
+    const rows = this.statements.getDomainPages.all(domain, recentPages) as unknown as DomainPageRow[];
 
     if (rows.length < recentPages) return new Set();
 
@@ -388,7 +480,7 @@ export class PageCache {
    * PolitenessManagerのstoreオプションとして注入し、プロセス間でレート制御状態を共有するために使う。
    */
   getHostLastRequestAt(host: string): number | null {
-    const row = this.db.prepare("SELECT * FROM host_requests WHERE host = ?").get(host) as HostRequestRow | undefined;
+    const row = this.statements.getHostRequest.get(host) as HostRequestRow | undefined;
     return row ? row.last_request_at : null;
   }
 
@@ -402,13 +494,7 @@ export class PageCache {
    * store JSDoc参照)。せめて時刻が巻き戻らないよう、SQL側でMAXを取って単調増加を保証する。
    */
   setHostLastRequestAt(host: string, at: number): void {
-    this.db
-      .prepare(
-        `INSERT INTO host_requests (host, last_request_at)
-         VALUES (@host, @lastRequestAt)
-         ON CONFLICT(host) DO UPDATE SET last_request_at = MAX(last_request_at, excluded.last_request_at)`,
-      )
-      .run({ host, lastRequestAt: at });
+    this.statements.setHostRequest.run({ host, lastRequestAt: at });
   }
 
   /**
@@ -420,21 +506,13 @@ export class PageCache {
    * 「未記録(null)」と「空bodyの記録あり」は区別される。
    */
   getRobotsCache(origin: string): { body: string; fetchedAt: number } | null {
-    const row = this.db.prepare("SELECT * FROM robots_cache WHERE origin = ?").get(origin) as RobotsCacheRow | undefined;
+    const row = this.statements.getRobots.get(origin) as RobotsCacheRow | undefined;
     return row ? { body: row.body, fetchedAt: row.fetched_at } : null;
   }
 
   /** オリジンのrobots.txt取得結果(本文+取得時刻)を記録する。既存があれば上書きする。 */
   setRobotsCache(origin: string, body: string, fetchedAt: number): void {
-    this.db
-      .prepare(
-        `INSERT INTO robots_cache (origin, body, fetched_at)
-         VALUES (@origin, @body, @fetchedAt)
-         ON CONFLICT(origin) DO UPDATE SET
-           body = excluded.body,
-           fetched_at = excluded.fetched_at`,
-      )
-      .run({ origin, body, fetchedAt });
+    this.statements.setRobots.run({ origin, body, fetchedAt });
   }
 
   /**
