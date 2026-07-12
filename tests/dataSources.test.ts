@@ -117,6 +117,26 @@ describe("機能C: detectDataSources - 重複集約", () => {
   });
 });
 
+describe("機能C: detectDataSources - レビュー指摘対応: API語彙の誤検出修正", () => {
+  it("広告リダイレクトURL(redirect_api_logのような複合語の一部)は誤検出しない", () => {
+    const html = `<html><body><a href="https://ad.yahoo.co.jp/redirect_api_log/xyz">広告</a></body></html>`;
+    expect(detectDataSources(html, "https://news.yahoo.co.jp/")).toEqual([]);
+  });
+
+  it("リンクテキストが「API」の正当なエンドポイントは従来通り検出する", () => {
+    const html = `<html><body><a href="/endpoint">API</a></body></html>`;
+    const hints = detectDataSources(html, "https://example.jp/");
+    expect(hints).toHaveLength(1);
+  });
+
+  it("URLパスに/api/セグメントを含む正当なエンドポイントは従来通り検出する", () => {
+    const html = `<html><body><a href="/api/data">データ取得</a></body></html>`;
+    const hints = detectDataSources(html, "https://example.jp/");
+    expect(hints).toHaveLength(1);
+    expect(hints[0]).toContain("データ取得");
+  });
+});
+
 describe("機能C: detectDataSources - 上限5件", () => {
   it("6種類以上の拡張子/パターンが検出されても最大5件に切り詰める", () => {
     const html = `<html><body>
