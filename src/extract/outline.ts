@@ -141,10 +141,25 @@ export function splitSections(markdown: string): MarkdownSection[] {
   }));
 }
 
+/**
+ * Markdownのリンク/画像記法をテキストのみへ変換する(excerpt専用)。
+ *
+ * レビュー指摘対応: outlineのexcerptに`[text](url)`や`![alt](url)`、`(#cite_note-…)`等の
+ * リンク記法がそのまま残ると、Wikipedia等で抜粋がURLだらけになりトークンノイズになる
+ * (実測: `[臭腺](//ja.wikipedia.org/wiki/臭腺?...`のような露出)。excerptはあくまで
+ * 見出し直下の要約1文であり、リンク先URLに意味は無いためテキストのみ残す。
+ * 本文(section取得時のmarkdown)には手を加えず、excerpt生成時のみ適用する。
+ */
+function stripMarkdownLinks(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+}
+
 /** 節の内容から、見出し行を除いた本文の冒頭1文を抜き出す。 */
 function extractExcerpt(content: string): string {
   const bodyLines = content.split("\n").filter((line) => !HEADING_PATTERN.test(line));
-  const body = bodyLines.join("\n").trim();
+  const body = stripMarkdownLinks(bodyLines.join("\n")).trim();
   if (body.length === 0) return "";
 
   const sentenceMatch = /[^。!?\n]*[。!?]/u.exec(body);

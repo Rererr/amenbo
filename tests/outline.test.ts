@@ -65,6 +65,24 @@ describe("buildOutline", () => {
     expect(outline.sections).toHaveLength(0);
   });
 
+  it("レビュー指摘対応: excerptからMarkdownリンク記法を除去しテキストのみ残す", () => {
+    const markdown = [
+      "# 見出し",
+      "",
+      "[臭腺](//ja.wikipedia.org/wiki/臭腺?action=edit)から分泌される。",
+    ].join("\n");
+    const outline = buildOutline(markdown);
+    expect(outline.sections[0]?.excerpt).toBe("臭腺から分泌される。");
+    expect(outline.sections[0]?.excerpt).not.toContain("http");
+    expect(outline.sections[0]?.excerpt).not.toContain("(");
+  });
+
+  it("画像記法![alt](url)はaltテキストのみ残す", () => {
+    const markdown = ["# 見出し", "", "![説明図](https://example.com/img.png)を参照。"].join("\n");
+    const outline = buildOutline(markdown);
+    expect(outline.sections[0]?.excerpt).toBe("説明図を参照。");
+  });
+
   it("フェンスコードブロック内の#はheadingとして扱わない", () => {
     const markdown = "# 本物の見出し\n\n```\n# これはコード内のコメント\n```\n\n本文。";
     const outline = buildOutline(markdown);
