@@ -19,6 +19,7 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
+import { resolveCacheDir } from "./cache.js";
 import {
   cache,
   formatLinksResponse,
@@ -35,6 +36,7 @@ import { AmenboError } from "./errors.js";
 import { closeBrowser } from "./fetcher/browser.js";
 import { installBrowser } from "./installBrowser.js";
 import { discoverLinks } from "./links.js";
+import { MAX_SCALE, MIN_SCALE } from "./screenshot.js";
 import { runServer } from "./server.js";
 
 // ---- 引数パース(純関数。ユニットテスト対象) ----
@@ -93,6 +95,19 @@ function parsePositiveFloat(raw: string, flag: string): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
     throw new CliUsageError(`${flag}は正の数値で指定してください: ${raw}`);
+  }
+  return n;
+}
+
+/**
+ * レビュー指摘対応(Low): --scaleはparsePositiveFloatを通すだけで[0.5,1.0]範囲を検証しておらず、
+ * `--scale 3.0`のような範囲外値がscreenshot.ts clampScaleで黙って1.0にクランプされていた。
+ * MCP側はzod .min(0.5).max(1.0)で明示的にエラーになるため、CLIも同じ強度の検証で揃える。
+ */
+function parseScreenshotScale(raw: string): number {
+  const n = parsePositiveFloat(raw, "--scale");
+  if (n < MIN_SCALE || n > MAX_SCALE) {
+    throw new CliUsageError(`--scaleは${MIN_SCALE}〜${MAX_SCALE}の範囲で指定してください: ${raw}`);
   }
   return n;
 }
@@ -190,7 +205,7 @@ function parseScreenshotArgs(args: string[]): ParsedCommand {
     url,
     ...(values["viewport-only"] ? { viewportOnly: true } : {}),
     ...(values.width !== undefined ? { width: parsePositiveInt(values.width, "--width") } : {}),
-    ...(values.scale !== undefined ? { scale: parsePositiveFloat(values.scale, "--scale") } : {}),
+    ...(values.scale !== undefined ? { scale: parseScreenshotScale(values.scale) } : {}),
     ...(values["out-dir"] !== undefined ? { outDir: values["out-dir"] } : {}),
   };
 }
@@ -254,7 +269,7 @@ function fetchHelpText(): string {
     "  --page <n>                                  ページ番号(既定 1)",
     "  --max-tokens <n>                             1ページの概算トークン上限(既定 8000)",
     "  --force-full                                 差分応答(unchanged/diff)と定型ブロック除去を無効化し常に全文を返す",
-    "  --out-dir <dir>                              screenshot切替時の画像保存先(既定 カレントディレクトリ)",
+    "  --out-dir <dir>                              screenshot切替時の画像保存先(既定 $AMENBO_CACHE_DIR/screenshots-cli/、未設定時は ~/.cache/amenbo/screenshots-cli/)",
   ].join("\n");
 }
 
@@ -269,7 +284,7 @@ function screenshotHelpText(): string {
     "Options:",
     "  --viewport-only     最初のビューポート分のみ撮影する(既定はfullPage)",
     "  --width <n>         タイル幅px(既定 1280)",
-    "  --scale <x>         解像度スケール(既定 1.0)。小さいほど画像トークンが減る",
+    "  --scale <x>         解像度スケール(0.5〜1.0、既定 1.0)。小さいほど画像トークンが減る",
     "  --out-dir <dir>     画像保存先(既定 カレントディレクトリ)",
   ].join("\n");
 }
@@ -294,6 +309,18 @@ function helpText(topic: "fetch" | "links" | "screenshot" | "install-browser" | 
 }
 
 // ---- 出力(TextBlockはstdout、ImageBlockはファイル保存) ----
+
+/**
+ * レビュー指摘対応(Medium・ユーザー確定仕様): `amenbo fetch`(mode auto)が品質低下でscreenshotへ
+ * 自動切替した場合の画像既定保存先。以前はoutDir未指定時にprocess.cwd()を使っており、
+ * リポジトリ直下等カレントディレクトリを黙って汚していた。cache.tsのキャッシュディレクトリ
+ * 解決ロジック(AMENBO_CACHE_DIR ?? ~/.cache/amenbo)を再利用し、その配下のscreenshots-cli/へ
+ * 保存する(実撮影キャッシュのscreenshots/とは別ディレクトリ)。screenshotサブコマンドは
+ * 明示的な視覚確認用途のため対象外(--out-dir未指定時は従来通りcwd)。
+ */
+function resolveFetchScreenshotDir(): string {
+  return join(resolveCacheDir(), "screenshots-cli");
+}
 
 /** ファイル名として安全なホスト名(取れなければ"page")。amenbo-<hostname>-<連番>.pngの命名に使う。 */
 function hostnameForFilename(url: string): string {
@@ -344,7 +371,7 @@ async function dispatch(command: ParsedFetchCommand | ParsedLinksCommand | Parse
       ...(command.forceFull !== undefined ? { force_full: command.forceFull } : {}),
     };
     const blocks = await handleFetchTool(input);
-    writeBlocks(blocks, command.url, command.outDir ?? process.cwd());
+    writeBlocks(blocks, command.url, command.outDir ?? resolveFetchScreenshotDir());
     return;
   }
 

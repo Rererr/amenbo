@@ -184,6 +184,27 @@ describe("parseCliArgs", () => {
       expect(() => parseCliArgs(["screenshot", "https://example.com/", "--scale", "0"])).toThrow(CliUsageError);
     });
 
+    it("レビュー指摘対応: --scaleが1.0を超える場合はCliUsageErrorを投げる(MCP側のzod .max(1.0)と強度を揃える)", () => {
+      expect(() => parseCliArgs(["screenshot", "https://example.com/", "--scale", "3.0"])).toThrow(CliUsageError);
+    });
+
+    it("レビュー指摘対応: --scaleが0.5未満の場合はCliUsageErrorを投げる(MCP側のzod .min(0.5)と強度を揃える)", () => {
+      expect(() => parseCliArgs(["screenshot", "https://example.com/", "--scale", "0.1"])).toThrow(CliUsageError);
+    });
+
+    it("レビュー指摘対応: --scaleが範囲下限(0.5)/上限(1.0)ちょうどの場合は通る", () => {
+      expect(parseCliArgs(["screenshot", "https://example.com/", "--scale", "0.5"])).toEqual({
+        kind: "screenshot",
+        url: "https://example.com/",
+        scale: 0.5,
+      });
+      expect(parseCliArgs(["screenshot", "https://example.com/", "--scale", "1.0"])).toEqual({
+        kind: "screenshot",
+        url: "https://example.com/",
+        scale: 1.0,
+      });
+    });
+
     it("screenshot --helpはhelp(topic: screenshot)と判定する", () => {
       expect(parseCliArgs(["screenshot", "--help"])).toEqual({ kind: "help", topic: "screenshot" });
     });
