@@ -54,4 +54,49 @@ describe("diffMarkdown", () => {
     expect(result.sections).toEqual([]);
     expect(result.allSectionsChanged).toBe(false);
   });
+
+  it("レビュー指摘対応: 同一level+headingの節が複数回出現しても出現順で個別に対応付けて比較する", () => {
+    // FAQ・更新履歴等で頻出する「同じ見出しテキストの節が複数ある」ケース。
+    // 旧: 1・2番目の「## お知らせ」のみ内容変更、3番目は不変。
+    const old = [
+      "# トップ",
+      "",
+      "## お知らせ",
+      "",
+      "お知らせ1です。",
+      "",
+      "## お知らせ",
+      "",
+      "お知らせ2です。",
+      "",
+      "## お知らせ",
+      "",
+      "お知らせ3です。",
+    ].join("\n");
+    const updated = [
+      "# トップ",
+      "",
+      "## お知らせ",
+      "",
+      "お知らせ1を更新しました。",
+      "",
+      "## お知らせ",
+      "",
+      "お知らせ2を更新しました。",
+      "",
+      "## お知らせ",
+      "",
+      "お知らせ3です。",
+    ].join("\n");
+
+    const result = diffMarkdown(old, updated);
+
+    // 1・2番目のみchangedとして報告され、3番目(不変)は差分に含まれない
+    expect(result.sections).toHaveLength(2);
+    expect(result.sections.every((s) => s.type === "changed" && s.heading === "お知らせ")).toBe(true);
+    expect(result.sections.some((s) => s.content.includes("お知らせ1を更新しました。"))).toBe(true);
+    expect(result.sections.some((s) => s.content.includes("お知らせ2を更新しました。"))).toBe(true);
+    expect(result.sections.some((s) => s.content.includes("お知らせ3です。"))).toBe(false);
+    expect(result.allSectionsChanged).toBe(false);
+  });
 });

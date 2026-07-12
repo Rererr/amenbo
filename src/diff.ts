@@ -34,19 +34,41 @@ function sectionKey(section: Pick<MarkdownSection, "heading" | "level">): string
   return `${section.level}::${section.heading}`;
 }
 
-/** 旧Markdownと新Markdownを節単位(見出しテキスト+レベルをキー)で比較する。 */
+/**
+ * `${level}::${heading}` の基本キーに、同一キーの中での出現順インデックスを付与した
+ * 一意キーを一覧生成する。
+ *
+ * レビュー指摘対応: 「## お知らせ」「### Q」のように同一level+heading見出しが複数回
+ * 出現するページ(FAQ・更新履歴等、日本語Webで頻出)では、基本キーだけでは全て同じキーに
+ * 潰れてしまい、Mapが後勝ちで1つを残す他は消えてしまう。同名見出し同士は出現位置で
+ * 対応付けるのが妥当なため、出現順(0-indexed)をキーへ含めて位置的に対応付ける。
+ */
+function buildOccurrenceKeys(sections: readonly MarkdownSection[]): string[] {
+  const occurrence = new Map<string, number>();
+  return sections.map((section) => {
+    const base = sectionKey(section);
+    const index = occurrence.get(base) ?? 0;
+    occurrence.set(base, index + 1);
+    return `${base}::${index}`;
+  });
+}
+
+/** 旧Markdownと新Markdownを節単位(見出しテキスト+レベル+出現順をキー)で比較する。 */
 export function diffMarkdown(oldMarkdown: string, newMarkdown: string): DiffResult {
   const oldSections = splitSections(oldMarkdown);
   const newSections = splitSections(newMarkdown);
 
-  const oldByKey = new Map(oldSections.map((section) => [sectionKey(section), section]));
-  const newKeys = new Set(newSections.map((section) => sectionKey(section)));
+  const oldKeys = buildOccurrenceKeys(oldSections);
+  const newKeys = buildOccurrenceKeys(newSections);
+
+  const oldByKey = new Map(oldSections.map((section, i) => [oldKeys[i], section]));
+  const newKeySet = new Set(newKeys);
 
   const sections: SectionDiff[] = [];
   let unchangedCount = 0;
 
-  for (const section of newSections) {
-    const previous = oldByKey.get(sectionKey(section));
+  newSections.forEach((section, i) => {
+    const previous = oldByKey.get(newKeys[i] ?? "");
     if (!previous) {
       sections.push({ type: "added", level: section.level, heading: section.heading, content: section.content });
     } else if (previous.ownContent !== section.ownContent) {
@@ -56,13 +78,13 @@ export function diffMarkdown(oldMarkdown: string, newMarkdown: string): DiffResu
     } else {
       unchangedCount++;
     }
-  }
+  });
 
-  for (const section of oldSections) {
-    if (!newKeys.has(sectionKey(section))) {
+  oldSections.forEach((section, i) => {
+    if (!newKeySet.has(oldKeys[i] ?? "")) {
       sections.push({ type: "removed", level: section.level, heading: section.heading, content: "" });
     }
-  }
+  });
 
   const allSectionsChanged = unchangedCount === 0 && (oldSections.length > 0 || newSections.length > 0);
 
