@@ -10,7 +10,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { computeScreenshotCacheKey, PageCache, type CacheStatus, type ScreenshotCacheStatus } from "./cache.js";
+import { computeScreenshotCacheKey, PageCache, type CacheEntry, type CacheStatus, type ScreenshotCacheStatus } from "./cache.js";
 import { diffMarkdown, type SectionDiff } from "./diff.js";
 import { AmenboError, SectionNotFoundError } from "./errors.js";
 import { detectDataSources } from "./extract/dataSources.js";
@@ -664,6 +664,15 @@ function formatPdfTextResponse(title: string | null, finalUrl: string, cacheStat
   return `${header}\n\n${paginated.content}`;
 }
 
+/** キャッシュ済みPDFエントリからテキスト応答を組み立てる(fresh応答/304再検証後の応答で共用)。 */
+function formatPdfResponseFromCache(url: string, cached: CacheEntry, maxTokens: number, page: number): string {
+  const paginated = paginateMarkdown(cached.markdown, maxTokens, page);
+  const title = (cached.metadata.title as string | null) ?? null;
+  const finalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
+  const pdfPageCount = Number(cached.metadata.pdfPageCount ?? 0);
+  return formatPdfTextResponse(title, finalUrl, "fresh", pdfPageCount, paginated);
+}
+
 /** PDFはキャッシュ層(§3-3等)を流用しつつ独立した経路で扱う。テキスト層があればMarkdown、無ければ画像タイル。 */
 async function handlePdfFetch(
   url: string,
@@ -673,20 +682,35 @@ async function handlePdfFetch(
 ): Promise<Array<TextBlock | ImageBlock>> {
   const cached = cache.get(url);
   if (cached && cache.isFresh(cached)) {
-    const paginated = paginateMarkdown(cached.markdown, maxTokens, page);
-    const title = (cached.metadata.title as string | null) ?? null;
-    const finalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
-    const pdfPageCount = Number(cached.metadata.pdfPageCount ?? 0);
-    return [{ type: "text", text: formatPdfTextResponse(title, finalUrl, "fresh", pdfPageCount, paginated) }];
+    return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
   }
 
   // レビュー指摘対応: キャッシュfresh応答時は実ネットワークアクセスが発生しないため
   // guardしない(resolvePageと同じ方針)。実際にPDFを取得しに行く直前でのみguardする。
   await politeness.guard(url, onProgress);
+
+  // 低負荷原則対応: TTL失効後もキャッシュ(etag/last-modified)があれば条件付きGETで再検証する。
+  // HTML経路(resolvePage)は既にこの流儀で304時のフルDL+再パースを回避しているのに対し、
+  // PDF経路はTTL失効後は常にフルDL+全ページ再パースを行っており、20MB級の官公庁PDFで
+  // 内容不変でも毎回無駄なコストを払っていた不整合の修正。
+  const conditionalHeaders: Record<string, string> = {};
+  if (cached?.etag) conditionalHeaders["If-None-Match"] = cached.etag;
+  if (cached?.lastModified) conditionalHeaders["If-Modified-Since"] = cached.lastModified;
+
   const binary = await httpGetBinary(url, {
     maxBytes: DEFAULT_PDF_MAX_BYTES,
     checkRobots: (targetUrl) => politeness.checkRobotsAllowed(targetUrl),
+    ...(Object.keys(conditionalHeaders).length > 0 ? { headers: conditionalHeaders } : {}),
   });
+
+  if (binary.status === 304) {
+    if (!cached) throw new UnexpectedNotModifiedError(url);
+    cache.touch(url);
+    // PDF応答フォーマットのcacheStatus型は"fresh"|"miss"のみのため、304再検証も
+    // "fresh"として表示する(HTML応答の"revalidated"相当だが、既存フォーマットは変更しない)。
+    return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
+  }
+
   onProgress?.("PDFを解析しています…");
   const textResult = await extractPdfText(binary.bytes);
 
@@ -774,8 +798,18 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
 
   // 機能B: 非HTMLコンテンツはMarkdown抽出・キャッシュ・mode/selector/section等を適用せず、
   // メタデータ+プレビュー+curl誘導のハンドオフ応答を返す(PDFのURL判定と同様の独立経路)。
+  //
+  // レビュー指摘対応: ただしcontent-typeでPDFと判明した場合(URL拡張子には現れない
+  // 官公庁の`/download?id=123`型ダウンロードエンドポイント等)は、行き止まりのハンドオフ
+  // 応答にせずhandlePdfFetch(既存のPDF専用経路)へ合流させる。関数冒頭のlooksLikePdf(input.url, null)
+  // はURL拡張子で早期判明する場合の経路であり、ここはcontent-type確定後にのみ判明する
+  // 場合の救済経路のため、拡張子ありのPDFが二重処理されることはない。
   if ("kind" in resolvedOrHandoff) {
-    return [{ type: "text", text: formatHandoffResponse(resolvedOrHandoff.handoff, maxTokens) }];
+    const { handoff } = resolvedOrHandoff;
+    if (looksLikePdf(handoff.finalUrl, handoff.contentType)) {
+      return handlePdfFetch(input.url, page, maxTokens, input.onProgress);
+    }
+    return [{ type: "text", text: formatHandoffResponse(handoff, maxTokens) }];
   }
   const resolved = resolvedOrHandoff;
 
