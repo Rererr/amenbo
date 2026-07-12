@@ -6,12 +6,12 @@
     "url": "https://github.com/Rererr/amenbo",
     "source": "github"
   },
-  "version": "0.1.5",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "amenbo",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "transport": {
         "type": "stdio"
       }
