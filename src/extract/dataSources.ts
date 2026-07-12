@@ -20,8 +20,18 @@ const STRUCTURED_EXTENSIONS = [".csv", ".tsv", ".zip", ".json", ".xlsx", ".xls"]
  * ドメインを問わず一致させてよい、意図が強く明確な語彙のみに絞る(単独の「ダウンロード」は
  * 「点字ダウンロード」等の無関係なリンクまで拾ってしまうため除外し、「一括ダウンロード」
  * のような強いシグナルのみを対象にする)。
+ *
+ * "API" のみ他と異なりmatchesVocab内で単語境界一致に照合する(下記コメント参照)。
  */
-const GENERIC_VOCAB_KEYWORDS = ["一括ダウンロード", "API", "sitemap.xml", "RSS"];
+const GENERIC_VOCAB_KEYWORDS = ["一括ダウンロード", "sitemap.xml", "RSS"];
+
+/**
+ * 実機検証での修正: "API" を`haystack.includes("api")`のような単純な部分一致で
+ * 照合すると、Yahoo!ニュース等の広告リダイレクトURL(`.../redirect_api_log/...`)のような
+ * 無関係な文字列も誤ってヒットしてしまう。英字の語境界(`\bapi\b`)で厳格化し、
+ * 「redirect_api_log」のような複合語の一部としての出現は除外する。
+ */
+const API_WORD_PATTERN = /\bapi\b/i;
 
 /**
  * 「オープンデータ」は単独では説明文・他省庁ポータルへのリンク等でも頻出するため、
@@ -50,12 +60,16 @@ function isSameDomain(url: string, baseUrl: string): boolean {
 }
 
 function matchesVocab(entry: LinkEntry, baseUrl: string): boolean {
-  const haystack = `${entry.title ?? ""} ${entry.url}`.toLowerCase();
+  const haystack = `${entry.title ?? ""} ${entry.url}`;
+  const haystackLower = haystack.toLowerCase();
 
-  if (GENERIC_VOCAB_KEYWORDS.some((keyword) => haystack.includes(keyword.toLowerCase()))) {
+  if (API_WORD_PATTERN.test(haystack)) {
     return true;
   }
-  if (SAME_DOMAIN_VOCAB_KEYWORDS.some((keyword) => haystack.includes(keyword.toLowerCase()))) {
+  if (GENERIC_VOCAB_KEYWORDS.some((keyword) => haystackLower.includes(keyword.toLowerCase()))) {
+    return true;
+  }
+  if (SAME_DOMAIN_VOCAB_KEYWORDS.some((keyword) => haystackLower.includes(keyword.toLowerCase()))) {
     return isSameDomain(entry.url, baseUrl);
   }
   return false;
