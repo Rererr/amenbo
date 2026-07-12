@@ -11,9 +11,10 @@
  *     十分ならスクショ切替の理由にしない(=誤判定対策)が、canvas/svgはテキスト代替が
  *     原理的に存在しないため常に評価する。
  *   - 抽出テキストの絶対量(extractedTokenEstimate)が十分あれば、密度低下・表由来の
- *     占有率超過のみを理由にしたscreenshot切替は行わない(J6・canvas/svgは対象外)。
+ *     占有率超過・J6画像検知のみを理由にしたscreenshot切替は行わない(canvas/svgは対象外)。
  *   - J6 画像文字検知 = img面積占有率(width/height属性からの近似) と alt欠落率
- *     (「バナー/画像化料金表」等、画像で情報を出しているページの検知)
+ *     (「バナー/画像化料金表」等、画像で情報を出しているページの検知)。抽出テキストが
+ *     十分あるページ(=本文が既に正しく抽出できている)は誤検知として発火させない。
  * いずれかが閾値を割れば/超えればMarkdown抽出で情報が失われていると判断し、
  * スクリーンショットへの切替を提案する。
  */
@@ -143,7 +144,11 @@ export function evaluateQuality(input: QualityScoreInput): QualityScoreResult {
     };
   }
 
-  if (input.imgAreaRatio > IMG_AREA_RATIO_THRESHOLD && imgMissingAltRatio > IMG_MISSING_ALT_RATIO_THRESHOLD) {
+  // 抽出テキストの絶対量が十分(500tok目安)あるページは、密度・表と同様に「画像に情報が
+  // 閉じ込められている」とはみなさずJ6を発火させない(density/tableExtractedWellと同じ
+  // hasSubstantialExtractedText免除。実測でYahoo!ニュース記事が本文を正しく抽出できて
+  // いるにも関わらずJ6にヒットしスクショへ誤って切替わっていた非対称を解消する)。
+  if (input.imgAreaRatio > IMG_AREA_RATIO_THRESHOLD && imgMissingAltRatio > IMG_MISSING_ALT_RATIO_THRESHOLD && !hasSubstantialExtractedText) {
     return {
       density,
       visualOccupancyRatio,
