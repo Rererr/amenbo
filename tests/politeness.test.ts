@@ -313,3 +313,93 @@ describe("PolitenessManager - store注入時のプロセス間レート制御共
     expect(sleepSpy).toHaveBeenCalledWith(1000);
   });
 });
+
+// レビュー指摘対応: CLIは1コマンド=1プロセスのため、robots.txt取得結果もプロセス間で
+// 共有する必要がある(でなければCLIバルク収集時にコマンド毎に再取得してしまう)。
+// robotsStoreオプション(cache.tsのrobots_cacheテーブル相当)を注入した場合の挙動を検証する。
+describe("PolitenessManager - robotsStore注入時のプロセス間robots.txtキャッシュ共有", () => {
+  function createFakeRobotsStore(): {
+    get: (origin: string) => { body: string; fetchedAt: number } | null;
+    set: (origin: string, body: string, fetchedAt: number) => void;
+    data: Map<string, { body: string; fetchedAt: number }>;
+  } {
+    const data = new Map<string, { body: string; fetchedAt: number }>();
+    return {
+      data,
+      get: (origin) => data.get(origin) ?? null,
+      set: (origin, body, fetchedAt) => {
+        data.set(origin, { body, fetchedAt });
+      },
+    };
+  }
+
+  it("robotsStoreに有効なキャッシュがあれば、ネットワークを引かずそこから復元する", async () => {
+    const clock = createClock();
+    const robotsStore = createFakeRobotsStore();
+    // 「別プロセスが直近取得済み」という状態を模す
+    robotsStore.data.set("http://example.com", { body: "User-agent: *\nDisallow: /admin\n", fetchedAt: clock.now() });
+    const pm = new PolitenessManager({ now: clock.now, sleep: async () => {}, robotsTtlMs: 60_000, robotsStore });
+
+    await expect(pm.checkRobotsAllowed("http://example.com/admin/x")).rejects.toThrow(RobotsDeniedError);
+    expect(httpGetMock).not.toHaveBeenCalled();
+  });
+
+  it("ネットワーク取得結果はインメモリだけでなくrobotsStoreへも書き込まれる", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /admin\n");
+    const clock = createClock();
+    const robotsStore = createFakeRobotsStore();
+    const pm = new PolitenessManager({ now: clock.now, sleep: async () => {}, robotsTtlMs: 60_000, robotsStore });
+
+    await pm.checkRobotsAllowed("http://example.com/a");
+
+    expect(robotsStore.data.get("http://example.com")?.body).toBe("User-agent: *\nDisallow: /admin\n");
+    expect(httpGetMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("2回目のgetRobotsは(インメモリキャッシュのTTL内なので)ネットワークを引かない", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /admin\n");
+    const clock = createClock();
+    const robotsStore = createFakeRobotsStore();
+    const pm = new PolitenessManager({ now: clock.now, sleep: async () => {}, robotsTtlMs: 60_000, robotsStore });
+
+    await pm.checkRobotsAllowed("http://example.com/a");
+    await pm.checkRobotsAllowed("http://example.com/b");
+
+    expect(httpGetMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("別プロセス相当(新しいPolitenessManagerインスタンス)でも、共有したrobotsStoreからネットワークを引かず復元する", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /admin\n");
+    const clock = createClock();
+    const robotsStore = createFakeRobotsStore();
+    const pmFirstProcess = new PolitenessManager({ now: clock.now, sleep: async () => {}, robotsTtlMs: 60_000, robotsStore });
+    await pmFirstProcess.checkRobotsAllowed("http://example.com/a"); // 1回目のプロセスがネットワーク取得+robotsStoreへ書き込み
+    httpGetMock.mockClear();
+
+    const pmSecondProcess = new PolitenessManager({ now: clock.now, sleep: async () => {}, robotsTtlMs: 60_000, robotsStore });
+    await expect(pmSecondProcess.checkRobotsAllowed("http://example.com/admin/x")).rejects.toThrow(RobotsDeniedError);
+
+    expect(httpGetMock).not.toHaveBeenCalled(); // 別インスタンス(=別プロセス相当)でも再取得しない
+  });
+
+  it("空bodyのrobotsStoreキャッシュ(robots.txt不在=制限なし)からも正しく復元し、毎回ネットワークを引かない", async () => {
+    const clock = createClock();
+    const robotsStore = createFakeRobotsStore();
+    robotsStore.data.set("http://example.com", { body: "", fetchedAt: clock.now() });
+    const pm = new PolitenessManager({ now: clock.now, sleep: async () => {}, robotsTtlMs: 60_000, robotsStore });
+
+    await expect(pm.checkRobotsAllowed("http://example.com/anything")).resolves.toBeUndefined();
+    expect(httpGetMock).not.toHaveBeenCalled();
+  });
+
+  it("robotsStore未指定時は従来通りインメモリのみで動作する(完全後方互換)", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /admin\n");
+    const clock = createClock();
+    const pm = new PolitenessManager({ now: clock.now, sleep: async () => {}, robotsTtlMs: 60_000 });
+
+    await pm.checkRobotsAllowed("http://example.com/a");
+    await pm.checkRobotsAllowed("http://example.com/b");
+
+    expect(httpGetMock).toHaveBeenCalledTimes(1);
+  });
+});

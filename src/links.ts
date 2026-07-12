@@ -72,8 +72,15 @@ interface XmlLikeDocument {
   querySelector(selector: string): XmlLikeElement | null;
 }
 
-async function fetchXml(url: string, timeoutMs: number, rewrite?: (xml: string) => string): Promise<XmlLikeDocument> {
-  const result = await httpGet(url, { timeoutMs });
+async function fetchXml(
+  url: string,
+  timeoutMs: number,
+  politeness: PolitenessManager,
+  rewrite?: (xml: string) => string,
+): Promise<XmlLikeDocument> {
+  // レビュー指摘対応: リダイレクトで別オリジンへ着地した場合、着地先のrobots.txtも確認する
+  // (fetcher/http.tsのHttpGetOptions.checkRobots参照)。
+  const result = await httpGet(url, { timeoutMs, checkRobots: (targetUrl) => politeness.checkRobotsAllowed(targetUrl) });
   const { document } = parseHTML(rewrite ? rewrite(result.html) : result.html);
   return document as unknown as XmlLikeDocument;
 }
@@ -98,7 +105,7 @@ async function tryParseSitemap(
   let document: XmlLikeDocument;
   try {
     await politeness.guard(sitemapUrl, onProgress);
-    document = await fetchXml(sitemapUrl, timeoutMs);
+    document = await fetchXml(sitemapUrl, timeoutMs, politeness);
   } catch (error) {
     if (isFallbackBlockingError(error)) throw error;
     // sitemap.xmlが存在しない(404等)のは大半のサイトで起きる通常のフォールバック経路なので
@@ -138,7 +145,7 @@ async function tryParseFeed(
   try {
     await politeness.guard(feedUrl, onProgress);
     // RSS 2.0の<link>はHTMLパーサにvoid要素として扱われるためリネームして回避する(下記コメント参照)
-    document = await fetchXml(feedUrl, timeoutMs, escapeRssLinkTag);
+    document = await fetchXml(feedUrl, timeoutMs, politeness, escapeRssLinkTag);
   } catch (error) {
     if (isFallbackBlockingError(error)) throw error;
     if (!(error instanceof HttpStatusError)) {
@@ -252,7 +259,7 @@ export async function discoverLinks(url: string, politeness: PolitenessManager, 
 
   // 2. ページを取得し、<link rel=alternate>が指すRSS/Atomフィードを試す
   await politeness.guard(url, options.onProgress);
-  const pageResult = await fetchPage(url, { timeoutMs });
+  const pageResult = await fetchPage(url, { timeoutMs, checkRobots: (targetUrl) => politeness.checkRobotsAllowed(targetUrl) });
   if ("notModified" in pageResult) {
     return finalize("page", [], options.filter);
   }

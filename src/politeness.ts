@@ -1,7 +1,8 @@
 /**
  * politeness.ts — 収集先への低負荷を担保するpolitenessマネージャ。
  *
- * - robots.txt尊重(robots-parser)。取得結果はプロセス内でキャッシュ(TTL付き)
+ * - robots.txt尊重(robots-parser)。取得結果はプロセス内でキャッシュ(TTL付き)し、
+ *   robotsStore注入時はプロセス間でも共有する(CLI併設対応)
  * - Crawl-Delay尊重
  * - ドメイン毎の直列キュー + 既定最小間隔1秒
  */
@@ -54,6 +55,17 @@ export interface PolitenessStore {
   setLastRequestAt(host: string, at: number): void;
 }
 
+/**
+ * レビュー指摘対応: robots.txt取得結果をプロセス間で共有するための永続化ストア。
+ * PolitenessStoreと同じ考え方で、cache.ts(robots_cacheテーブル)をこの形で注入する想定。
+ * CLIは1コマンド=1プロセスのため、これが無いとREADME推奨の「CLIで複数ページ一括収集」時に
+ * コマンド毎にrobots.txtを再取得してしまい低負荷原則に反する。
+ */
+export interface RobotsStore {
+  get(origin: string): { body: string; fetchedAt: number } | null;
+  set(origin: string, body: string, fetchedAt: number): void;
+}
+
 export interface PolitenessOptions {
   /** ドメイン毎の最小リクエスト間隔(ミリ秒、既定1000ms)。robots.txtのCrawl-Delayがこれより長ければそちらを優先。 */
   minIntervalMs?: number;
@@ -65,6 +77,8 @@ export interface PolitenessOptions {
   sleep?: (ms: number) => Promise<void>;
   /** 未指定時は従来通りインメモリのみでレート制御する(完全後方互換)。 */
   store?: PolitenessStore;
+  /** 未指定時は従来通りインメモリのみでrobots.txtをキャッシュする(完全後方互換)。 */
+  robotsStore?: RobotsStore;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -77,6 +91,7 @@ export class PolitenessManager {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly store: PolitenessStore | undefined;
+  private readonly robotsStore: RobotsStore | undefined;
 
   private readonly robotsCache = new Map<string, RobotsCacheEntry>();
   // N8: settledを持たせるのは、pruneStaleHostStateがまだ完了していない(=キューに並んでいる
@@ -92,6 +107,7 @@ export class PolitenessManager {
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
     this.store = options.store;
+    this.robotsStore = options.robotsStore;
   }
 
   /**
@@ -213,6 +229,18 @@ export class PolitenessManager {
       return cached.robots;
     }
 
+    // レビュー指摘対応: インメモリキャッシュに無い/TTL超過の場合、ネットワークへ行く前に
+    // robotsStore(cache.tsのrobots_cacheテーブル。プロセス間共有)を確認する。ここで
+    // 復元できれば別プロセス(CLIの前回実行等)が取得済みのrobots.txtを再利用でき、
+    // CLIバルク収集時の再取得(=先方への追加負荷)を避けられる。空bodyの記録(robots.txt
+    // 不在=制限なし)もfetchedAtの有無で「未記録」と区別して正しく復元する。
+    const stored = this.robotsStore?.get(origin);
+    if (stored && this.now() - stored.fetchedAt < this.robotsTtlMs) {
+      const robots = robotsParser(`${origin}/robots.txt`, stored.body);
+      this.robotsCache.set(origin, { robots, fetchedAt: stored.fetchedAt });
+      return robots;
+    }
+
     const robotsUrl = `${origin}/robots.txt`;
     let body = "";
     try {
@@ -236,7 +264,9 @@ export class PolitenessManager {
     }
 
     const robots = robotsParser(robotsUrl, body);
-    this.robotsCache.set(origin, { robots, fetchedAt: this.now() });
+    const fetchedAt = this.now();
+    this.robotsCache.set(origin, { robots, fetchedAt });
+    this.robotsStore?.set(origin, body, fetchedAt);
     return robots;
   }
 }
