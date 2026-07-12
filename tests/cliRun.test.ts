@@ -146,6 +146,33 @@ describe("run() - CLIサブコマンドの主要経路", () => {
     expect(writtenChunks).toContain(expectedPath);
   });
 
+  it("レビュー指摘対応(Medium): fetchがscreenshotへ自動切替した場合、--out-dir未指定時はcwdでなく$AMENBO_CACHE_DIR/screenshots-cli/配下へ保存する", async () => {
+    const pngBytes = Buffer.from([137, 80, 78, 71]);
+    handleFetchToolMock.mockResolvedValue([
+      { type: "text", text: "header" },
+      { type: "image", data: pngBytes.toString("base64"), mimeType: "image/png" },
+    ]);
+
+    const exitCode = await run(["fetch", "https://example.com/"]);
+
+    expect(exitCode).toBe(0);
+    const expectedPath = join(cacheDir, "screenshots-cli", "amenbo-example.com-1.png");
+    expect(readFileSync(expectedPath)).toEqual(pngBytes);
+    const writtenChunks = stdoutSpy.mock.calls.map((call) => String(call[0])).join("");
+    expect(writtenChunks).toContain(expectedPath);
+  });
+
+  it("レビュー指摘対応(Medium): fetchで--out-dirを明示指定した場合はそちらを尊重する(cwd/screenshots-cliではない)", async () => {
+    const pngBytes = Buffer.from([137, 80, 78, 71]);
+    handleFetchToolMock.mockResolvedValue([{ type: "image", data: pngBytes.toString("base64"), mimeType: "image/png" }]);
+
+    const exitCode = await run(["fetch", "https://example.com/", "--out-dir", outDir]);
+
+    expect(exitCode).toBe(0);
+    const expectedPath = join(outDir, "amenbo-example.com-1.png");
+    expect(readFileSync(expectedPath)).toEqual(pngBytes);
+  });
+
   it("linksコマンドはdiscoverLinksの結果をformatLinksResponse経由で標準出力へ書く", async () => {
     discoverLinksMock.mockResolvedValue({
       source: "page",
