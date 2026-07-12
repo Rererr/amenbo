@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { cleanupCacheDir } from "./helpers/tempCache.js";
 
 // core.tsはモジュール読み込み時にPageCache(node:sqlite)を既定のキャッシュディレクトリ
 // (~/.cache/amenbo)に生成する副作用を持つため、テスト用の一時ディレクトリへ退避させてから
@@ -10,11 +11,13 @@ import { afterAll, describe, expect, it } from "vitest";
 const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-server-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
-const { formatHandoffResponse, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/core.js");
+const { cache, formatHandoffResponse, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/core.js");
 type HandoffResultLike = Parameters<typeof formatHandoffResponse>[0];
 
 afterAll(() => {
-  rmSync(cacheDir, { recursive: true, force: true });
+  // Windows CI対応: 開いたままのSQLiteファイルハンドルを解放してから削除する
+  // (詳細はtests/helpers/tempCache.tsのコメント参照)。
+  cleanupCacheDir(cacheDir, () => cache.close());
 });
 
 function makeHandoff(overrides: Partial<HandoffResultLike> = {}): HandoffResultLike {

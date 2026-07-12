@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupCacheDir } from "./helpers/tempCache.js";
 
 /**
  * レビュー指摘対応: handlePdfFetch(core.ts)はキャッシュTTL失効後、常にフルDL+全ページ
@@ -33,7 +34,9 @@ process.env.AMENBO_CACHE_TTL_MS = "50";
 const { cache, handleFetchTool, politeness } = await import("../src/core.js");
 
 afterAll(() => {
-  rmSync(cacheDir, { recursive: true, force: true });
+  // Windows CI対応: 開いたままのSQLiteファイルハンドルを解放してから削除する
+  // (詳細はtests/helpers/tempCache.tsのコメント参照)。
+  cleanupCacheDir(cacheDir, () => cache.close());
   delete process.env.AMENBO_CACHE_TTL_MS;
 });
 

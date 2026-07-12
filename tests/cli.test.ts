@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { cleanupCacheDir } from "./helpers/tempCache.js";
 
 // cli.tsはcore.tsをimportし、core.tsはモジュール読み込み時にPageCache(node:sqlite)を
 // 既定のキャッシュディレクトリ(~/.cache/amenbo)に生成する副作用を持つ。他のテストファイルと
@@ -11,9 +12,13 @@ const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-cli-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
 const { CliUsageError, parseCliArgs } = await import("../src/cli.js");
+// cli.jsが静的importするcore.jsのシングルトンキャッシュ(既にモジュールキャッシュ経由で
+// 同一インスタンスを参照する)。afterAllでrmSyncの前にcloseし、Windowsでの
+// ファイルハンドルロック(EPERM)を避ける(詳細はtests/helpers/tempCache.tsのコメント参照)。
+const { cache } = await import("../src/core.js");
 
 afterAll(() => {
-  rmSync(cacheDir, { recursive: true, force: true });
+  cleanupCacheDir(cacheDir, () => cache.close());
 });
 
 describe("parseCliArgs", () => {

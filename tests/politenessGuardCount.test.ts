@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaptureResult } from "../src/screenshot.js";
+import { cleanupCacheDir } from "./helpers/tempCache.js";
 
 /**
  * レビュー指摘対応: politeness.guardは「実際にサイトへ取得しに行く」直前でのみ呼ばれるべきで、
@@ -54,10 +55,12 @@ vi.mock("../src/extract/qualityScore.js", async (importOriginal) => {
 const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-guard-count-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
-const { handleFetchTool, handleScreenshotTool, politeness } = await import("../src/core.js");
+const { cache, handleFetchTool, handleScreenshotTool, politeness } = await import("../src/core.js");
 
 afterAll(() => {
-  rmSync(cacheDir, { recursive: true, force: true });
+  // Windows CI対応: 開いたままのSQLiteファイルハンドルを解放してから削除する
+  // (詳細はtests/helpers/tempCache.tsのコメント参照)。
+  cleanupCacheDir(cacheDir, () => cache.close());
 });
 
 function htmlRouted(url: string, html: string) {

@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupCacheDir } from "./helpers/tempCache.js";
 
 /**
  * MCP progress notifications: server.ts側の配線(progressToken有無での通知有無・
@@ -39,9 +40,14 @@ process.env.AMENBO_CACHE_DIR = cacheDir;
 const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
 const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { server } = await import("../src/server.js");
+// core.jsのvi.mockはhandleFetchTool/handleScreenshotToolのみ差し替え、cacheは
+// actual(実シングルトン)をそのまま透過するため、ここでも実キャッシュを参照できる。
+const { cache } = await import("../src/core.js");
 
 afterAll(() => {
-  rmSync(cacheDir, { recursive: true, force: true });
+  // Windows CI対応: 開いたままのSQLiteファイルハンドルを解放してから削除する
+  // (詳細はtests/helpers/tempCache.tsのコメント参照)。
+  cleanupCacheDir(cacheDir, () => cache.close());
 });
 
 beforeEach(() => {
