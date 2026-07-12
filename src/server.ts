@@ -24,6 +24,7 @@ import {
   handleFetchTool,
   handleScreenshotTool,
   politeness,
+  registerCoreShutdownHandlers,
   resolvePackageVersion,
 } from "./core.js";
 import { AmenboError } from "./errors.js";
@@ -154,6 +155,9 @@ server.registerTool(
 
 /** MCP stdioサーバーを起動する。CLI(cli.ts)が引数なし/`serve`サブコマンド時に呼ぶ後方互換経路でもある。 */
 export async function runServer(): Promise<void> {
+  // レビュー指摘対応: exit/SIGINT/SIGTERMハンドラ(core.ts)はサーバー常駐プロセスでのみ
+  // 必要なため、importするだけで走るモジュールトップレベルではなくここで明示的に登録する。
+  registerCoreShutdownHandlers();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

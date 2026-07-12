@@ -80,15 +80,30 @@ export const politeness = new PolitenessManager({
 // 必要がある(fetcher/browser.tsのregisterCleanupHandlersと同様の理由。あちらは
 // getBrowser()が一度も呼ばれない=chromium未起動のセッションではリスナー登録自体が行われない
 // ため、ここでサーバー起点の終了処理として独立して登録しておく)。
-process.once("exit", () => {
-  cache.close();
-});
-process.once("SIGINT", () => {
-  void closeBrowser().finally(() => process.exit(0));
-});
-process.once("SIGTERM", () => {
-  void closeBrowser().finally(() => process.exit(0));
-});
+//
+// レビュー指摘対応(Medium): 以前はこの登録をモジュールトップレベルで即時実行していたため、
+// core.tsをimportするだけの全テスト(vitestワーカープロセス)にもSIGINT/SIGTERMハンドラ
+// (closeBrowser().finally(() => process.exit(0)))が仕込まれてしまい、テスト中断時にvitestの
+// クリーンアップより先にprocess.exit(0)を呼びうる副作用があった。登録処理を関数へ切り出し、
+// MCPサーバー起動経路(server.ts runServer())からのみ呼ぶことで、importするだけでは
+// ホストプロセスに影響しないようにする。CLI(cli.ts)はrun()のfinallyでclosBrowser/cache.close済み
+// のため、この登録は不要(サーバー常駐プロセスのみが対象)。
+let coreShutdownHandlersRegistered = false;
+
+/** サーバー常駐プロセス向けの終了処理(exit/SIGINT/SIGTERM)を登録する。多重登録は行わない(冪等)。 */
+export function registerCoreShutdownHandlers(): void {
+  if (coreShutdownHandlersRegistered) return;
+  coreShutdownHandlersRegistered = true;
+  process.once("exit", () => {
+    cache.close();
+  });
+  process.once("SIGINT", () => {
+    void closeBrowser().finally(() => process.exit(0));
+  });
+  process.once("SIGTERM", () => {
+    void closeBrowser().finally(() => process.exit(0));
+  });
+}
 
 const DEFAULT_MAX_TOKENS = 8000;
 const DEFAULT_PAGE = 1;
