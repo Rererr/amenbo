@@ -76,8 +76,21 @@ export interface PruneOptions {
 const DEFAULT_MIN_TEXT_LENGTH = 20;
 const DEFAULT_SCORE_THRESHOLD = 0;
 
-/** 常に除去対象とする非本文タグ(セマンティックに明確なナビ/フッター等)。 */
-const ALWAYS_PRUNE_TAGS = new Set(["NAV", "ASIDE", "FOOTER", "HEADER", "FORM"]);
+/**
+ * 常に除去対象とする非本文タグ(セマンティックに明確なナビ/フッター等)。
+ * header/asideはここに含めない: HTML5では<article>/<section>/<main>内にネストして
+ * 「そのセクション自身の見出しブロック」としても使われる(WordPress/Ghost/Hugo系ブログの
+ * 標準構成 <article><header><h1>タイトル</h1><time>日付</time></header>...</article>)ため、
+ * 記事内ネストの場合は下記INSIDE_ARTICLE_PRUNE_TAGSで個別に扱う。
+ */
+const ALWAYS_PRUNE_TAGS = new Set(["NAV", "FOOTER", "FORM"]);
+/**
+ * ページレベル(article/section/main の外)でのみ常に除去するタグ。記事内ネストの場合は
+ * 除去せずスコアリング対象にも入れず温存し、Readabilityの本文判定に委ねる。
+ */
+const PAGE_LEVEL_ONLY_PRUNE_TAGS = new Set(["HEADER", "ASIDE"]);
+/** insideArticleをtrueにする(=以降の子孫をネスト扱いにする)セマンティックコンテナタグ。 */
+const ARTICLE_CONTAINER_TAGS = new Set(["ARTICLE", "SECTION", "MAIN"]);
 /** J4スコアで評価する候補タグ(div soup対応: セマンティックタグを持たない場合)。 */
 const SCORE_CANDIDATE_TAGS = new Set(["DIV", "SECTION", "UL", "OL"]);
 
@@ -98,8 +111,10 @@ function collectLinkText(element: PruneHostElement): string {
 
 /**
  * DOM上の低価値ブロックを除去する(document.body等をrootに渡す想定)。
- * 常に除去するタグ(nav/aside/footer/header/form)はその場で除去し子孫を再帰評価しない。
- * それ以外は先に子孫を再帰評価してから自身をスコアリングするボトムアップ走査にする
+ * 常に除去するタグ(nav/footer/form)はその場で除去し子孫を再帰評価しない。
+ * header/asideはページレベル(article/section/main の外)でのみ常に除去し、記事内ネストは
+ * 温存する(詳細はPAGE_LEVEL_ONLY_PRUNE_TAGSのコメント参照)。それ以外は先に子孫を
+ * 再帰評価してから自身をスコアリングするボトムアップ走査にする
  * (ページ全体が単一のラッパーdivに包まれている実サイト構成では、内部のnav/footer等を
  * 先に除去してからでないとラッパー全体が「リンク密度の高い1ブロック」として誤って
  * 丸ごと刈られてしまうため。トップダウンのままだと本文まで巻き添えで消える回帰があった)。
@@ -114,7 +129,7 @@ export function pruneLowValueBlocks(root: PruneHostElement, options: PruneOption
   const minTextLength = options.minTextLength ?? DEFAULT_MIN_TEXT_LENGTH;
   const scoreThreshold = options.scoreThreshold ?? DEFAULT_SCORE_THRESHOLD;
 
-  const walk = (element: PruneHostElement): number => {
+  const walk = (element: PruneHostElement, insideArticle: boolean): number => {
     let prunedCount = 0;
 
     for (const child of Array.from(element.children)) {
@@ -126,9 +141,23 @@ export function pruneLowValueBlocks(root: PruneHostElement, options: PruneOption
         continue;
       }
 
+      // header/asideはページレベル(article/section/main の外)でのみ常に除去する。
+      // 記事内ネストは「そのセクションの見出しブロック」として温存し、子孫の再帰評価も行わない
+      // (Readabilityの本文判定に委ねるため、スコアリング対象にも入れない)。
+      if (PAGE_LEVEL_ONLY_PRUNE_TAGS.has(tag)) {
+        if (!insideArticle) {
+          child.remove();
+          prunedCount++;
+        }
+        continue;
+      }
+
+      // 自身がarticle/section/mainなら、子孫はネスト扱い(insideArticle=true)にする。
+      const childInsideArticle = insideArticle || ARTICLE_CONTAINER_TAGS.has(tag);
+
       // 先に子孫を刈ってから自身を評価する(ボトムアップ)。子孫のnav/footer等が
       // 除去された後の「クリーンな」テキスト/リンク密度で自身のスコアを判定するため。
-      const descendantPrunedCount = walk(child);
+      const descendantPrunedCount = walk(child, childInsideArticle);
 
       if (SCORE_CANDIDATE_TAGS.has(tag)) {
         const text = child.textContent ?? "";
@@ -150,5 +179,7 @@ export function pruneLowValueBlocks(root: PruneHostElement, options: PruneOption
     return prunedCount;
   };
 
-  return walk(root);
+  // rootそのものがarticle/section/main(アダプタのcontentSelectorsがそれらに一致する場合等)
+  // であれば、その直下の子もネスト扱い(insideArticle=true)から開始する。
+  return walk(root, ARTICLE_CONTAINER_TAGS.has(root.tagName));
 }

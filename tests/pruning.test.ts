@@ -175,6 +175,32 @@ describe("pruneLowValueBlocks(fit-pruning)", () => {
     expect(root.textContent).not.toContain("フッターリンクその一");
   });
 
+  it("ページレベル(article/section/main外)のheaderは従来通り除去される", () => {
+    const root = makeElement(`
+      <header>サイトヘッダー</header>
+      <p>本文です。十分な長さの文章として認識されるように句読点を含めます。</p>
+    `);
+    const prunedCount = pruneLowValueBlocks(root);
+    expect(prunedCount).toBe(1);
+    expect(root.textContent).not.toContain("サイトヘッダー");
+    expect(root.textContent).toContain("本文です");
+  });
+
+  it("記事内ネストのheader(記事タイトル+日付)は除去されずDOMに残る(WordPress/Ghost/Hugo系ブログ構成)", () => {
+    const paragraph =
+      "これは本文の段落です。十分な長さがあり、句読点も多く含まれています。".repeat(20);
+    const root = makeElement(`
+      <article>
+        <header><h1>記事タイトル</h1><time>2026-07-01</time></header>
+        <div class="content"><p>${paragraph}</p></div>
+      </article>
+    `);
+    pruneLowValueBlocks(root);
+    expect(root.textContent).toContain("記事タイトル");
+    expect(root.textContent).toContain("2026-07-01");
+    expect(root.textContent).toContain("これは本文の段落です");
+  });
+
   it("親ごと丸ごと除去される場合、内部で先に個別除去された子孫は二重カウントしない", () => {
     // outerは内部のnavが除去された後もリンク偏重の断片テキストしか残らず、outer自体も
     // 低価値ブロックとして丸ごと除去される。この場合「navの個別除去」は既に除去される
