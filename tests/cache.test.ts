@@ -108,6 +108,41 @@ describe("PageCache", () => {
   });
 });
 
+describe("PageCache - prune間引き(CLIバルク収集での起動時掃除コスト削減)", () => {
+  it("前回pruneからTTL未満の再起動ではprune掃除を間引き、失効エントリが物理的に残る", () => {
+    const ttlMs = 900_000;
+    let now = 0;
+
+    // t=0: 初回起動でprune(meta=0)し、エントリAを保存する
+    const c1 = new PageCache({ dbPath, ttlMs, now: () => now });
+    c1.set({ url: "http://a/", etag: null, lastModified: null, markdown: "A", metadata: {} });
+    c1.close();
+
+    // t=100(<TTL): この起動はgateでpruneをskip(meta=0のまま)。エントリBを保存する
+    now = 100;
+    const c2 = new PageCache({ dbPath, ttlMs, now: () => now });
+    c2.set({ url: "http://b/", etag: null, lastModified: null, markdown: "B", metadata: {} });
+    c2.close();
+
+    // t=TTL+50: 前回prune(0)から経過≥TTLでgate成立→prune実行。A(fetched=0)は失効し削除、B(fetched=100)は残る
+    now = ttlMs + 50;
+    const c3 = new PageCache({ dbPath, ttlMs, now: () => now });
+    expect(c3.get("http://a/")).toBeUndefined();
+    expect(c3.get("http://b/")?.markdown).toBe("B");
+    c3.close();
+
+    // t=2*TTL-50: 直前prune(TTL+50)からの経過はTTL-100<TTLでgate不成立→skip。
+    // Bはこの時点で失効している(age=2*TTL-150>TTL)が、prune skipにより行が物理的に残る
+    // (prune実行時はcutoff超過で削除されるはずなので、getで取得できること自体がskipの証拠)。
+    now = 2 * ttlMs - 50;
+    const c4 = new PageCache({ dbPath, ttlMs, now: () => now });
+    const lingering = c4.get("http://b/");
+    expect(lingering?.markdown).toBe("B");
+    expect(c4.isFresh(lingering!)).toBe(false);
+    c4.close();
+  });
+});
+
 describe("PageCache - スクリーンショットキャッシュ", () => {
   it("未キャッシュのcacheKeyはgetScreenshotでundefinedを返す", () => {
     const cache = new PageCache({ dbPath, cacheDir: dir });
