@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetch as undiciFetch } from "undici";
-import { UnsupportedContentError } from "../src/errors.js";
 import { fetchPage, type HandoffResult } from "../src/fetcher/index.js";
 import { httpGetRouted } from "../src/fetcher/http.js";
 
@@ -114,9 +113,13 @@ describe("機能B: fetchPage - 非HTMLコンテンツのハンドオフ", () => 
     expect("handoff" in result).toBe(true);
   });
 
-  it("URL拡張子で検出できないPDF(content-typeのみで判明)は既存通りUnsupportedContentErrorのままにする(回帰防止)", async () => {
+  it("URL拡張子で検出できないPDF(content-typeのみで判明)もエラーを投げずHandoffResultを返す(core.ts側でPDF専用経路へルーティングするため)", async () => {
     fetchMock.mockResolvedValue(mockResponse(200, { "content-type": "application/pdf" }, "%PDF-1.4") as never);
 
-    await expect(fetchPage("http://93.184.216.34/download", { timeoutMs: 5000 })).rejects.toThrow(UnsupportedContentError);
+    const result = await fetchPage("http://93.184.216.34/download", { timeoutMs: 5000 });
+    expect("handoff" in result).toBe(true);
+    if ("handoff" in result) {
+      expect((result as HandoffResult).contentType).toContain("application/pdf");
+    }
   });
 });

@@ -6,7 +6,6 @@
  * 大半の静的/SSRページはHTTP GETのみで完結し、先方負荷・自機資源を最小化する。
  */
 import { parseHTML } from "linkedom";
-import { UnsupportedContentError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { fetchWithBrowser } from "./browser.js";
 import { httpGetRouted, type HttpGetOptions } from "./http.js";
@@ -109,13 +108,13 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
   }
 
   if (routed.kind === "handoff") {
-    // PDFの既存処理フロー(server.tsのURL拡張子判定 → handlePdfFetch)は変更しない。
-    // URL拡張子で検出できなかったPDF(content-typeのみで判明するケース)は、
-    // 機能B以前と同じくUnsupportedContentErrorのままにする(バイナリをテキストとして
-    // プレビューしてしまう回帰を避けるため)。
-    if (routed.contentType && /application\/pdf/i.test(routed.contentType)) {
-      throw new UnsupportedContentError(routed.finalUrl, routed.contentType);
-    }
+    // レビュー指摘対応: 以前はcontent-type=application/pdfのみUnsupportedContentErrorを
+    // 投げて行き止まりにしていたが、URL拡張子で検出できないPDF(官公庁の
+    // `/download?id=123`型ダウンロードエンドポイント等で頻出)がここに落ちると、curl誘導も
+    // 出せないまま利用者に「サポート対象外」とだけ返す不親切な経路になっていた。
+    // PDFかどうかの判定・専用処理へのルーティングはcore.ts(handleFetchTool)側で
+    // 行う(URL拡張子で早期判明したPDFと同じhandlePdfFetch経路へ合流させるため)。
+    // ここでは他の非HTMLコンテンツと同様、通常のhandoffとして返すだけにする。
     return {
       handoff: true,
       finalUrl: routed.finalUrl,
