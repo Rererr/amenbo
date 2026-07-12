@@ -18,7 +18,14 @@ jobs:
       matrix:
         # 22.13.0はnode:sqlite移行後の最低サポート版(engines)を実機で常時担保するための固定ピン。
         node-version: ["22.13.0", "24", "26"]
-    runs-on: ubuntu-latest
+        os: [ubuntu-latest]
+        # 日本の利用者はWindows比率が高く、過去にsymlink/argv解決のプラットフォーム依存バグ実績が
+        # あるため、node:sqlite・パス解決・CLI引数処理をWindowsでも機械的に検証する(node 24一本)。
+        # ブラウザ層はvi.mockで差し替えるためChromiumは不要。
+        include:
+          - node-version: "24"
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
