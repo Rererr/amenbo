@@ -10,3 +10,6 @@ coverage/
 *.sqlite
 *.sqlite-journal
 .DS_Store
+
+# Playwright MCP のランタイム生成物（ベンチ実行時の大容量スナップショット/DL）
+bench/.playwright-mcp/

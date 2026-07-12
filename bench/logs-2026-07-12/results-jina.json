@@ -1,0 +1,86 @@
+[
+  {
+    "tool": "jina",
+    "id": "zenn",
+    "url": "https://zenn.dev/avaintelligence/articles/b7d4743a448485",
+    "ok": true,
+    "ms": 2358,
+    "status": 200,
+    "textTokens": 4216,
+    "head": "Title: APIもDBも東京なのに、全クエリが太平洋横断していた話\n\nURL Source: https://zenn.dev/avaintelligence/articles/b7d4743a448485\n\nMarkdown Content:\n## はじめに\n\nAI x 旅行アプリのアバトラベル（[iOS](https://apps.apple.com/jp/app/%E3%82%A2%E3%83%90%E3%83%88%E3%83%A9%E3%83%99%E3%83%AB-%E6%B5%B7%E5%A4%96%E6%97%85%E8%A1%8C%E8%A8%88%E7%94%BB-%E6%97%85%E3%81%AE%E3%81%97%E3%81%8A%E3%82%8A-ai%E6%97%85%E8%A1%8C%E3%82%A2%E3%83%97%E3%83%AA/id647033",
+    "tableRows": 24,
+    "codeBlocks": 5
+  },
+  {
+    "tool": "jina",
+    "id": "wiki",
+    "url": "https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7",
+    "ok": true,
+    "ms": 2912,
+    "status": 200,
+    "textTokens": 38014,
+    "head": "Title: 都道府県の人口一覧\n\nURL Source: https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7\n\nPublished Time: 2004-02-27T14:08:16Z\n\nMarkdown Content:\n出典: フリー百科事典『ウィキペディア（Wikipedia）』\n\n[![Image 1](https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/2020_Japan_Census_population_prefectures.svg/250px-2020_Japan_Census_population_prefectures.svg.pn",
+    "tableRows": 407,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "jina",
+    "id": "aozora",
+    "url": "https://www.aozora.gr.jp/cards/000148/files/789_14547.html",
+    "ok": true,
+    "ms": 7869,
+    "status": 200,
+    "textTokens": 329380,
+    "head": "Title: 吾輩は猫である\n\nURL Source: https://www.aozora.gr.jp/cards/000148/files/789_14547.html\n\nPublished Time: Wed, 03 Jul 2024 18:34:01 GMT\n\nMarkdown Content:\n#### [一](https://www.aozora.gr.jp/cards/000148/files/789_14547.html)\n\n吾輩（わがはい）は猫である。名前はまだ無い。\n\n どこで生れたかとんと 見当（けんとう）がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて人間というものを見た。しかもあとで聞くとそれは書生という人間中で一番 獰悪（どうあく）な種族であったそうだ。この書生というのは時々我々を 捕（つかま）えて 煮（に）て",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "jina",
+    "id": "gov",
+    "url": "https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html",
+    "ok": true,
+    "ms": 2365,
+    "status": 200,
+    "textTokens": 26980,
+    "head": "Title: 介護サービス情報の公表システムデータのオープンデータ\n\nURL Source: https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html\n\nMarkdown Content:\n[![Image 1: 厚生労働省](https://www.mhlw.go.jp/content/000269503.png)![Image 2](https://www.mhlw.go.jp/common/img/transparent-header.png)](https://www.mhlw.go.jp/)\n\n検索 メニュー\n\n*   [本文へ](https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html#content)\n*   [お問合わせ窓口](https://www.mhlw.go.jp",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "jina",
+    "id": "pdf",
+    "url": "https://www.mhlw.go.jp/content/000778218.pdf",
+    "ok": true,
+    "ms": 945,
+    "status": 200,
+    "textTokens": 802,
+    "head": "Title: 000778218.pdf\n\nURL Source: https://www.mhlw.go.jp/content/000778218.pdf\n\nPublished Time: Fri, 21 Jun 2024 10:09:24 GMT\n\nNumber of Pages: 1\n\nMarkdown Content:\n※補足給付は、原 則、 世帯 全 員（ 世 帯 を分 離し て い る 配偶 者を 含 みま す） が 市 町村 民 税非 課 税の 方 が対 象 です。 \n\n居住費に要する平均的な費用の額（基準費用額）についても、  60 円（日額）引き上がります。 \n\n第 １ 段 階  第 2 段 階  第 3 段 階  ① ・ ② \n\n介護保険施設（介護老人福祉施設、介護老人保健施設、介護医療院）やショートステイを \n\n利用する方の食費・居住費については、低所得の方への補助 ",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "jina",
+    "id": "csv",
+    "url": "https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv",
+    "ok": true,
+    "ms": 12572,
+    "status": 200,
+    "textTokens": 4593027,
+    "head": "Title: \n\nURL Source: https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv\n\nPublished Time: Tue, 10 Feb 2026 09:05:50 GMT\n\nMarkdown Content:\n都道府県コード又は市町村コード,No,都道府県名,市区町村名,事業所名,事業所名カナ,サービスの種類,住所,方書（ビル名等）,緯度,経度,電話番号,FAX番号,法人番号,法人の名称,事業所番号,利用可能曜日,利用可能曜日特記事項,定員,URL,高齢者の方と障害者の方が同時一体的に利用できるサービス,介護保険の通常の指定基準を満たしている,障害福祉の通常の指定基準を満たしている,備考\r\n011011,0170101950,北海道,札幌市中央区,訪問介護事業所　心輪,ホウモンカイゴジギョウショ　シンワ,訪問介護",
+    "tableRows": 0,
+    "codeBlocks": 0
+  },
+  {
+    "tool": "jina",
+    "id": "err",
+    "url": "https://initial.inc/",
+    "ok": true,
+    "ms": 6905,
+    "status": 200,
+    "textTokens": 9345,
+    "head": "Title: Speeda Startup Insights\n\nURL Source: https://initial.inc/\n\nMarkdown Content:\n[](https://initial.inc/)\n\n[What is Speeda?](https://jp.ub-speeda.com/solutions/startup/)​ ​[Case studies](https://jp.ub-speeda.com/customers/)​ ​[and seminar](https://jp.ub-speeda.com/seminar/)​ ​[materials/reports](https://jp.ub-speeda.com/document/)\n\n[Document Download](https://jp.ub-speeda.com/contact/download/)",
+    "tableRows": 0,
+    "codeBlocks": 0
+  }
+]

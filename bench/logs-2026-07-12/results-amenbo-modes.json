@@ -1,0 +1,140 @@
+{
+  "measuredAt": "2026-07-12",
+  "note": "amenbo v0.2.0 markdown vs outline (progressive disclosure)",
+  "markdown": [
+    {
+      "id": "zenn",
+      "grp": "CJK",
+      "mode": "markdown",
+      "ok": true,
+      "ms": 426,
+      "textTokens": 4679,
+      "tableRows": 24,
+      "tier": "http",
+      "page": "1 of 1"
+    },
+    {
+      "id": "wiki",
+      "grp": "CJK",
+      "mode": "markdown",
+      "ok": true,
+      "ms": 1558,
+      "textTokens": 5337,
+      "tableRows": 50,
+      "tier": "http",
+      "page": "1 of 4"
+    },
+    {
+      "id": "aozora",
+      "grp": "CJK",
+      "mode": "markdown",
+      "ok": true,
+      "ms": 1915,
+      "textTokens": 7992,
+      "tableRows": 0,
+      "tier": "http",
+      "page": "1 of 25"
+    },
+    {
+      "id": "gov",
+      "grp": "CJK",
+      "mode": "markdown",
+      "ok": true,
+      "ms": 2375,
+      "textTokens": 1774,
+      "tableRows": 0,
+      "tier": "browser",
+      "page": "1 of 1"
+    },
+    {
+      "id": "en-wiki",
+      "grp": "EN",
+      "mode": "markdown",
+      "ok": true,
+      "ms": 1205,
+      "textTokens": 5031,
+      "tableRows": 0,
+      "tier": "http",
+      "page": "1 of 3"
+    },
+    {
+      "id": "en-doc",
+      "grp": "EN",
+      "mode": "markdown",
+      "ok": true,
+      "ms": 416,
+      "textTokens": 2816,
+      "tableRows": 5,
+      "tier": "http",
+      "page": "1 of 1"
+    }
+  ],
+  "outline": [
+    {
+      "id": "zenn",
+      "grp": "CJK",
+      "mode": "outline",
+      "ok": true,
+      "ms": 449,
+      "textTokens": 1141,
+      "tableRows": 0,
+      "tier": "http",
+      "page": ""
+    },
+    {
+      "id": "wiki",
+      "grp": "CJK",
+      "mode": "outline",
+      "ok": true,
+      "ms": 1260,
+      "textTokens": 659,
+      "tableRows": 0,
+      "tier": "http",
+      "page": ""
+    },
+    {
+      "id": "aozora",
+      "grp": "CJK",
+      "mode": "outline",
+      "ok": true,
+      "ms": 1892,
+      "textTokens": 408,
+      "tableRows": 0,
+      "tier": "http",
+      "page": ""
+    },
+    {
+      "id": "gov",
+      "grp": "CJK",
+      "mode": "outline",
+      "ok": true,
+      "ms": 1658,
+      "textTokens": 395,
+      "tableRows": 0,
+      "tier": "browser",
+      "page": ""
+    },
+    {
+      "id": "en-wiki",
+      "grp": "EN",
+      "mode": "outline",
+      "ok": true,
+      "ms": 1212,
+      "textTokens": 165,
+      "tableRows": 0,
+      "tier": "http",
+      "page": ""
+    },
+    {
+      "id": "en-doc",
+      "grp": "EN",
+      "mode": "outline",
+      "ok": true,
+      "ms": 330,
+      "textTokens": 389,
+      "tableRows": 0,
+      "tier": "http",
+      "page": ""
+    }
+  ]
+}
