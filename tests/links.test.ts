@@ -256,6 +256,72 @@ describe("discoverLinks - ページ内リンク抽出(最終手段)", () => {
     const result = await discoverLinks("http://example.com/", makePoliteness(), { filter: "*/articles/*" });
     expect(result.links).toEqual([{ url: "http://example.com/articles/1", title: "記事1" }]);
   });
+
+  it("レビュー指摘対応: filter(glob)は非アンカー(部分一致)なのでREADME例の'blog/*'が絶対URLの一部にマッチする", async () => {
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return notFound();
+      if (url === "http://example.com/sitemap.xml") return notFound();
+      throw new Error(`unexpected url: ${url}`);
+    });
+    fetchPageMock.mockResolvedValue({
+      finalUrl: "http://example.com/",
+      html: `<html><body><a href="http://example.com/blog/123">記事</a><a href="http://example.com/about">概要</a></body></html>`,
+      tier: "http",
+      status: 200,
+      encoding: "UTF-8",
+      etag: null,
+      lastModified: null,
+      escalationReason: null,
+    });
+
+    // 修正前は`^blog/*$`相当のアンカー一致となり、絶対URL全体とは一致せず0件になっていた。
+    const result = await discoverLinks("http://example.com/", makePoliteness(), { filter: "blog/*" });
+    expect(result.links).toEqual([{ url: "http://example.com/blog/123", title: "記事" }]);
+  });
+
+  it("レビュー指摘対応: filterで全件落ちた場合もpreFilterCountでフィルタ前の件数を返す", async () => {
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return notFound();
+      if (url === "http://example.com/sitemap.xml") return notFound();
+      throw new Error(`unexpected url: ${url}`);
+    });
+    fetchPageMock.mockResolvedValue({
+      finalUrl: "http://example.com/",
+      html: `<html><body><a href="/about">会社概要</a><a href="/contact">お問い合わせ</a></body></html>`,
+      tier: "http",
+      status: 200,
+      encoding: "UTF-8",
+      etag: null,
+      lastModified: null,
+      escalationReason: null,
+    });
+
+    const result = await discoverLinks("http://example.com/", makePoliteness(), { filter: "nomatch" });
+    expect(result.links).toEqual([]);
+    expect(result.preFilterCount).toBe(2);
+  });
+
+  it("フィルタ前から0件の場合はpreFilterCountも0", async () => {
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return notFound();
+      if (url === "http://example.com/sitemap.xml") return notFound();
+      throw new Error(`unexpected url: ${url}`);
+    });
+    fetchPageMock.mockResolvedValue({
+      finalUrl: "http://example.com/",
+      html: `<html><body></body></html>`,
+      tier: "http",
+      status: 200,
+      encoding: "UTF-8",
+      etag: null,
+      lastModified: null,
+      escalationReason: null,
+    });
+
+    const result = await discoverLinks("http://example.com/", makePoliteness());
+    expect(result.links).toEqual([]);
+    expect(result.preFilterCount).toBe(0);
+  });
 });
 
 describe("discoverLinks - 公開品質バグ修正: 非http(s)スキームはrobots.txt/sitemap取得より前に拒否する", () => {

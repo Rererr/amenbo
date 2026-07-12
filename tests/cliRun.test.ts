@@ -151,6 +151,7 @@ describe("run() - CLIサブコマンドの主要経路", () => {
       source: "page",
       links: [{ url: "https://example.com/a", title: "A" }],
       truncated: false,
+      preFilterCount: 1,
     });
 
     const exitCode = await run(["links", "https://example.com/"]);
@@ -160,6 +161,37 @@ describe("run() - CLIサブコマンドの主要経路", () => {
     expect(writtenChunks).toContain("https://example.com/a");
     expect(closeBrowserMock).toHaveBeenCalledTimes(1);
     expect(cacheCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("レビュー指摘対応: filterで全件落ちた場合、フィルタ前の件数を応答に明示する", async () => {
+    discoverLinksMock.mockResolvedValue({
+      source: "page",
+      links: [],
+      truncated: false,
+      preFilterCount: 3,
+    });
+
+    const exitCode = await run(["links", "https://example.com/", "--filter", "nomatch"]);
+
+    expect(exitCode).toBe(0);
+    const writtenChunks = stdoutSpy.mock.calls.map((call) => String(call[0])).join("");
+    expect(writtenChunks).toContain("フィルタ前 3 件");
+  });
+
+  it("レビュー指摘対応: フィルタ前も0件なら従来の「リンクが見つかりませんでした」のままにする", async () => {
+    discoverLinksMock.mockResolvedValue({
+      source: "page",
+      links: [],
+      truncated: false,
+      preFilterCount: 0,
+    });
+
+    const exitCode = await run(["links", "https://example.com/"]);
+
+    expect(exitCode).toBe(0);
+    const writtenChunks = stdoutSpy.mock.calls.map((call) => String(call[0])).join("");
+    expect(writtenChunks).toContain("(リンクが見つかりませんでした)");
+    expect(writtenChunks).not.toContain("フィルタ前");
   });
 
   it("install-browserコマンドはinstallBrowser()を呼び、その終了コードをそのまま返す", async () => {
