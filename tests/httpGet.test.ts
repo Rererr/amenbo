@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetch as undiciFetch } from "undici";
-import { HttpStatusError, InvalidUrlError, PayloadTooLargeError } from "../src/errors.js";
+import { HttpStatusError, InvalidUrlError, PayloadTooLargeError, RobotsDeniedError } from "../src/errors.js";
 import { httpGet, httpGetBinary } from "../src/fetcher/http.js";
 
 // src/fetcher/http.tsはグローバルfetchではなくnpmパッケージundiciのfetchを直接importして使う
@@ -117,5 +117,47 @@ describe("httpGet/httpGetBinary - M1: レスポンスボディのサイズ上限
     fetchMock.mockResolvedValue(response as never);
 
     await expect(httpGetBinary("http://93.184.216.34/x.pdf", { timeoutMs: 5000, maxBytes: 100 })).rejects.toThrow(PayloadTooLargeError);
+  });
+});
+
+describe("httpGet - checkRobots(レビュー指摘対応: リダイレクト着地先の別オリジンrobots確認)", () => {
+  it("同一オリジン内リダイレクトはcheckRobotsを呼ばない(初回URLのpoliteness.guardで確認済みのため)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse(302, { location: "http://93.184.216.34/next" }) as never)
+      .mockResolvedValueOnce(mockResponse(200, { "content-type": "text/html" }, "<html>ok</html>") as never);
+    const checkRobots = vi.fn().mockResolvedValue(undefined);
+
+    await httpGet("http://93.184.216.34/", { timeoutMs: 5000, checkRobots });
+
+    expect(checkRobots).not.toHaveBeenCalled();
+  });
+
+  it("別オリジンへのリダイレクトは着地先URLでcheckRobotsを呼ぶ", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse(302, { location: "http://93.184.216.35/next" }) as never)
+      .mockResolvedValueOnce(mockResponse(200, { "content-type": "text/html" }, "<html>ok</html>") as never);
+    const checkRobots = vi.fn().mockResolvedValue(undefined);
+
+    const result = await httpGet("http://93.184.216.34/", { timeoutMs: 5000, checkRobots });
+
+    expect(checkRobots).toHaveBeenCalledTimes(1);
+    expect(checkRobots).toHaveBeenCalledWith("http://93.184.216.35/next");
+    expect(result.finalUrl).toBe("http://93.184.216.35/next");
+  });
+
+  it("checkRobotsが拒否(RobotsDeniedError)を投げた場合、fetch全体が失敗し着地先への実際のfetchは行われない", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(302, { location: "http://93.184.216.35/next" }) as never);
+    const checkRobots = vi.fn().mockRejectedValue(new RobotsDeniedError("http://93.184.216.35/next"));
+
+    await expect(httpGet("http://93.184.216.34/", { timeoutMs: 5000, checkRobots })).rejects.toThrow(RobotsDeniedError);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // 着地先(2ホップ目)への実fetchは発生しない
+  });
+
+  it("checkRobots未指定でも従来通り動作する(完全後方互換)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse(302, { location: "http://93.184.216.35/next" }) as never)
+      .mockResolvedValueOnce(mockResponse(200, { "content-type": "text/html" }, "<html>ok</html>") as never);
+
+    await expect(httpGet("http://93.184.216.34/", { timeoutMs: 5000 })).resolves.toMatchObject({ status: 200 });
   });
 });

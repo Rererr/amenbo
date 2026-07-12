@@ -62,10 +62,16 @@ export const cache = new PageCache(cacheTtlMs !== undefined ? { ttlMs: cacheTtlM
 // 常時わずかなディスクI/Oコストを払うトレードオフになる(node:sqliteも同期I/Oで
 // 小さな1行read/writeのため実測上は無視できるレベルだが、"低負荷優先"の設計原則上は
 // 意図的なトレードオフとして明記しておく)。
+// レビュー指摘対応: robots.txtの取得結果もcache.ts(robots_cacheテーブル)へ永続化し、
+// プロセス間で共有する(CLIバルク収集時にコマンド毎にrobots.txtを再取得する低負荷原則違反への対応)。
 export const politeness = new PolitenessManager({
   store: {
     getLastRequestAt: (host) => cache.getHostLastRequestAt(host),
     setLastRequestAt: (host, at) => cache.setHostLastRequestAt(host, at),
+  },
+  robotsStore: {
+    get: (origin) => cache.getRobotsCache(origin),
+    set: (origin, body, fetchedAt) => cache.setRobotsCache(origin, body, fetchedAt),
   },
 });
 
@@ -133,7 +139,11 @@ async function fetchAndExtract(
   conditionalHeaders: Record<string, string> | undefined,
   onProgress?: ((message: string) => void) | undefined,
 ): Promise<FetchAndExtractResult> {
-  const fetchResult = await fetchPage(url, conditionalHeaders ? { headers: conditionalHeaders, onProgress } : { onProgress });
+  // レビュー指摘対応: リダイレクトで別オリジンへ着地した場合、その着地先のrobots.txtも
+  // 確認する(guardedFetch内で着地先オリジンが変わった場合のみ呼ばれる。同一オリジン内
+  // リダイレクトや初回URLは呼び出し元のpoliteness.guardで確認済みのため二重チェックしない)。
+  const checkRobots = (targetUrl: string) => politeness.checkRobotsAllowed(targetUrl);
+  const fetchResult = await fetchPage(url, conditionalHeaders ? { headers: conditionalHeaders, onProgress, checkRobots } : { onProgress, checkRobots });
   if ("notModified" in fetchResult) {
     return { status: "not_modified" };
   }
@@ -158,7 +168,7 @@ async function fetchAndExtract(
   if (!selector && fetchResult.tier === "http" && extracted.extractionMethod === "body-fallback") {
     try {
       await politeness.waitTurn(url, onProgress); // 追加のブラウザ遷移が発生するため、律速のため再度順番を待つ
-      const browserFetchResult = await fetchPage(url, { forceBrowser: true, onProgress });
+      const browserFetchResult = await fetchPage(url, { forceBrowser: true, onProgress, checkRobots });
       if (!("notModified" in browserFetchResult) && !("handoff" in browserFetchResult)) {
         const browserExtracted = extractMarkdown(browserFetchResult.html, { url: browserFetchResult.finalUrl, geometry: browserFetchResult.geometry });
         if (browserExtracted.extractionMethod === "geometry") {
@@ -240,6 +250,11 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
  * (同一URLでも抽出結果がselector毎に変わるため)。品質スコア/アダプタ判定結果もキャッシュ
  * メタデータへ保存し、'fresh'なキャッシュ応答時にも再フェッチ無しでmode:autoの判定を再現する。
  * 機能B: 非HTMLコンテンツ(ハンドオフ対象)を取得した場合は { kind: "handoff" } を返す。
+ *
+ * レビュー指摘対応: politeness.guard(robots.txt確認+レート制御待機)は「実際にサイトへ
+ * 取得しに行く」直前でのみ呼ぶ。キャッシュfresh応答時は実ネットワークアクセスが発生しない
+ * ため、outline→sectionの推奨フロー等でキャッシュヒットするたびに待機・robots再判定という
+ * 自己ペナルティが発生していた不具合の修正。selector指定時は必ずfetchするため常にguardする。
  */
 async function resolvePage(
   url: string,
@@ -247,6 +262,7 @@ async function resolvePage(
   onProgress?: ((message: string) => void) | undefined,
 ): Promise<ResolvePageResult> {
   if (selector) {
+    await politeness.guard(url, onProgress);
     const result = await fetchAndExtract(url, selector, undefined, onProgress);
     if (result.status === "not_modified") {
       throw new UnexpectedNotModifiedError(url);
@@ -274,6 +290,10 @@ async function resolvePage(
   if (cached && cache.isFresh(cached)) {
     return pageFromCacheEntry(url, cached, "fresh");
   }
+
+  // 条件付きGET(304)も含め実際にサーバーへ通信するため、ここでguardする
+  // (キャッシュfresh応答で早期returnした場合はguardしない=上のコメント参照)。
+  await politeness.guard(url, onProgress);
 
   const conditionalHeaders: Record<string, string> = {};
   if (cached?.etag) conditionalHeaders["If-None-Match"] = cached.etag;
@@ -359,13 +379,6 @@ interface ResolveScreenshotOptions {
   fullPage: boolean;
   width: number;
   scale: number;
-  /**
-   * code-reviewer指摘: handleFetchTool冒頭で全mode共通のpoliteness.guard(input.url)を
-   * 既に実行済みの経路(fetchツールのmode: screenshot/mode: auto→screenshot切替)から
-   * 呼ぶ場合にtrueを指定し、resolveScreenshot内の二重guard(min_interval二重待機)を
-   * 省略する。screenshotツール単体(事前guard無し)は既定false(guardを実行する)のまま。
-   */
-  skipGuard?: boolean;
   /** MCP progress notifications用。politeness待機発生時・撮影開始時に呼ばれる。 */
   onProgress?: ((message: string) => void) | undefined;
 }
@@ -391,17 +404,14 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
   // このあとcaptureTiledScreenshot内のnavigateSafelyでも検証するが、それより前段で
   // クリーンな型付きエラーとして早期に弾く)。
   assertHttpScheme(url);
-  // 実URLへの独立したブラウザ遷移が発生するため、markdown抽出時とは別にpolitenessの順番待ちを行う。
-  // ただし呼び出し元(handleFetchTool)で既にguard済みの場合はskipGuardで二重待機を避ける。
-  if (!options.skipGuard) {
-    await politeness.guard(url, options.onProgress);
-  }
 
   const cacheKey = computeScreenshotCacheKey(url, options.width, options.scale, options.fullPage);
   const cached = cache.getScreenshot(cacheKey);
   if (cached && cache.isFresh(cached)) {
     const tiles = readCachedTiles(cached.tilePaths);
     if (tiles) {
+      // レビュー指摘対応(#4と同型): キャッシュ済みタイルを返すだけならサイトへ取得しに行かない
+      // ため、guard(robots確認+レート制御待機)を行わない。実撮影に進む場合のみ下でguardする。
       return {
         finalUrl: cached.url,
         tiles,
@@ -414,6 +424,9 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
     // PNGファイル欠損: キャッシュmiss扱いで下の再撮影へフォールスルーする
   }
 
+  // レビュー指摘対応: 実URLへの独立したブラウザ遷移が発生する直前でguardする(markdown取得時の
+  // guardとは別枠。handleFetchTool冒頭の共通guardは撤去済み)。キャッシュfresh返却時は通らない。
+  await politeness.guard(url, options.onProgress);
   options.onProgress?.("スクリーンショットを撮影しています…");
   const captured = await captureTiledScreenshot(url, options);
   cache.setScreenshot({
@@ -667,7 +680,13 @@ async function handlePdfFetch(
     return [{ type: "text", text: formatPdfTextResponse(title, finalUrl, "fresh", pdfPageCount, paginated) }];
   }
 
-  const binary = await httpGetBinary(url, { maxBytes: DEFAULT_PDF_MAX_BYTES });
+  // レビュー指摘対応: キャッシュfresh応答時は実ネットワークアクセスが発生しないため
+  // guardしない(resolvePageと同じ方針)。実際にPDFを取得しに行く直前でのみguardする。
+  await politeness.guard(url, onProgress);
+  const binary = await httpGetBinary(url, {
+    maxBytes: DEFAULT_PDF_MAX_BYTES,
+    checkRobots: (targetUrl) => politeness.checkRobotsAllowed(targetUrl),
+  });
   onProgress?.("PDFを解析しています…");
   const textResult = await extractPdfText(binary.bytes);
 
@@ -723,8 +742,13 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
   // 公開品質バグ修正: robots.txt取得(politeness.guard)より前にスキームを検証する(理由は
   // resolveScreenshotのコメント参照)。zodの.url()はスキームを制限しないため、ここでの
   // 検証が実質的な最初の関門になる。
+  //
+  // レビュー指摘対応: 以前はここで全mode共通の無条件politeness.guardを実行していたが、
+  // キャッシュfresh応答(実ネットワークアクセスが発生しない)でも毎回レート制御の待機と
+  // robots.txt再判定が走る自己ペナルティになっていた。guardは実際にサイトへ取得しに行く
+  // 各経路(resolvePage/handlePdfFetch/resolveScreenshot)の内部で、必要な箇所にのみ
+  // 個別に行う設計へ変更した(このファイル内の各所コメント参照)。
   assertHttpScheme(input.url);
-  await politeness.guard(input.url, input.onProgress);
 
   if (looksLikePdf(input.url, null)) {
     return handlePdfFetch(input.url, page, maxTokens, input.onProgress);
@@ -741,7 +765,6 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
       fullPage: true,
       width: DEFAULT_TILE_WIDTH,
       scale: DEFAULT_SCREENSHOT_SCALE,
-      skipGuard: true, // 直前でこの関数冒頭のpoliteness.guard(input.url)を既に実行済み
       onProgress: input.onProgress,
     });
     return buildScreenshotContent({ title: null }, screenshot, null);
@@ -789,11 +812,12 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
   // 二重に撮影・保存されてしまうため、両経路で必ずinput.urlを渡すよう統一する
   // (resolveScreenshot自身のブラウザナビゲーションが同じリダイレクトを辿るため実害は無い)。
   if (mode === "auto" && resolved.lowQuality) {
+    // レビュー指摘対応: resolvePage内のmarkdown取得guardとは別の、screenshotナビゲーションの
+    // ための独立したguardがresolveScreenshot内で行われる(=より正確な礼儀)。
     const screenshot = await resolveScreenshot(input.url, {
       fullPage: true,
       width: DEFAULT_TILE_WIDTH,
       scale: DEFAULT_SCREENSHOT_SCALE,
-      skipGuard: true, // この関数冒頭のpoliteness.guard(input.url)を既に実行済み
       onProgress: input.onProgress,
     });
     return buildScreenshotContent(resolved, screenshot, resolved.qualityReason);
@@ -829,8 +853,7 @@ export interface ScreenshotToolInput {
 }
 
 // テスト用export(既存スタイルに合わせた最小のテスト可能化。politeness.guard呼び出し回数の検証用)。
-// 独立screenshotツールは(fetchツールのmode: screenshot早期returnと異なり)事前guardを
-// 行わないため、resolveScreenshot自身が既定でguardする(skipGuard未指定)。
+// 独立screenshotツールも含め、resolveScreenshotは常に自身でguardする。
 export async function handleScreenshotTool(input: ScreenshotToolInput): Promise<Array<TextBlock | ImageBlock>> {
   const screenshot = await resolveScreenshot(input.url, {
     fullPage: input.fullPage ?? true,

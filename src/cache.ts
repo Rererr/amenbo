@@ -21,7 +21,9 @@
  * 短時間に連続実行すると同一ドメインへの最小間隔が守られない。host_requests テーブルへ
  * 最終リクエスト時刻を永続化し、PolitenessManagerのstoreオプションとして注入することで
  * MCPサーバー/CLIの複数プロセス間で共有する(再起動直後の連続アクセスも守れる副次効果あり)。
- * journal_mode=WAL は複数プロセスからの同時アクセスを想定して設定している。
+ * 同じ理由でrobots.txtの取得結果もrobots_cache テーブルへ永続化し、PolitenessManagerの
+ * robotsStoreオプションとして注入する(CLIでの複数ページ一括収集時にコマンド毎の
+ * robots.txt再取得を防ぐ)。journal_mode=WAL は複数プロセスからの同時アクセスを想定して設定している。
  *
  * node:sqliteの制約: better-sqlite3はNumber.MAX_SAFE_INTEGERを超えるINTEGER列を読むと
  * 例外を投げたが、node:sqliteは黙ってbigintを返す(上流の挙動差)。本ファイルの整数列
@@ -98,6 +100,12 @@ interface HostRequestRow {
   last_request_at: number;
 }
 
+interface RobotsCacheRow {
+  origin: string;
+  body: string;
+  fetched_at: number;
+}
+
 export function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -172,6 +180,16 @@ export class PageCache {
       CREATE TABLE IF NOT EXISTS host_requests (
         host TEXT PRIMARY KEY,
         last_request_at INTEGER NOT NULL
+      )
+    `);
+    // レビュー指摘対応: robots.txtの取得結果をhost_requestsと同じ考え方でプロセス間共有する。
+    // CLIバルク収集(1コマンド=1プロセス)で、コマンド毎にrobots.txtを再取得してしまう
+    // 低負荷原則違反への対応(PolitenessManagerのrobotsStoreオプションとして注入する)。
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS robots_cache (
+        origin TEXT PRIMARY KEY,
+        body TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL
       )
     `);
 
@@ -379,6 +397,32 @@ export class PageCache {
          ON CONFLICT(host) DO UPDATE SET last_request_at = MAX(last_request_at, excluded.last_request_at)`,
       )
       .run({ host, lastRequestAt: at });
+  }
+
+  /**
+   * レビュー指摘対応: オリジン(例 "https://example.com")のrobots.txtキャッシュを返す
+   * (未記録ならnull)。PolitenessManagerのrobotsStoreオプションとして注入し、プロセス間で
+   * robots.txt取得結果を共有するために使う。TTL判定(robotsTtlMs)は呼び出し元(PolitenessManager)
+   * がfetchedAtを見て行う(page cacheのttlMsとは別の時間軸のため、ここでは判定しない)。
+   * 空bodyのrobots.txt(=制限なし)も正しい取得結果として保存されるため、
+   * 「未記録(null)」と「空bodyの記録あり」は区別される。
+   */
+  getRobotsCache(origin: string): { body: string; fetchedAt: number } | null {
+    const row = this.db.prepare("SELECT * FROM robots_cache WHERE origin = ?").get(origin) as RobotsCacheRow | undefined;
+    return row ? { body: row.body, fetchedAt: row.fetched_at } : null;
+  }
+
+  /** オリジンのrobots.txt取得結果(本文+取得時刻)を記録する。既存があれば上書きする。 */
+  setRobotsCache(origin: string, body: string, fetchedAt: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO robots_cache (origin, body, fetched_at)
+         VALUES (@origin, @body, @fetchedAt)
+         ON CONFLICT(origin) DO UPDATE SET
+           body = excluded.body,
+           fetched_at = excluded.fetched_at`,
+      )
+      .run({ origin, body, fetchedAt });
   }
 
   /**

@@ -390,6 +390,16 @@ export interface HttpGetOptions {
   headers?: Record<string, string>;
   /** レスポンスボディのサイズ上限(バイト)。既定は環境変数AMENBO_MAX_BODY_BYTES、未設定なら20MB。 */
   maxBytes?: number;
+  /**
+   * レビュー指摘対応: リダイレクトで最初のオリジンと異なるオリジンへ着地した場合のみ、
+   * guardedFetch内から着地先URLで呼ばれるrobots.txt確認コールバック(politeness.checkRobotsAllowed相当)。
+   * SSRF検証(guardPublicAddress)は毎ホップ行っているのに対し、robots.txtは初回URLの
+   * politeness.guardでしか確認されず、別オリジンへの301/302で着地先がDisallow:/でも
+   * 取得してしまう非対称があったための対応。同一オリジン内リダイレクトは初回guardで
+   * 確認済みのため呼ばない。拒否時はRobotsDeniedErrorがそのまま伝播する。
+   * robots.txt自体の取得(politeness.ts内のhttpGet呼び出し)には渡さないこと(無限再帰回避)。
+   */
+  checkRobots?: (url: string) => Promise<void>;
 }
 
 export interface HttpGetResult {
@@ -452,6 +462,13 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
       } catch {
         throw new InvalidUrlError(location, "リダイレクト先URLの形式が不正です");
       }
+
+      // レビュー指摘対応: 着地先が別オリジンの場合のみrobots.txtを再確認する
+      // (同一オリジン内リダイレクトは初回URLのpoliteness.guardで確認済みのため不要)。
+      if (options.checkRobots && nextUrl.origin !== new URL(currentUrl).origin) {
+        await options.checkRobots(nextUrl.toString());
+      }
+
       currentUrl = nextUrl.toString();
       continue;
     }
