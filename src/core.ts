@@ -584,7 +584,14 @@ export function buildScreenshotContent(
 export function formatLinksResponse(url: string, result: LinksResult): string {
   const header = [`url: ${url}`, `source: ${result.source}`, `count: ${result.links.length}${result.truncated ? " (truncated)" : ""}`].join("\n");
   const body = result.links.map((link) => (link.title ? `- ${link.title} — ${link.url}` : `- ${link.url}`)).join("\n");
-  return `${header}\n\n${body || "(リンクが見つかりませんでした)"}`;
+  // レビュー指摘対応: 0件のとき、フィルタで全部落ちたのか(preFilterCount>0)、
+  // sitemap/RSS/ページ自体が空だったのか(preFilterCount===0)をエージェントが判別できるようにする。
+  // filter未指定時はpreFilterCount===links.lengthのためこの分岐には入らない。
+  const empty =
+    result.preFilterCount > 0
+      ? `(リンクが見つかりませんでした。フィルタ前 ${result.preFilterCount} 件。filterに一致しませんでした)`
+      : "(リンクが見つかりませんでした)";
+  return `${header}\n\n${body || empty}`;
 }
 
 // ---- 機能B: 非HTMLコンテンツのハンドオフ応答 ----

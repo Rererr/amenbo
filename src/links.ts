@@ -40,6 +40,12 @@ export interface LinksResult {
   links: LinkEntry[];
   /** MAX_LINKSを超えて切り捨てた場合true。 */
   truncated: boolean;
+  /**
+   * フィルタ適用前(重複排除後)の件数。
+   * filter指定時にlinks.length===0となった場合、これが0なら「sitemap/RSS/ページ自体が空」、
+   * 0より大きければ「filterに一致しなかった」と原因を切り分けられる(呼び出し側でのみ使う)。
+   */
+  preFilterCount: number;
 }
 
 const MAX_LINKS = 200;
@@ -51,11 +57,18 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** filter未指定なら常に真。*を含む場合はglob、それ以外は部分一致。 */
+/**
+ * filter未指定なら常に真。*を含む場合はglob、それ以外は部分一致。
+ *
+ * レビュー指摘対応: globは`^…$`で両端アンカーせず非アンカー(部分一致)にする。
+ * README/記事が例示する`--filter "blog/*"`は絶対URL(`https://example.com/blog/123`)全体とは
+ * 一致しないため、アンカー版だと必ず0件になっていた。URL/タイトルの一部にglobパターンが
+ * 現れれば真とする(通常の部分一致フィルタと同じ「含む」感覚に揃える)。
+ */
 function matchesFilter(value: string, filter: string | undefined): boolean {
   if (!filter) return true;
   if (filter.includes("*")) {
-    const pattern = new RegExp(`^${filter.split("*").map(escapeRegExp).join(".*")}$`, "i");
+    const pattern = new RegExp(filter.split("*").map(escapeRegExp).join(".*"), "i");
     return pattern.test(value);
   }
   return value.toLowerCase().includes(filter.toLowerCase());
@@ -223,8 +236,14 @@ function dedupeByUrl(links: LinkEntry[]): LinkEntry[] {
 }
 
 function finalize(source: LinkSource, links: LinkEntry[], filter: string | undefined): LinksResult {
-  const filtered = dedupeByUrl(links).filter((link) => matchesFilter(link.url, filter) || matchesFilter(link.title ?? "", filter));
-  return { source, links: filtered.slice(0, MAX_LINKS), truncated: filtered.length > MAX_LINKS };
+  const deduped = dedupeByUrl(links);
+  const filtered = deduped.filter((link) => matchesFilter(link.url, filter) || matchesFilter(link.title ?? "", filter));
+  return {
+    source,
+    links: filtered.slice(0, MAX_LINKS),
+    truncated: filtered.length > MAX_LINKS,
+    preFilterCount: deduped.length,
+  };
 }
 
 export interface DiscoverLinksOptions {
