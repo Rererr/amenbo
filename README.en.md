@@ -170,6 +170,11 @@ Discovery order: sitemap → RSS/Atom → in-page links.
 - **SSRF protection**: rejects non-http/https schemes (`file:`, `ftp:`, etc.). Rejects DNS-resolved destinations that are private / loopback / link-local / reserved addresses. As a DNS rebinding (TOCTOU) countermeasure, actual connections are pinned to the validated IP
 - **Body size cap**: prevents OOM from oversized responses
 
+## Known limitations
+
+- **No HTTP proxy support**: `HTTP_PROXY` / `HTTPS_PROXY` environment variables are not honored. As an SSRF countermeasure, connections are pinned to a validated IP (DNS rebinding protection), which is incompatible with delegating name resolution to an upstream proxy. Networks that require an upstream proxy are currently unsupported
+- **No anti-bot circumvention**: fetch failures due to robots.txt denial or bot countermeasures are by design and reported as-is (see [Low impact on target sites](#low-impact-on-target-sites))
+
 ## Development
 
 ```bash
