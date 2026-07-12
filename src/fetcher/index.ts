@@ -55,13 +55,8 @@ const MIN_HTML_LENGTH_FOR_RATIO_CHECK = 2000;
 const TEXT_TO_HTML_RATIO_THRESHOLD = 0.02;
 const MIN_VISIBLE_TEXT_LENGTH = 200;
 
-function detectSpaSignals(html: string): { escalate: boolean; reason: string | null } {
+export function detectSpaSignals(html: string): { escalate: boolean; reason: string | null } {
   const { document } = parseHTML(html);
-
-  for (const tag of Array.from(document.querySelectorAll("script, style"))) {
-    tag.remove();
-  }
-  const visibleText = (document.body?.textContent ?? "").replace(/\s+/g, "");
 
   for (const id of SPA_ROOT_IDS) {
     const el = document.getElementById(id);
@@ -70,12 +65,22 @@ function detectSpaSignals(html: string): { escalate: boolean; reason: string | n
     }
   }
 
+  // noscriptWarningの判定はnoscriptのテキストを読むため、除去前に先に採取する。
   const noscriptWarning = Array.from(document.querySelectorAll("noscript")).some((el) =>
     /javascript|有効に|enable/i.test(el.textContent ?? ""),
   );
   if (noscriptWarning) {
     return { escalate: true, reason: "noscriptにJavaScript要求の警告があります" };
   }
+
+  // script/style/noscriptを除去してから可視テキスト量を測る(extract/markdown.tsの
+  // collectQualityInputと同じ除去対象に揃える)。noscriptを除去しないと、GTM等の
+  // <noscript><iframe>フォールバックや長文注記を持つSPAで、noscriptのテキスト長が
+  // 閾値を満たしてしまいブラウザ昇格が誤ってスキップされる。
+  for (const tag of Array.from(document.querySelectorAll("script, style, noscript"))) {
+    tag.remove();
+  }
+  const visibleText = (document.body?.textContent ?? "").replace(/\s+/g, "");
 
   if (html.length > MIN_HTML_LENGTH_FOR_RATIO_CHECK && visibleText.length / html.length < TEXT_TO_HTML_RATIO_THRESHOLD) {
     return { escalate: true, reason: "抽出テキスト量/HTMLサイズ比が低いです" };
