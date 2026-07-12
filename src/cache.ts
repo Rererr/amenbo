@@ -62,7 +62,9 @@ const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15分
 /** Phase 4テンプレート学習: 定型ブロック判定に使う「直近ページ数」の既定値。 */
 const DEFAULT_TEMPLATE_RECENT_PAGES = 3;
 
-function resolveCacheDir(): string {
+// レビュー指摘対応: cli.ts(fetch画像の保存先)がキャッシュディレクトリ解決ロジックを
+// 再利用できるようexportする(AMENBO_CACHE_DIR未指定時の既定値~/.cache/amenboとのずれを防ぐ)。
+export function resolveCacheDir(): string {
   const dir = process.env.AMENBO_CACHE_DIR ?? join(homedir(), ".cache", "amenbo");
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -258,9 +260,19 @@ export class PageCache {
     };
   }
 
-  /** スクリーンショットのタイル群をファイル保存し、パスをSQLiteへ記録する。 */
+  /**
+   * スクリーンショットのタイル群をファイル保存し、パスをSQLiteへ記録する。
+   *
+   * レビュー指摘対応(Medium): 同一cacheKeyへの再撮影でタイル数が減った場合(旧5枚→新3枚)、
+   * 新しいtile_pathsで上書きされるDB行からは旧tile-3.png/tile-4.pngを参照できなくなり、
+   * pruneExpiredもそれらを認識できず孤立ファイルとしてディスクに残り続けていた。
+   * tileDirはcacheKey単位のディレクトリ(他のcacheKeyのタイルと混在しない)のため、
+   * 書き込み前にディレクトリごと削除してから作り直すことで、枚数が変化しても
+   * 旧タイルを確実に一掃する(初回撮影時はディレクトリが存在しないためforce:trueで無視する)。
+   */
   setScreenshot(input: ScreenshotWriteInput): ScreenshotCacheEntry {
     const tileDir = join(this.cacheDir, "screenshots", input.cacheKey);
+    rmSync(tileDir, { recursive: true, force: true });
     mkdirSync(tileDir, { recursive: true });
     const tilePaths = input.tiles.map((buffer, index) => {
       const filePath = join(tileDir, `tile-${index}.png`);

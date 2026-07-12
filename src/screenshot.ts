@@ -76,8 +76,10 @@ export interface CaptureResult {
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const MIN_SCALE = 0.5;
-const MAX_SCALE = 1.0;
+// レビュー指摘対応(Low): CLI側(cli.ts parseScreenshotArgs)がMCPのzod .min(0.5).max(1.0)と
+// 同じ範囲で検証できるよう、この定数をexportしてCLIと共有する(値の重複定義によるずれを防ぐ)。
+export const MIN_SCALE = 0.5;
+export const MAX_SCALE = 1.0;
 
 function clampScale(scale: number | undefined): number {
   if (scale === undefined) return MAX_SCALE;
@@ -117,8 +119,16 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
 
     // N2: タイル毎にfullPageスクリーンショットを撮り直すのではなく、1回だけ撮影して
     // @napi-rs/canvasでタイル領域をクロップする(deviceScaleFactor分、座標をscale倍する)。
-    const fullPagePng = await page.screenshot({ type: "png", fullPage: true });
-    const image = await loadImage(fullPagePng);
+    //
+    // レビュー指摘対応(High): 以前はここでfullPage:trueをハードコードしており、
+    // 呼び出し元がfullPage:false(CLI --viewport-only / MCP fullPage:false)を指定しても
+    // 実際には全ページ分レンダリングしてしまい、遅延読み込み画像・無限スクロールXHR等の
+    // 追加リクエストを先方へ誘発していた(明示された低負荷指定を内部で裏切っていた)。
+    // fullPage:false時はビューポート(viewport height=DEFAULT_TILE_HEIGHTで撮影済み)のみを
+    // 実際に撮影する。captureHeight/geometries/crop座標は既にfullPageの値で分岐済みのため、
+    // 1タイル(ビューポート分)のみでも整合する。
+    const capturedPng = await page.screenshot({ type: "png", fullPage });
+    const image = await loadImage(capturedPng);
 
     const tiles: ScreenshotTile[] = geometries.map((geometry) => {
       const sx = Math.min(Math.round(geometry.x * scale), Math.max(image.width - 1, 0));
