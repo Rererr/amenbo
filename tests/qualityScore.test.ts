@@ -118,6 +118,22 @@ describe("evaluateQuality", () => {
       const result = evaluateQuality(baseInput({ imgCount: 0, imgMissingAltCount: 0, imgAreaRatio: 0 }));
       expect(result.imgMissingAltRatio).toBe(0);
     });
+
+    it("画像面積比・alt欠落率が共に高くても抽出トークン数が十分(500以上)ならlowQualityにしない(Yahoo!ニュース記事等の誤検知対策)", () => {
+      const result = evaluateQuality(
+        baseInput({ imgCount: 4, imgMissingAltCount: 4, imgAreaRatio: 0.5, extractedTokenEstimate: 844 }),
+      );
+      expect(result.lowQuality).toBe(false);
+      expect(result.reason).toBeNull();
+    });
+
+    it("抽出トークン数が閾値未満(真に画像で情報を出しているページ)なら従来通りJ6でlowQuality=trueにする", () => {
+      const result = evaluateQuality(
+        baseInput({ imgCount: 4, imgMissingAltCount: 4, imgAreaRatio: 0.5, extractedTokenEstimate: 200 }),
+      );
+      expect(result.lowQuality).toBe(true);
+      expect(result.reason).toContain("J6");
+    });
   });
 
   describe("Phase 4: realVisualAreaRatio(ブラウザ昇格時の実ジオメトリ)", () => {
