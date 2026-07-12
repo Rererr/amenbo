@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupCacheDir } from "./helpers/tempCache.js";
 
 /**
  * code-reviewer指摘: cli.test.ts はparseCliArgs(純関数)のみを検証しており、run()本体
@@ -17,8 +18,15 @@ const runServerMock = vi.fn();
 const closeBrowserMock = vi.fn();
 const cacheCloseMock = vi.fn();
 
+// Windows CI対応: モックはexport上の`cache`を`{ close: cacheCloseMock }`へ丸ごと差し替えるため、
+// このモック経由では実PageCacheのハンドルへ到達できない。importOriginal()が返す実core.tsの
+// シングルトン(actual.cache)への参照をここで捕まえておき、afterAllでの後始末(Windowsでの
+// SQLiteファイルロック回避)に使う(詳細はtests/helpers/tempCache.tsのコメント参照)。
+let actualCache: { close: () => void } | null = null;
+
 vi.mock("../src/core.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/core.js")>();
+  actualCache = actual.cache;
   return {
     ...actual,
     handleFetchTool: (...args: Parameters<typeof actual.handleFetchTool>) => handleFetchToolMock(...args),
@@ -59,8 +67,11 @@ const { RobotsDeniedError } = await import("../src/errors.js");
 const outDir = mkdtempSync(join(tmpdir(), "amenbo-cli-run-test-out-"));
 
 afterAll(() => {
-  rmSync(cacheDir, { recursive: true, force: true });
-  rmSync(outDir, { recursive: true, force: true });
+  // Windows CI対応: 開いたままのSQLiteファイルハンドルを解放してから削除する
+  // (詳細はtests/helpers/tempCache.tsのコメント参照)。outDirはSQLiteと無関係のため
+  // closeCache不要だがベストエフォート削除の恩恵は共通で受けられる。
+  cleanupCacheDir(cacheDir, () => actualCache?.close());
+  cleanupCacheDir(outDir);
 });
 
 let stdoutSpy: ReturnType<typeof vi.spyOn>;

@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaptureResult } from "../src/screenshot.js";
+import { cleanupCacheDir } from "./helpers/tempCache.js";
 
 /**
  * MCP progress notifications: resolveScreenshot(screenshotツール/fetchツールのscreenshot経路
@@ -29,10 +30,12 @@ vi.mock("../src/screenshot.js", async (importOriginal) => {
 const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-screenshot-progress-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
-const { handleScreenshotTool, politeness } = await import("../src/core.js");
+const { cache, handleScreenshotTool, politeness } = await import("../src/core.js");
 
 afterAll(() => {
-  rmSync(cacheDir, { recursive: true, force: true });
+  // Windows CI対応: 開いたままのSQLiteファイルハンドルを解放してから削除する
+  // (詳細はtests/helpers/tempCache.tsのコメント参照)。
+  cleanupCacheDir(cacheDir, () => cache.close());
 });
 
 describe("resolveScreenshot - onProgress(MCP progress notifications)", () => {
