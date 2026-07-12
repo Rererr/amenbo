@@ -167,6 +167,39 @@ describe("PageCache - スクリーンショットキャッシュ", () => {
     expect(entry?.metadata.v).toBe(2);
     cache.close();
   });
+
+  it("レビュー指摘対応: 再撮影でタイル数が減った場合、旧タイルの余剰ファイルがtileDirに残らない(ディスクリーク防止)", () => {
+    const cache = new PageCache({ dbPath, cacheDir: dir });
+    const cacheKey = computeScreenshotCacheKey("http://example.com/", 1280, 1.0, true);
+
+    // 旧5枚
+    cache.setScreenshot({
+      cacheKey,
+      url: "http://example.com/",
+      tiles: [Buffer.from([1]), Buffer.from([2]), Buffer.from([3]), Buffer.from([4]), Buffer.from([5])],
+      metadata: {},
+    });
+    const oldTilePaths = cache.getScreenshot(cacheKey)!.tilePaths;
+    expect(oldTilePaths).toHaveLength(5);
+    expect(oldTilePaths.every((p) => existsSync(p))).toBe(true);
+
+    // 新3枚(タイル数が減るケース)
+    cache.setScreenshot({
+      cacheKey,
+      url: "http://example.com/",
+      tiles: [Buffer.from([10]), Buffer.from([11]), Buffer.from([12])],
+      metadata: {},
+    });
+
+    const entry = cache.getScreenshot(cacheKey);
+    expect(entry?.tilePaths).toHaveLength(3);
+    expect(entry?.tilePaths.every((p) => existsSync(p))).toBe(true);
+    // 旧5枚分のうち、新3枚に含まれないtile-3.png/tile-4.pngが孤立して残っていないこと
+    for (const oldPath of oldTilePaths.slice(3)) {
+      expect(existsSync(oldPath)).toBe(false);
+    }
+    cache.close();
+  });
 });
 
 describe("PageCache - Phase 4 テンプレート学習(定型ブロック判定)", () => {
