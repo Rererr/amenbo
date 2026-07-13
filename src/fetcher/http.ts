@@ -27,7 +27,7 @@ import Encoding from "encoding-japanese";
 import { Agent as UndiciAgent, fetch as undiciFetch, type Dispatcher, type Headers, type Response } from "undici";
 import { AmenboError, FetchTimeoutError, HttpStatusError, InvalidUrlError, NetworkError, PayloadTooLargeError, PrivateAddressError } from "../errors.js";
 
-export const USER_AGENT = "amenbo/0.2 (+https://github.com/Rererr/amenbo)";
+export const USER_AGENT = "amenbo/0.3 (+https://github.com/Rererr/amenbo)";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 5;
