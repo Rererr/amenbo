@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildOutline, extractSection } from "../src/extract/outline.js";
+import { buildOutline, extractSection, findSection, formatBreadcrumb } from "../src/extract/outline.js";
 
 const SAMPLE_MARKDOWN = [
   "# 大見出し",
@@ -102,5 +102,45 @@ describe("extractSection", () => {
 
   it("存在しないsection IDはnullを返す", () => {
     expect(extractSection(SAMPLE_MARKDOWN, "s999")).toBeNull();
+  });
+});
+
+describe("findSection / breadcrumb", () => {
+  it("深い子節は上位見出しの連なりをancestorsとして持つ", () => {
+    const section = findSection(SAMPLE_MARKDOWN, "s3"); // さらに深い見出し(h3)
+    expect(section?.heading).toBe("さらに深い見出し");
+    expect(section?.ancestors.map((a) => a.heading)).toEqual(["大見出し", "小見出し1"]);
+  });
+
+  it("トップレベル節のancestorsは空", () => {
+    const section = findSection(SAMPLE_MARKDOWN, "s1");
+    expect(section?.ancestors).toEqual([]);
+  });
+
+  it("formatBreadcrumbは祖先見出しを › 区切りで連結し、祖先無しはnull", () => {
+    const child = findSection(SAMPLE_MARKDOWN, "s3");
+    expect(formatBreadcrumb(child!.ancestors)).toBe("大見出し › 小見出し1");
+    const top = findSection(SAMPLE_MARKDOWN, "s1");
+    expect(formatBreadcrumb(top!.ancestors)).toBeNull();
+  });
+
+  it("見出しなしページの単一節はancestorsを持たない", () => {
+    const section = findSection("見出しの無いただの文章です。", "s1");
+    expect(section?.ancestors).toEqual([]);
+  });
+
+  it("breadcrumbは祖先見出しのMarkdownリンク記法を除去する(MDN等のアンカー付き見出し対策)", () => {
+    const markdown = [
+      "# [Types of caches](#types_of_caches)",
+      "",
+      "本文。",
+      "",
+      "## [Shared cache](#shared_cache)",
+      "",
+      "共有キャッシュの本文。",
+    ].join("\n");
+    const child = findSection(markdown, "s2");
+    expect(formatBreadcrumb(child!.ancestors)).toBe("Types of caches");
+    expect(formatBreadcrumb(child!.ancestors)).not.toContain("(");
   });
 });

@@ -55,10 +55,22 @@ function findHeadingLines(lines: string[]): HeadingLine[] {
   return headings;
 }
 
+/** 節の祖先見出し1つ分(breadcrumb用)。 */
+export interface HeadingRef {
+  level: number;
+  heading: string;
+}
+
 export interface MarkdownSection {
   id: string;
   level: number;
   heading: string;
+  /**
+   * この節を内包する上位見出しの連なり(浅い順)。leaf節を単独取得したときに
+   * 「この内容が何に属すか」の文脈(記事のargument構造)を失わないためのbreadcrumb。
+   * トップレベル節では空配列。
+   */
+  ancestors: HeadingRef[];
   /** 見出し行自身+ネストした子見出しを含む、この節の全内容(Markdown)。fetchツールのsection取得用。 */
   content: string;
   /**
@@ -84,7 +96,7 @@ export function splitSections(markdown: string): MarkdownSection[] {
 
   if (headings.length === 0) {
     if (markdown.trim().length === 0) return [];
-    return [{ id: "s1", level: 1, heading: "(見出しなし)", content: markdown, ownContent: markdown }];
+    return [{ id: "s1", level: 1, heading: "(見出しなし)", ancestors: [], content: markdown, ownContent: markdown }];
   }
 
   const stack: OpenSection[] = [];
@@ -101,10 +113,13 @@ export function splitSections(markdown: string): MarkdownSection[] {
 
     counter++;
     const headingLine = lines[heading.lineIndex] ?? `${"#".repeat(heading.level)} ${heading.text}`;
+    // whileループで上位より浅い見出しをpop済みのため、この時点のstackは丁度この節の祖先。
+    const ancestors: HeadingRef[] = stack.map((open) => ({ level: open.level, heading: open.heading }));
     const section: OpenSection = {
       id: `s${counter}`,
       level: heading.level,
       heading: heading.text,
+      ancestors,
       lines: [],
       ownLines: [],
       content: "",
@@ -134,6 +149,7 @@ export function splitSections(markdown: string): MarkdownSection[] {
     id: section.id,
     level: section.level,
     heading: section.heading,
+    ancestors: section.ancestors,
     content: section.lines.join("\n"),
     // 末尾の空行の有無は意味的な差ではないため、比較用のownContentはtrimして正規化する
     // (前後の節の増減で「次の見出しの直前の空行の数」が変わるだけの見かけ上の差分を防ぐ)
@@ -182,8 +198,24 @@ export function buildOutline(markdown: string): OutlineResult {
   };
 }
 
+/** section IDに対応する節(祖先breadcrumb含む)を取得する。無ければnull。 */
+export function findSection(markdown: string, sectionId: string): MarkdownSection | null {
+  const sections = splitSections(markdown);
+  return sections.find((section) => section.id === sectionId) ?? null;
+}
+
 /** section IDに対応する節のMarkdown本文(ネストした子見出しを含む)を取得する。無ければnull。 */
 export function extractSection(markdown: string, sectionId: string): string | null {
-  const sections = splitSections(markdown);
-  return sections.find((section) => section.id === sectionId)?.content ?? null;
+  return findSection(markdown, sectionId)?.content ?? null;
+}
+
+/**
+ * 節の祖先見出しを ` › ` 区切りのbreadcrumb文字列にする。祖先が無ければnull。
+ * leaf節を単独取得したときに「この内容が何に属すか」をヘッダで補うために使う。
+ */
+export function formatBreadcrumb(ancestors: HeadingRef[]): string | null {
+  if (ancestors.length === 0) return null;
+  // 見出しにMarkdownリンク記法が残るとbreadcrumbがURL断片で汚れる(MDN等の
+  // アンカー付き見出し)。excerptと同様、リンク先URLに意味は無いためテキストのみ残す。
+  return ancestors.map((a) => stripMarkdownLinks(a.heading).trim()).join(" › ");
 }
