@@ -1,6 +1,6 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
-import { appendDroppedTables, collectDataTables } from "../src/extract/markdown.js";
+import { collectDataTables, reinsertDroppedTables, type DroppedTable } from "../src/extract/markdown.js";
 
 type TableQueryHost = Parameters<typeof collectDataTables>[0];
 
@@ -8,13 +8,13 @@ function body(html: string): TableQueryHost {
   return parseHTML(`<!DOCTYPE html><html><body>${html}</body></html>`).document.body as unknown as TableQueryHost;
 }
 
+const DATA_TABLE = "<table><tr><th>国</th><th>人口</th></tr><tr><td>日本</td><td>1.2億</td></tr></table>";
+
 describe("collectDataTables", () => {
   it("2行2列以上のデータ表をouterHTMLで採取する", () => {
-    const tables = collectDataTables(
-      body("<table><tr><th>国</th><th>人口</th></tr><tr><td>日本</td><td>1.2億</td></tr></table>"),
-    );
+    const tables = collectDataTables(body(DATA_TABLE));
     expect(tables).toHaveLength(1);
-    expect(tables[0]).toContain("人口");
+    expect(tables[0]?.html).toContain("人口");
   });
 
   it("1列の表(リスト相当)は採取しない", () => {
@@ -34,27 +34,51 @@ describe("collectDataTables", () => {
       ),
     );
     expect(tables).toHaveLength(1);
-    expect(tables[0]).toContain("外1");
+    expect(tables[0]?.html).toContain("外1");
+  });
+
+  it("表の直前見出しをアンカーとして採取する(位置復元用)", () => {
+    const tables = collectDataTables(body(`<h2>各国の人口</h2><p>説明文。</p>${DATA_TABLE}`));
+    expect(tables[0]?.anchor).toBe("各国の人口");
+  });
+
+  it("見出しが無ければ直前の十分長い段落をアンカーにする", () => {
+    const tables = collectDataTables(
+      body(`<p>これは三十文字を確実に超える十分な長さの直前段落テキストで、アンカーとして使えます。</p>${DATA_TABLE}`),
+    );
+    expect(tables[0]?.anchor).toContain("十分な長さの直前段落");
   });
 });
 
-describe("appendDroppedTables", () => {
-  const table = "<table><tr><th>国</th><th>人口</th></tr><tr><td>日本</td><td>1.2億</td></tr></table>";
+describe("reinsertDroppedTables", () => {
+  const table: DroppedTable = { html: DATA_TABLE, anchor: "各国の人口" };
 
-  it("本文に含まれない表は末尾へ再結合する", () => {
-    const result = appendDroppedTables("<p>本文だけ。</p>", [table]);
+  it("アンカー見出しがReadability出力に残っていれば、その直後へ挿入する", () => {
+    const content = "<h2>各国の人口</h2><p>説明文。</p><h2>次の節</h2><p>別の話。</p>";
+    const result = reinsertDroppedTables(content, [table]);
     expect(result.appended).toBe(1);
-    expect(result.html).toContain("人口");
+    // 表がアンカー見出しの直後・「次の節」より前に入る(位置復元)。
+    const idxTable = result.html.indexOf("人口</th>");
+    const idxNext = result.html.indexOf("次の節");
+    expect(idxTable).toBeGreaterThan(-1);
+    expect(idxTable).toBeLessThan(idxNext);
+  });
+
+  it("アンカーが出力に無ければ末尾へフォールバックする", () => {
+    const content = "<p>アンカーに一致しない本文だけ。</p>";
+    const result = reinsertDroppedTables(content, [table]);
+    expect(result.appended).toBe(1);
+    expect(result.html.indexOf("人口")).toBeGreaterThan(result.html.indexOf("本文だけ"));
   });
 
   it("シグネチャが本文に既にある表はスキップ(重複させない)", () => {
-    const result = appendDroppedTables(`<div>${table}</div>`, [table]);
+    const result = reinsertDroppedTables(`<div>${DATA_TABLE}</div>`, [table]);
     expect(result.appended).toBe(0);
-    expect(result.html).toBe(`<div>${table}</div>`);
+    expect(result.html).toBe(`<div>${DATA_TABLE}</div>`);
   });
 
   it("空リストは本文を変えない", () => {
-    const result = appendDroppedTables("<p>x</p>", []);
+    const result = reinsertDroppedTables("<p>x</p>", []);
     expect(result.appended).toBe(0);
     expect(result.html).toBe("<p>x</p>");
   });

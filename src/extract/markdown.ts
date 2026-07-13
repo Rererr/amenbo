@@ -208,6 +208,7 @@ function extractByGeometry(document: GeometryHostDocument, geometry: PageGeometr
 /** HTML文字列をMarkdownへ変換する。 */
 /** collectDataTables/救出が必要とするDOM要素の最小インターフェース(linkedom/ブラウザDOM双方と互換)。 */
 interface TableCandidate {
+  tagName: string;
   outerHTML: string;
   textContent: string;
   parentElement: TableCandidate | null;
@@ -219,20 +220,65 @@ interface TableQueryHost {
   querySelectorAll(selector: string): ArrayLike<TableCandidate>;
 }
 
+/** 挿入先ノード(Readability出力を再パースした要素)の最小インターフェース。 */
+interface InsertHostElement {
+  textContent: string;
+  insertAdjacentHTML(position: "afterend", html: string): void;
+}
+
+interface InsertHost {
+  body: {
+    innerHTML: string;
+    querySelectorAll(selector: string): ArrayLike<InsertHostElement>;
+  };
+}
+
+/** 救出対象のデータ表。位置復元のため直前の見出し/段落テキストをアンカーとして持つ。 */
+export interface DroppedTable {
+  html: string;
+  /** 表の直前の見出し(優先)または近傍段落の正規化テキスト。位置復元のアンカー。無ければ空。 */
+  anchor: string;
+}
+
+const ANCHOR_MAX_LENGTH = 80;
+const ANCHOR_MIN_PARAGRAPH_LENGTH = 30;
+
 /** テキストからタグを除きシグネチャ用に空白正規化する。 */
 function normalizeForSignature(text: string): string {
   return text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 /**
- * Readabilityが取りこぼしがちなデータ表を、救出候補としてHTML文字列で採取する。
+ * document順に並べた要素列から、tableIndexの表の直前アンカー(見出し優先・無ければ近傍段落)を求める。
+ * 見出しは節の先頭に表を戻すのに最適。見出しが皆無なページ用に段落をフォールバックにする。
+ */
+function findTableAnchor(seq: TableCandidate[], tableIndex: number): string {
+  let paragraph = "";
+  for (let i = tableIndex - 1; i >= 0; i--) {
+    const el = seq[i];
+    if (!el || el.tagName === "TABLE") continue; // 別の表は飛ばす。
+    const text = normalizeForSignature(el.textContent);
+    if (/^H[1-6]$/.test(el.tagName)) {
+      if (text.length > 0) return text.slice(0, ANCHOR_MAX_LENGTH); // 見出し優先。
+    } else if (!paragraph && text.length >= ANCHOR_MIN_PARAGRAPH_LENGTH) {
+      paragraph = text.slice(0, ANCHOR_MAX_LENGTH);
+    }
+  }
+  return paragraph;
+}
+
+/**
+ * Readabilityが取りこぼしがちなデータ表を、救出候補としてHTML文字列＋位置アンカーで採取する。
  * Readabilityのparseは渡したdocumentを破壊的に変更するため、必ずparse前に呼ぶこと。
  * 最外表のみ(入れ子の表は最外表のouterHTMLに含まれる)・2行以上かつ2列以上のものを
  * 「データ表」とみなす(1列や単一行はレイアウト/リスト相当なので対象外)。
  */
-export function collectDataTables(body: TableQueryHost): string[] {
-  const result: string[] = [];
-  for (const table of Array.from(body.querySelectorAll("table"))) {
+export function collectDataTables(body: TableQueryHost): DroppedTable[] {
+  const result: DroppedTable[] = [];
+  const seq = Array.from(body.querySelectorAll("h1, h2, h3, h4, h5, h6, p, table"));
+  for (let i = 0; i < seq.length; i++) {
+    const table = seq[i];
+    if (!table || table.tagName !== "TABLE") continue;
     // 入れ子の表は最外表側に含まれるので個別採取しない。
     if (table.parentElement?.closest("table")) continue;
     const rows = Array.from(table.querySelectorAll("tr"));
@@ -243,25 +289,46 @@ export function collectDataTables(body: TableQueryHost): string[] {
       if (cells > maxCells) maxCells = cells;
     }
     if (maxCells < 2) continue;
-    result.push(table.outerHTML);
+    result.push({ html: table.outerHTML, anchor: findTableAnchor(seq, i) });
   }
   return result;
 }
 
-/** シグネチャ(表の先頭テキスト)がReadability出力に既にある表を除き、落ちた表だけを本文へ再結合する。 */
-export function appendDroppedTables(contentHtml: string, tablesHtml: string[]): { html: string; appended: number } {
-  if (tablesHtml.length === 0) return { html: contentHtml, appended: 0 };
+/**
+ * Readability出力に含まれない表だけを、可能なら元の位置(アンカー直後)へ、無理なら末尾へ再結合する。
+ * アンカー(表の直前見出し/段落)がReadability出力に残っていれば、その要素の直後に挿入して
+ * 「表が本来属していた節」へ戻す(記事構造=意味の保持)。残っていなければ末尾フォールバック。
+ */
+export function reinsertDroppedTables(contentHtml: string, tables: DroppedTable[]): { html: string; appended: number } {
+  if (tables.length === 0) return { html: contentHtml, appended: 0 };
+
+  // Readabilityが既に保持している表はシグネチャ(先頭テキスト)で除外する。
   const contentText = normalizeForSignature(contentHtml);
-  const missing: string[] = [];
-  for (const tableHtml of tablesHtml) {
-    // 表の先頭テキスト(見出し行など)をシグネチャにする。プロース中に偶然一致しない長さを取る。
-    const signature = normalizeForSignature(tableHtml).slice(0, 80);
-    if (signature.length === 0) continue;
-    if (contentText.includes(signature)) continue; // Readabilityが既に保持している。
-    missing.push(tableHtml);
-  }
+  const missing = tables.filter((table) => {
+    const signature = normalizeForSignature(table.html).slice(0, ANCHOR_MAX_LENGTH);
+    return signature.length > 0 && !contentText.includes(signature);
+  });
   if (missing.length === 0) return { html: contentHtml, appended: 0 };
-  return { html: `${contentHtml}\n${missing.join("\n")}`, appended: missing.length };
+
+  const { document } = parseHTML(`<!DOCTYPE html><html><body>${contentHtml}</body></html>`);
+  const host = document as unknown as InsertHost;
+  const anchorNodes = Array.from(host.body.querySelectorAll("h1, h2, h3, h4, h5, h6, p"));
+
+  const tail: string[] = [];
+  for (const table of missing) {
+    const anchorNode = table.anchor
+      ? anchorNodes.find((node) => normalizeForSignature(node.textContent).includes(table.anchor))
+      : undefined;
+    if (anchorNode) {
+      anchorNode.insertAdjacentHTML("afterend", table.html);
+    } else {
+      tail.push(table.html); // アンカーが出力に無い表は末尾へ。
+    }
+  }
+
+  const inserted = host.body.innerHTML;
+  const html = tail.length > 0 ? `${inserted}\n${tail.join("\n")}` : inserted;
+  return { html, appended: missing.length };
 }
 
 export function extractMarkdown(html: string, options: ExtractOptions = {}): ExtractResult {
@@ -314,15 +381,15 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
       }
 
       // Readabilityはリンク密度の高いデータ表(各国人口ソート表等)を本文から丸ごと落とすことがある。
-      // parseは渡したdocumentを破壊的に変更するため、parse前に救出候補の表をHTML文字列で採取しておく。
-      const dataTablesHtml = document.body ? collectDataTables(document.body as unknown as TableQueryHost) : [];
+      // parseは渡したdocumentを破壊的に変更するため、parse前に救出候補の表を位置アンカー付きで採取しておく。
+      const dataTables = document.body ? collectDataTables(document.body as unknown as TableQueryHost) : [];
 
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;
 
       if (article && article.content && (article.textContent ?? "").trim().length >= MIN_READABILITY_TEXT_LENGTH) {
-        // Readabilityが取りこぼしたデータ表を本文へ再結合する(既に含まれる表はシグネチャで除外)。
-        contentHtml = appendDroppedTables(article.content, dataTablesHtml).html;
+        // Readabilityが取りこぼしたデータ表を、可能なら元の位置へ戻して本文へ再結合する。
+        contentHtml = reinsertDroppedTables(article.content, dataTables).html;
         title = article.title || title;
         extractionMethod = "readability";
       } else if (geometryHtml) {
