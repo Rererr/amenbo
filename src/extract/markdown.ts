@@ -206,6 +206,64 @@ function extractByGeometry(document: GeometryHostDocument, geometry: PageGeometr
 }
 
 /** HTML文字列をMarkdownへ変換する。 */
+/** collectDataTables/救出が必要とするDOM要素の最小インターフェース(linkedom/ブラウザDOM双方と互換)。 */
+interface TableCandidate {
+  outerHTML: string;
+  textContent: string;
+  parentElement: TableCandidate | null;
+  closest(selector: string): TableCandidate | null;
+  querySelectorAll(selector: string): ArrayLike<TableCandidate>;
+}
+
+interface TableQueryHost {
+  querySelectorAll(selector: string): ArrayLike<TableCandidate>;
+}
+
+/** テキストからタグを除きシグネチャ用に空白正規化する。 */
+function normalizeForSignature(text: string): string {
+  return text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Readabilityが取りこぼしがちなデータ表を、救出候補としてHTML文字列で採取する。
+ * Readabilityのparseは渡したdocumentを破壊的に変更するため、必ずparse前に呼ぶこと。
+ * 最外表のみ(入れ子の表は最外表のouterHTMLに含まれる)・2行以上かつ2列以上のものを
+ * 「データ表」とみなす(1列や単一行はレイアウト/リスト相当なので対象外)。
+ */
+export function collectDataTables(body: TableQueryHost): string[] {
+  const result: string[] = [];
+  for (const table of Array.from(body.querySelectorAll("table"))) {
+    // 入れ子の表は最外表側に含まれるので個別採取しない。
+    if (table.parentElement?.closest("table")) continue;
+    const rows = Array.from(table.querySelectorAll("tr"));
+    if (rows.length < 2) continue;
+    let maxCells = 0;
+    for (const row of rows) {
+      const cells = row.querySelectorAll("th, td").length;
+      if (cells > maxCells) maxCells = cells;
+    }
+    if (maxCells < 2) continue;
+    result.push(table.outerHTML);
+  }
+  return result;
+}
+
+/** シグネチャ(表の先頭テキスト)がReadability出力に既にある表を除き、落ちた表だけを本文へ再結合する。 */
+export function appendDroppedTables(contentHtml: string, tablesHtml: string[]): { html: string; appended: number } {
+  if (tablesHtml.length === 0) return { html: contentHtml, appended: 0 };
+  const contentText = normalizeForSignature(contentHtml);
+  const missing: string[] = [];
+  for (const tableHtml of tablesHtml) {
+    // 表の先頭テキスト(見出し行など)をシグネチャにする。プロース中に偶然一致しない長さを取る。
+    const signature = normalizeForSignature(tableHtml).slice(0, 80);
+    if (signature.length === 0) continue;
+    if (contentText.includes(signature)) continue; // Readabilityが既に保持している。
+    missing.push(tableHtml);
+  }
+  if (missing.length === 0) return { html: contentHtml, appended: 0 };
+  return { html: `${contentHtml}\n${missing.join("\n")}`, appended: missing.length };
+}
+
 export function extractMarkdown(html: string, options: ExtractOptions = {}): ExtractResult {
   const url = options.url ?? "about:blank";
   const { document } = parseHTML(html);
@@ -255,11 +313,16 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
         prunedBlockCount = pruneLowValueBlocks(document.body);
       }
 
+      // Readabilityはリンク密度の高いデータ表(各国人口ソート表等)を本文から丸ごと落とすことがある。
+      // parseは渡したdocumentを破壊的に変更するため、parse前に救出候補の表をHTML文字列で採取しておく。
+      const dataTablesHtml = document.body ? collectDataTables(document.body as unknown as TableQueryHost) : [];
+
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;
 
       if (article && article.content && (article.textContent ?? "").trim().length >= MIN_READABILITY_TEXT_LENGTH) {
-        contentHtml = article.content;
+        // Readabilityが取りこぼしたデータ表を本文へ再結合する(既に含まれる表はシグネチャで除外)。
+        contentHtml = appendDroppedTables(article.content, dataTablesHtml).html;
         title = article.title || title;
         extractionMethod = "readability";
       } else if (geometryHtml) {
