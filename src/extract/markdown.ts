@@ -235,13 +235,115 @@ interface InsertHost {
 
 /** 救出対象のデータ表。位置復元のため直前の見出し/段落テキストをアンカーとして持つ。 */
 export interface DroppedTable {
+  /** turndownへ渡す正規化済みHTML(colspan/rowspan展開・多段ヘッダ結合後)。 */
   html: string;
+  /** 元の表テキスト先頭。Readability出力に既にある表かの重複判定に使う(正規化前基準)。 */
+  signature: string;
   /** 表の直前の見出し(優先)または近傍段落の正規化テキスト。位置復元のアンカー。無ければ空。 */
   anchor: string;
 }
 
 const ANCHOR_MAX_LENGTH = 80;
 const ANCHOR_MIN_PARAGRAPH_LENGTH = 30;
+const MAX_SPAN = 1000;
+
+/** collapsed/rowspan/多段ヘッダを持つ表を正規化するためのDOM最小インターフェース。 */
+interface NormCell {
+  tagName: string;
+  getAttribute(name: string): string | null;
+  innerHTML: string;
+}
+interface NormRow {
+  closest(selector: string): unknown;
+  children: ArrayLike<NormCell>;
+}
+interface NormTable {
+  querySelectorAll(selector: string): ArrayLike<NormRow>;
+}
+interface GridCell {
+  html: string;
+}
+
+/** colspan/rowspan属性値を1以上MAX_SPAN以下の整数へ丸める(異常値ガード)。 */
+function clampSpan(value: string | null): number {
+  const n = Number.parseInt(value ?? "1", 10);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, MAX_SPAN);
+}
+
+/**
+ * turndownのGFMテーブル変換はcolspan/rowspan・多段ヘッダを扱えず列ズレや空セルを生む。
+ * グリッドを再構築してspanを実セルへ展開し、先頭の連続ヘッダ行は1行へ結合してから
+ * 全行同一列数の単純表を返す。救出経路の表のみに適用する(影響を局所化)。
+ */
+export function normalizeTableHtml(tableHtml: string): string {
+  const { document } = parseHTML(`<!DOCTYPE html><html><body>${tableHtml}</body></html>`);
+  const tableEl = document.querySelector("table");
+  if (!tableEl) return tableHtml;
+  const table = tableEl as unknown as NormTable;
+
+  // 入れ子の表の行を巻き込まないよう、直接の行(closestが自表と一致)だけを対象にする。
+  const rows = Array.from(table.querySelectorAll("tr")).filter((tr) => tr.closest("table") === tableEl);
+  const rowCount = rows.length;
+  if (rowCount === 0) return tableHtml;
+
+  const grid: Array<Array<GridCell | undefined>> = Array.from({ length: rowCount }, () => []);
+  const isHeaderRow: boolean[] = [];
+
+  for (let r = 0; r < rowCount; r++) {
+    const cells = Array.from(rows[r]!.children).filter((el) => el.tagName === "TD" || el.tagName === "TH");
+    isHeaderRow[r] = cells.length > 0 && cells.every((cell) => cell.tagName === "TH");
+    let c = 0;
+    for (const cell of cells) {
+      while (grid[r]![c] !== undefined) c++;
+      const colspan = clampSpan(cell.getAttribute("colspan"));
+      const rowspan = clampSpan(cell.getAttribute("rowspan"));
+      const filled: GridCell = { html: cell.innerHTML.trim() };
+      for (let i = 0; i < rowspan && r + i < rowCount; i++) {
+        for (let j = 0; j < colspan; j++) {
+          grid[r + i]![c + j] = filled;
+        }
+      }
+      c += colspan;
+    }
+  }
+
+  const numCols = grid.reduce((max, row) => Math.max(max, row.length), 0);
+  if (numCols === 0) return tableHtml;
+
+  let headerCount = 0;
+  while (headerCount < rowCount && isHeaderRow[headerCount]) headerCount++;
+
+  const cellHtml = (r: number, c: number): string => grid[r]?.[c]?.html ?? "";
+  const out: string[] = ["<table>"];
+  const emitRow = (cells: string[], tag: "th" | "td"): void => {
+    out.push(`<tr>${cells.map((h) => `<${tag}>${h}</${tag}>`).join("")}</tr>`);
+  };
+
+  if (headerCount >= 2) {
+    // 多段ヘッダ: 列ごとに上→下のセルを重複除去して連結し、1行のヘッダへ畳む。
+    const merged: string[] = [];
+    for (let c = 0; c < numCols; c++) {
+      const parts: string[] = [];
+      for (let r = 0; r < headerCount; r++) {
+        const h = cellHtml(r, c);
+        if (h && parts[parts.length - 1] !== h) parts.push(h);
+      }
+      merged.push(parts.join(" "));
+    }
+    emitRow(merged, "th");
+    for (let r = headerCount; r < rowCount; r++) {
+      emitRow(Array.from({ length: numCols }, (_, c) => cellHtml(r, c)), "td");
+    }
+  } else {
+    // ヘッダ0/1行: spanの展開のみ行い、行のth/tdは元の判定を踏襲する。
+    for (let r = 0; r < rowCount; r++) {
+      emitRow(Array.from({ length: numCols }, (_, c) => cellHtml(r, c)), isHeaderRow[r] ? "th" : "td");
+    }
+  }
+  out.push("</table>");
+  return out.join("");
+}
 
 /** テキストからタグを除きシグネチャ用に空白正規化する。 */
 function normalizeForSignature(text: string): string {
@@ -289,7 +391,12 @@ export function collectDataTables(body: TableQueryHost): DroppedTable[] {
       if (cells > maxCells) maxCells = cells;
     }
     if (maxCells < 2) continue;
-    result.push({ html: table.outerHTML, anchor: findTableAnchor(seq, i) });
+    result.push({
+      html: normalizeTableHtml(table.outerHTML),
+      // 重複判定は正規化前の元テキスト基準にする(Readability保持時の照合を安定させる)。
+      signature: normalizeForSignature(table.textContent).slice(0, ANCHOR_MAX_LENGTH),
+      anchor: findTableAnchor(seq, i),
+    });
   }
   return result;
 }
@@ -302,12 +409,9 @@ export function collectDataTables(body: TableQueryHost): DroppedTable[] {
 export function reinsertDroppedTables(contentHtml: string, tables: DroppedTable[]): { html: string; appended: number } {
   if (tables.length === 0) return { html: contentHtml, appended: 0 };
 
-  // Readabilityが既に保持している表はシグネチャ(先頭テキスト)で除外する。
+  // Readabilityが既に保持している表はシグネチャ(元テキスト先頭)で除外する。
   const contentText = normalizeForSignature(contentHtml);
-  const missing = tables.filter((table) => {
-    const signature = normalizeForSignature(table.html).slice(0, ANCHOR_MAX_LENGTH);
-    return signature.length > 0 && !contentText.includes(signature);
-  });
+  const missing = tables.filter((table) => table.signature.length > 0 && !contentText.includes(table.signature));
   if (missing.length === 0) return { html: contentHtml, appended: 0 };
 
   const { document } = parseHTML(`<!DOCTYPE html><html><body>${contentHtml}</body></html>`);
