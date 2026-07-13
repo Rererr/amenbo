@@ -15,7 +15,7 @@ import { diffMarkdown, type SectionDiff } from "./diff.js";
 import { AmenboError, SectionNotFoundError } from "./errors.js";
 import { detectDataSources } from "./extract/dataSources.js";
 import { extractMarkdown, type ExtractionMethod } from "./extract/markdown.js";
-import { buildOutline, extractSection, type OutlineResult } from "./extract/outline.js";
+import { buildOutline, findSection, formatBreadcrumb, type OutlineResult } from "./extract/outline.js";
 import { DEFAULT_PDF_MAX_BYTES, extractPdfText, looksLikePdf, markdownFromPdfText, renderPdfPages } from "./extract/pdf.js";
 import { buildHandoffPreview } from "./extract/preview.js";
 import { evaluateQuality } from "./extract/qualityScore.js";
@@ -494,12 +494,20 @@ export function dataSourcesSection(hints: string[]): string {
   return hints.length > 0 ? `\n\ndata_sources:\n${hints.join("\n")}` : "";
 }
 
-function formatMarkdownResponse(page: ResolvedPage, paginated: PaginatedResult, sectionId: string | null, templateRemovedCount: number): string {
+function formatMarkdownResponse(
+  page: ResolvedPage,
+  paginated: PaginatedResult,
+  sectionId: string | null,
+  templateRemovedCount: number,
+  breadcrumb: string | null = null,
+): string {
   const header = [
     `title: ${page.title ?? "(なし)"}`,
     `url: ${page.finalUrl}`,
     `mode_used: markdown`,
     ...(sectionId ? [`section: ${sectionId}`] : []),
+    // leaf節を単独取得したとき、この節が属する上位見出しの連なりを補い文脈喪失を防ぐ。
+    ...(breadcrumb ? [`section_path: ${breadcrumb}`] : []),
     `cache: ${page.cacheStatus}`,
     `tokens: ${paginated.tokens}`,
     `page: ${paginated.page} of ${paginated.totalPages}`,
@@ -846,12 +854,13 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
 
   // sectionが指定された場合は、mode指定に関わらずその節のMarkdownのみを返す(差分応答は適用しない)
   if (input.section) {
-    const sectionMarkdown = extractSection(view.markdown, input.section);
-    if (sectionMarkdown === null) {
+    const section = findSection(view.markdown, input.section);
+    if (section === null) {
       throw new SectionNotFoundError(input.url, input.section);
     }
-    const paginated = paginateMarkdown(sectionMarkdown, maxTokens, page);
-    return [{ type: "text", text: formatMarkdownResponse(view, paginated, input.section, templateRemovedCount) }];
+    const paginated = paginateMarkdown(section.content, maxTokens, page);
+    const breadcrumb = formatBreadcrumb(section.ancestors);
+    return [{ type: "text", text: formatMarkdownResponse(view, paginated, input.section, templateRemovedCount, breadcrumb) }];
   }
 
   if (mode === "outline") {
