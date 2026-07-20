@@ -101,7 +101,7 @@ describe("extractMarkdown - 複雑表の正規化(全経路)", () => {
     expect(colCounts.size).toBe(1);
   });
 
-  // wikipedia-jaアダプタはReadabilityをバイパスするため、readability経路限定の正規化では
+  // wikipedia-cjkアダプタはReadabilityをバイパスするため、readability経路限定の正規化では
   // 日本語Wikipediaのrowspan表(実世界で最頻)を救えない。共通パス配置の回帰テスト。
   const wikipediaComplex = `<!DOCTYPE html><html lang="ja"><head><title>統計 - Wikipedia</title></head><body>
     <div class="mw-parser-output">
@@ -114,10 +114,10 @@ describe("extractMarkdown - 複雑表の正規化(全経路)", () => {
       </table>
     </div></body></html>`;
 
-  it("アダプタ経路(wikipedia-ja/Readability非経由)で保持された複雑表も正規化する", () => {
+  it("アダプタ経路(wikipedia-cjk/Readability非経由)で保持された複雑表も正規化する", () => {
     const result = extractMarkdown(wikipediaComplex, { url: "https://ja.wikipedia.org/wiki/統計" });
     expect(result.extractionMethod).toBe("adapter");
-    expect(result.adapterName).toBe("wikipedia-ja");
+    expect(result.adapterName).toBe("wikipedia-cjk");
     expect(result.markdown.match(/^\| --- \|/gm) ?? []).toHaveLength(1);
     expect(result.markdown).toContain("人口男");
     expect(result.markdown).toContain("人口女");
@@ -331,9 +331,9 @@ describe("extractMarkdown - J7 サイトアダプタ", () => {
       </div>
     </body></html>`;
 
-  it("ja.wikipedia.orgではadapterName='wikipedia-ja'になり、見出し構造を保持する(Readabilityは見出しを剥がすため)", () => {
+  it("ja.wikipedia.orgではadapterName='wikipedia-cjk'になり、見出し構造を保持する(Readabilityは見出しを剥がすため)", () => {
     const result = extractMarkdown(wikipediaHtml, { url: "https://ja.wikipedia.org/wiki/日本語" });
-    expect(result.adapterName).toBe("wikipedia-ja");
+    expect(result.adapterName).toBe("wikipedia-cjk");
     const headingLines = result.markdown.split("\n").filter((line) => /^#{1,6}\s/.test(line));
     expect(headingLines).toEqual(["## 特徴", "### 音韻"]);
   });
@@ -342,6 +342,45 @@ describe("extractMarkdown - J7 サイトアダプタ", () => {
     const result = extractMarkdown(wikipediaHtml, { url: "https://ja.wikipedia.org/wiki/日本語" });
     expect(result.markdown).not.toContain("編集");
     expect(result.markdown).not.toContain("関連項目のナビゲーションボックス");
+  });
+
+  // zh/ko版もMediaWiki同一構造のためwikipedia-cjkアダプタでReadabilityをバイパスし見出しを保つ。
+  const zhWikipediaHtml = `<!DOCTYPE html>
+    <html lang="zh"><head><title>广东省 - 维基百科</title></head>
+    <body>
+      <div class="mw-parser-output">
+        <p>${"广东省是中华人民共和国的省级行政区之一。".repeat(3)}</p>
+        <div class="mw-heading mw-heading2"><h2 id="历史">历史</h2><span class="mw-editsection">[<a href="#">编辑</a>]</span></div>
+        <p>${"广东历史悠久，是岭南文化的重要发源地。".repeat(5)}</p>
+        <div class="mw-heading mw-heading3"><h3 id="地理">地理</h3></div>
+        <p>${"广东省地处中国大陆最南部。".repeat(5)}</p>
+      </div>
+    </body></html>`;
+
+  it("zh.wikipedia.orgでもadapterName='wikipedia-cjk'になり、見出し構造を保持する", () => {
+    const result = extractMarkdown(zhWikipediaHtml, { url: "https://zh.wikipedia.org/wiki/广东省" });
+    expect(result.adapterName).toBe("wikipedia-cjk");
+    const headingLines = result.markdown.split("\n").filter((line) => /^#{1,6}\s/.test(line));
+    expect(headingLines).toEqual(["## 历史", "### 地理"]);
+  });
+
+  const koWikipediaHtml = `<!DOCTYPE html>
+    <html lang="ko"><head><title>서울특별시 - 위키백과</title></head>
+    <body>
+      <div class="mw-parser-output">
+        <p>${"서울특별시는 대한민국의 수도이자 최대 도시이다. ".repeat(3)}</p>
+        <div class="mw-heading mw-heading2"><h2 id="역사">역사</h2><span class="mw-editsection">[<a href="#">편집</a>]</span></div>
+        <p>${"서울은 한강 유역에 위치한 오랜 역사를 지닌 도시이다. ".repeat(5)}</p>
+        <div class="mw-heading mw-heading3"><h3 id="지리">지리</h3></div>
+        <p>${"서울은 한반도의 중앙부에 자리잡고 있다. ".repeat(5)}</p>
+      </div>
+    </body></html>`;
+
+  it("ko.wikipedia.orgでもadapterName='wikipedia-cjk'になり、見出し構造を保持する", () => {
+    const result = extractMarkdown(koWikipediaHtml, { url: "https://ko.wikipedia.org/wiki/서울특별시" });
+    expect(result.adapterName).toBe("wikipedia-cjk");
+    const headingLines = result.markdown.split("\n").filter((line) => /^#{1,6}\s/.test(line));
+    expect(headingLines).toEqual(["## 역사", "### 지리"]);
   });
 });
 
@@ -382,7 +421,7 @@ describe("extractMarkdown - CSSリーク除去(style/script/noscript)", () => {
 
   it("アダプタ経路(Readability非経由)でもstyleを除去する(ja.wikipedia)", () => {
     const result = extractMarkdown(adapterLeakHtml, { url: "https://ja.wikipedia.org/wiki/日本語" });
-    expect(result.adapterName).toBe("wikipedia-ja");
+    expect(result.adapterName).toBe("wikipedia-cjk");
     expect(result.markdown).not.toContain("mw-parser-output");
     expect(result.markdown).not.toContain("ambox");
     expect(result.markdown).toContain("日本語は日本国内や日本人同士の間で使用されている言語である");
@@ -411,7 +450,7 @@ describe("extractMarkdown - CSSリーク除去(style/script/noscript)", () => {
         </div>
       </body></html>`;
     const result = extractMarkdown(html, { url: "https://ja.wikipedia.org/wiki/日本語" });
-    expect(result.adapterName).toBe("wikipedia-ja");
+    expect(result.adapterName).toBe("wikipedia-cjk");
     expect(result.markdown).not.toContain("JavaScriptを有効にしてください");
   });
 
