@@ -212,6 +212,7 @@ function extractByGeometry(document: GeometryHostDocument, geometry: PageGeometr
 interface TableCandidate {
   tagName: string;
   outerHTML: string;
+  innerHTML: string;
   textContent: string;
   parentElement: TableCandidate | null;
   closest(selector: string): TableCandidate | null;
@@ -240,11 +241,13 @@ export interface DroppedTable {
   /** turndownへ渡す正規化済みHTML(colspan/rowspan展開・多段ヘッダ結合後)。 */
   html: string;
   /**
-   * 表のouterHTMLをタグ→空白で正規化した先頭。Readability出力に既にある表かの重複判定に使う。
-   * contentHtml側も同じnormalizeForSignatureで比較するため、セル区切りに空白が入るか否かで
-   * 照合が揺れないよう、textContentではなくouterHTML基準に揃える(空白非対称による重複挿入対策)。
+   * 表内セル(th/td)から作った照合プローブ群。Readability出力に既にある表かの重複判定に使う。
+   * 単一signatureではなく複数プローブの多数決にするのは、Readabilityが表を保持しつつ一部セルの
+   * 隠し要素を刈る(Langエラーspan・隠し座標span等)ため、先頭固定のsignatureだと保持済みの表でも
+   * 照合が外れて丸ごと再挿入されるのを防ぐため。contentHtml側と同じnormalizeForSignature
+   * (タグ→空白)で両辺を揃える(空白非対称による重複挿入対策)。
    */
-  signature: string;
+  probes: string[];
   /** 表の直前の見出し(優先)または近傍段落の正規化テキスト。位置復元のアンカー。無ければ空。 */
   anchor: string;
 }
@@ -252,6 +255,11 @@ export interface DroppedTable {
 const ANCHOR_MAX_LENGTH = 80;
 const ANCHOR_MIN_PARAGRAPH_LENGTH = 30;
 const MAX_SPAN = 1000;
+const PROBE_MIN_LENGTH = 8;
+const PROBE_MAX_COUNT = 3;
+const PROBE_MAX_LENGTH = 60;
+// アンカー長(見出し用)とは別概念のため定数を分ける(片方の調整が他方へ波及しないように)。
+const PROBE_FALLBACK_MAX_LENGTH = 80;
 
 /** collapsed/rowspan/多段ヘッダを持つ表を正規化するためのDOM最小インターフェース。 */
 interface NormCell {
@@ -275,6 +283,9 @@ interface NormDocument {
 }
 interface GridCell {
   html: string;
+  /** このセルの起点(左上)の行・列。span継続で占有された位置は起点と一致しない。 */
+  originRow: number;
+  originCol: number;
 }
 
 /** colspan/rowspan属性値を1以上MAX_SPAN以下の整数へ丸める(異常値ガード)。 */
@@ -286,11 +297,18 @@ function clampSpan(value: string | null): number {
 
 /**
  * turndownのGFMテーブル変換はcolspan/rowspan・多段ヘッダを扱えず列ズレや空セルを生む。
- * グリッドを再構築してspanを実セルへ展開し、先頭の連続ヘッダ行は1行へ結合してから
- * 全行同一列数の単純表を返す。救出経路(collectDataTables)とReadability/アダプタ等が
+ * グリッドを再構築してspanを「位置の占有」として展開し(内容の複製はしない)、先頭の連続ヘッダ行は
+ * 1行へ結合してから全行同一列数の単純表を返す。救出経路(collectDataTables)とReadability/アダプタ等が
  * 本文に保持した複雑表(normalizeRetainedTables)の双方から呼ばれる。
  * spanの無い単純表・既に正規化済みの表に対しては構造を変えず冪等に振る舞う。
  * captionは再構築で失われないよう先頭へ復元する。
+ *
+ * 内容配置は行の役割で分岐する:
+ * - 列ヘッダ行(all-th ∧ 起点セル2つ以上): 占有読み。colspanグループラベルは配下の各列へ複製される
+ *   (多段ヘッダ結合「グループ 列名」の意味を保つための唯一の複製)
+ * - データ行: 起点位置にのみ内容、span継続位置は空セル(複製しない)
+ * - 全幅単一th行: 列ヘッダではなく表題/節ラベル。先頭の連続分はcaptionへ畳み(turndown-gfmが
+ *   ヘッダ行を見失って複雑表フォールバックへ落ちるのを防ぐ)、表中間の区切り行はデータ行として出力
  */
 export function normalizeTableHtml(tableHtml: string): string {
   const { document } = parseHTML(`<!DOCTYPE html><html><body>${tableHtml}</body></html>`);
@@ -308,17 +326,19 @@ export function normalizeTableHtml(tableHtml: string): string {
   if (rowCount === 0) return tableHtml;
 
   const grid: Array<Array<GridCell | undefined>> = Array.from({ length: rowCount }, () => []);
-  const isHeaderRow: boolean[] = [];
+  const allTh: boolean[] = [];
+  const originCount: number[] = [];
 
   for (let r = 0; r < rowCount; r++) {
     const cells = Array.from(rows[r]!.children).filter((el) => el.tagName === "TD" || el.tagName === "TH");
-    isHeaderRow[r] = cells.length > 0 && cells.every((cell) => cell.tagName === "TH");
+    allTh[r] = cells.length > 0 && cells.every((cell) => cell.tagName === "TH");
+    originCount[r] = cells.length;
     let c = 0;
     for (const cell of cells) {
       while (grid[r]![c] !== undefined) c++;
       const colspan = clampSpan(cell.getAttribute("colspan"));
       const rowspan = clampSpan(cell.getAttribute("rowspan"));
-      const filled: GridCell = { html: cell.innerHTML.trim() };
+      const filled: GridCell = { html: cell.innerHTML.trim(), originRow: r, originCol: c };
       for (let i = 0; i < rowspan && r + i < rowCount; i++) {
         for (let j = 0; j < colspan; j++) {
           grid[r + i]![c + j] = filled;
@@ -331,47 +351,84 @@ export function normalizeTableHtml(tableHtml: string): string {
   const numCols = grid.reduce((max, row) => Math.max(max, row.length), 0);
   if (numCols === 0) return tableHtml;
 
-  let headerCount = 0;
-  while (headerCount < rowCount && isHeaderRow[headerCount]) headerCount++;
+  const occupancyCell = (r: number, c: number): string => grid[r]?.[c]?.html ?? "";
+  const originCellHtml = (r: number, c: number): string => {
+    const g = grid[r]?.[c];
+    return g && g.originRow === r && g.originCol === c ? g.html : "";
+  };
+  // 列ヘッダ行: all-th ∧ 起点セル2つ以上。単一全幅th行(起点セル1つ)は列ヘッダではなくラベル行。
+  const isColumnHeaderRow = (r: number): boolean => allTh[r]! && originCount[r]! >= 2;
+  const isFullWidthLabelRow = (r: number): boolean => {
+    if (numCols < 2 || !allTh[r] || originCount[r] !== 1) return false;
+    let covered = 0;
+    for (let c = 0; c < numCols; c++) if (grid[r]?.[c]?.originRow === r) covered++;
+    return covered === numCols;
+  };
 
-  const cellHtml = (r: number, c: number): string => grid[r]?.[c]?.html ?? "";
-  const rowFrom = (r: number): string[] => Array.from({ length: numCols }, (_, c) => cellHtml(r, c));
   const emitRow = (cells: string[], tag: "th" | "td"): string => `<tr>${cells.map((h) => `<${tag}>${h}</${tag}>`).join("")}</tr>`;
+  const emitOne = (r: number): string => {
+    // thは列ヘッダ行にのみ与える。単一起点のラベル行をthのまま出力すると、空th兄弟を伴う
+    // 「all-th複数セル行」として実体化し、再パース時(救出挿入後のnormalizeRetainedTables)に
+    // 列ヘッダと誤認されて多段ヘッダ結合へ巻き込まれる=区切りラベルが消失するため。
+    const tag: "th" | "td" = isColumnHeaderRow(r) ? "th" : "td";
+    const read = isColumnHeaderRow(r) ? occupancyCell : originCellHtml;
+    return emitRow(Array.from({ length: numCols }, (_, c) => read(r, c)), tag);
+  };
+
+  // 先頭の連続する全幅単一thラベル行をcaptionへ畳む。全行がラベル行の退化ケースでは畳まない。
+  const foldedCaptions: string[] = [];
+  let start = 0;
+  while (start < rowCount && isFullWidthLabelRow(start)) {
+    const text = occupancyCell(start, 0);
+    if (text) foldedCaptions.push(text);
+    start++;
+  }
+  if (start >= rowCount) {
+    start = 0;
+    foldedCaptions.length = 0;
+  }
+
+  let headerCount = 0;
+  while (start + headerCount < rowCount && isColumnHeaderRow(start + headerCount)) headerCount++;
 
   const headerRows: string[] = [];
   const bodyRows: string[] = [];
 
-  // 全行がヘッダ(headerCount === rowCount)の表を結合するとデータ行が消えるため、
-  // 結合はデータ行が1行以上残る場合(headerCount < rowCount)に限る。全ヘッダ表は
-  // else分岐で先頭行のみヘッダ扱いにし、残りは各行を保持する(スタイル目的でthを使う表の保護)。
-  if (headerCount >= 2 && headerCount < rowCount) {
-    // 多段ヘッダ: 列ごとに上→下のセルを重複除去して連結し、1行のヘッダへ畳む。
+  // 全行がヘッダ(start+headerCount === rowCount)の表を結合するとデータ行が消えるため、
+  // 結合はデータ行が1行以上残る場合に限る。全ヘッダ表はelse分岐で先頭行のみthead扱いにし、
+  // 残りは各行を保持する(スタイル目的でthを使う表の保護)。
+  if (headerCount >= 2 && start + headerCount < rowCount) {
+    // 多段ヘッダ: 列ごとに上→下のセルを占有読みし、重複除去して連結して1行のヘッダへ畳む。
     const merged: string[] = [];
     for (let c = 0; c < numCols; c++) {
       const parts: string[] = [];
-      for (let r = 0; r < headerCount; r++) {
-        const h = cellHtml(r, c);
+      for (let r = start; r < start + headerCount; r++) {
+        const h = occupancyCell(r, c);
         if (h && parts[parts.length - 1] !== h) parts.push(h);
       }
       merged.push(parts.join(" "));
     }
     headerRows.push(emitRow(merged, "th"));
-    for (let r = headerCount; r < rowCount; r++) bodyRows.push(emitRow(rowFrom(r), "td"));
+    for (let r = start + headerCount; r < rowCount; r++) bodyRows.push(emitOne(r));
   } else {
-    // ヘッダ0/1行(全ヘッダ表を含む): spanのみ展開。先頭がヘッダ行ならthead、残りはtbodyへ。
-    for (let r = 0; r < rowCount; r++) {
-      if (r === 0 && isHeaderRow[0]) headerRows.push(emitRow(rowFrom(r), "th"));
-      else bodyRows.push(emitRow(rowFrom(r), isHeaderRow[r] ? "th" : "td"));
+    // ヘッダ0/1行(全ヘッダ表を含む): 先頭が列ヘッダ行ならthead、残りはtbodyへ。
+    for (let r = start; r < rowCount; r++) {
+      if (r === start && isColumnHeaderRow(r)) headerRows.push(emitOne(r));
+      else bodyRows.push(emitOne(r));
     }
   }
 
   // captionを内包したままでもヘッダ行を見失わないよう、ヘッダはthead・データはtbodyで囲う
   // (turndown-gfmはtrがtableの先頭子でないとヘッダと認識せず、captionがあると降格するため)。
-  const out: string[] = ["<table>"];
+  const captionParts: string[] = [];
   if (caption) {
     const capHtml = caption.innerHTML.trim();
-    if (capHtml) out.push(`<caption>${capHtml}</caption>`);
+    if (capHtml) captionParts.push(capHtml);
   }
+  captionParts.push(...foldedCaptions);
+
+  const out: string[] = ["<table>"];
+  if (captionParts.length > 0) out.push(`<caption>${captionParts.join(" ")}</caption>`);
   if (headerRows.length > 0) out.push(`<thead>${headerRows.join("")}</thead>`);
   if (bodyRows.length > 0) out.push(`<tbody>${bodyRows.join("")}</tbody>`);
   out.push("</table>");
@@ -403,6 +460,32 @@ function findTableAnchor(seq: TableCandidate[], tableIndex: number): string {
 }
 
 /**
+ * 表内セル(th/td)から重複判定用の照合プローブを作る。入れ子表を内包するセルは、その内側の
+ * 表全体がinnerHTMLに入り込みノイズになる(かつ内側セルは個別に拾える)ため除外する。
+ * 長さ8字以上のセルテキストを重複除去し、長い順(安定ソート)に最大3本、各60字へ切り詰める。
+ * 対象セルが1つも無い表は、従来のouterHTML先頭を単一プローブとしてフォールバックする。
+ */
+function buildTableProbes(table: TableCandidate): string[] {
+  const cells = Array.from(table.querySelectorAll("th, td")).filter((cell) => cell.querySelectorAll("table").length === 0);
+  const seen = new Set<string>();
+  const probes: string[] = [];
+  for (const cell of cells) {
+    const text = normalizeForSignature(cell.innerHTML);
+    if (text.length < PROBE_MIN_LENGTH || seen.has(text)) continue;
+    seen.add(text);
+    probes.push(text);
+  }
+  if (probes.length === 0) {
+    return [normalizeForSignature(table.outerHTML).slice(0, PROBE_FALLBACK_MAX_LENGTH)].filter((p) => p.length > 0);
+  }
+  return probes
+    .map((probe, index) => ({ probe, index }))
+    .sort((a, b) => b.probe.length - a.probe.length || a.index - b.index)
+    .slice(0, PROBE_MAX_COUNT)
+    .map(({ probe }) => probe.slice(0, PROBE_MAX_LENGTH));
+}
+
+/**
  * Readabilityが取りこぼしがちなデータ表を、救出候補としてHTML文字列＋位置アンカーで採取する。
  * Readabilityのparseは渡したdocumentを破壊的に変更するため、必ずparse前に呼ぶこと。
  * 最外表のみ(入れ子の表は最外表のouterHTMLに含まれる)・2行以上かつ2列以上のものを
@@ -426,13 +509,26 @@ export function collectDataTables(body: TableQueryHost): DroppedTable[] {
     if (maxCells < 2) continue;
     result.push({
       html: normalizeTableHtml(table.outerHTML),
-      // 重複判定はcontentHtml側(タグ→空白で正規化)と同じ変換を通したouterHTML基準に揃える。
-      // textContent基準だとソースのセル間空白有無に依存して照合が外れ、重複挿入を招く。
-      signature: normalizeForSignature(table.outerHTML).slice(0, ANCHOR_MAX_LENGTH),
+      probes: buildTableProbes(table),
       anchor: findTableAnchor(seq, i),
     });
   }
   return result;
+}
+
+/**
+ * 表のプローブの真の過半数(floor(n/2)+1)が本文に含まれていれば「既に本文にある」と判定する
+ * (プローブ0本は既存扱い)。ceil(n/2)だとn=2のとき1本一致(50%)で既存と判定され、本文の地の文と
+ * 偶然一致した1本のせいで本当に落ちた表が救出されない=サイレント欠落に倒れる。重複挿入(可視・
+ * 有界)よりデータ欠落(不可視)の方が害が大きいため、偶数本では厳しい側に倒す。
+ */
+function isTableAlreadyPresent(table: DroppedTable, contentText: string): boolean {
+  if (table.probes.length === 0) return true;
+  let hits = 0;
+  for (const probe of table.probes) {
+    if (probe.length > 0 && contentText.includes(probe)) hits++;
+  }
+  return hits >= Math.floor(table.probes.length / 2) + 1;
 }
 
 /**
@@ -443,9 +539,10 @@ export function collectDataTables(body: TableQueryHost): DroppedTable[] {
 export function reinsertDroppedTables(contentHtml: string, tables: DroppedTable[]): { html: string; appended: number } {
   if (tables.length === 0) return { html: contentHtml, appended: 0 };
 
-  // Readabilityが既に保持している表はシグネチャ(元テキスト先頭)で除外する。
+  // Readabilityが既に保持している表はプローブ多数決で除外する。Readabilityが一部セルを刈っても
+  // 過半数のプローブが本文に残っていれば「既にある」と判定する。
   const contentText = normalizeForSignature(contentHtml);
-  const missing = tables.filter((table) => table.signature.length > 0 && !contentText.includes(table.signature));
+  const missing = tables.filter((table) => !isTableAlreadyPresent(table, contentText));
   if (missing.length === 0) return { html: contentHtml, appended: 0 };
 
   const { document } = parseHTML(`<!DOCTYPE html><html><body>${contentHtml}</body></html>`);
@@ -497,6 +594,8 @@ interface RetainedHost {
  * 「先頭に2行以上の連続ヘッダ行があり、かつその後にデータ行が残る(多段ヘッダ)」表のみtrue。
  * 単純表・レイアウト表・全行がヘッダの表は、turndownに任せて差分と誤破壊を避けるため弾く
  * (全ヘッダ表を多段ヘッダとして畳むとデータ行が消えるため対象外)。
+ * 連続ヘッダ行の数え方はnormalizeTableHtmlの列ヘッダ定義(all-th ∧ セル2つ以上)に揃える
+ * (全幅単一th行を列ヘッダに数えると単一セルラベルが誤って多段ヘッダ扱いされる)。
  */
 function needsTableNormalization(table: RetainedTableEl): boolean {
   const rows = Array.from(table.querySelectorAll("tr")).filter((tr) => tr.closest("table") === table);
@@ -511,8 +610,8 @@ function needsTableNormalization(table: RetainedTableEl): boolean {
     for (const cell of cells) {
       if (clampSpan(cell.getAttribute("colspan")) > 1 || clampSpan(cell.getAttribute("rowspan")) > 1) hasSpan = true;
     }
-    const allTh = cells.length > 0 && cells.every((cell) => cell.tagName === "TH");
-    if (inLeadingHeaders && allTh) leadingHeaderRows++;
+    const isColumnHeader = cells.length >= 2 && cells.every((cell) => cell.tagName === "TH");
+    if (inLeadingHeaders && isColumnHeader) leadingHeaderRows++;
     else inLeadingHeaders = false;
   }
   if (maxCells < 2) return false;
