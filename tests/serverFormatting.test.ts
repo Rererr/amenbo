@@ -11,7 +11,8 @@ import { cleanupCacheDir } from "./helpers/tempCache.js";
 const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-server-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
-const { cache, formatHandoffResponse, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/core.js");
+const { cache } = await import("../src/core.js");
+const { formatHandoffResponse, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/formatting.js");
 type HandoffResultLike = Parameters<typeof formatHandoffResponse>[0];
 
 afterAll(() => {

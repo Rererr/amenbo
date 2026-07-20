@@ -22,7 +22,6 @@ import { fileURLToPath } from "node:url";
 import { resolveCacheDir } from "./cache.js";
 import {
   cache,
-  formatLinksResponse,
   handleFetchTool,
   handleScreenshotTool,
   politeness,
@@ -34,6 +33,7 @@ import {
 } from "./core.js";
 import { AmenboError } from "./errors.js";
 import { closeBrowser } from "./fetcher/browser.js";
+import { formatLinksResponse } from "./formatting.js";
 import { installBrowser } from "./installBrowser.js";
 import { discoverLinks } from "./links.js";
 import { MAX_SCALE, MIN_SCALE } from "./screenshot.js";
