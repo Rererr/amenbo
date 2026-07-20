@@ -1,6 +1,12 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
-import { collectDataTables, normalizeTableHtml, reinsertDroppedTables, type DroppedTable } from "../src/extract/markdown.js";
+import {
+  collectDataTables,
+  normalizeRetainedTables,
+  normalizeTableHtml,
+  reinsertDroppedTables,
+  type DroppedTable,
+} from "../src/extract/markdown.js";
 
 type TableQueryHost = Parameters<typeof collectDataTables>[0];
 
@@ -89,6 +95,39 @@ describe("normalizeTableHtml", () => {
     expect(normalized).toContain("日本");
     expect(normalized).toContain("1.2億");
   });
+
+  it("全行がヘッダ(全セルth)の表を1行へ潰さず全行を残す", () => {
+    const allTh =
+      "<table><tr><th>名前</th><th>役割</th></tr><tr><th>Alice</th><th>PM</th></tr>" +
+      "<tr><th>Bob</th><th>Dev</th></tr></table>";
+    const normalized = normalizeTableHtml(allTh);
+    // 多段ヘッダ結合(データ行が消える)は起きず、各行のセルがそのまま残る。
+    for (const cell of ["名前", "役割", "Alice", "PM", "Bob", "Dev"]) {
+      expect(normalized).toContain(cell);
+    }
+    // "名前 Alice Bob" のような縦結合が起きていない。
+    expect(normalized).not.toContain("名前 Alice");
+  });
+
+  it("captionを再構築後の表の先頭へ復元する", () => {
+    const normalized = normalizeTableHtml(
+      "<table><caption>2024年度売上</caption>" +
+        "<tr><th rowspan='2'>地域</th><th colspan='2'>売上</th></tr>" +
+        "<tr><th>上期</th><th>下期</th></tr><tr><td>東</td><td>10</td><td>20</td></tr></table>",
+    );
+    expect(normalized).toContain("<caption>2024年度売上</caption>");
+    expect(normalized.indexOf("<caption>")).toBeLessThan(normalized.indexOf("<tr>"));
+  });
+
+  it("レイアウト目的のcolspan(データ行)はセルへ複製する(救出経路の既存挙動と同一・許容)", () => {
+    // 多段ヘッダ結合が横方向の複製に依存するため、データ行のcolspanも同じ規則で複製する。
+    // 情報欠落ではなく重複に留まり列ズレは生じない、という現行仕様を固定する。
+    const normalized = normalizeTableHtml(
+      "<table><tr><th>項目</th><th>値</th></tr><tr><td colspan='2'>お知らせ</td></tr>" +
+        "<tr><td>価格</td><td>500円</td></tr></table>",
+    );
+    expect(normalized.match(/お知らせ/g)?.length).toBe(2);
+  });
 });
 
 describe("reinsertDroppedTables", () => {
@@ -122,5 +161,77 @@ describe("reinsertDroppedTables", () => {
     const result = reinsertDroppedTables("<p>x</p>", []);
     expect(result.appended).toBe(0);
     expect(result.html).toBe("<p>x</p>");
+  });
+});
+
+describe("collectDataTables signature", () => {
+  // signatureはouterHTML基準(タグ→空白)なので、ソースのセル間空白の有無に依らず
+  // reinsertDroppedTablesのcontentHtml側照合と一致し、重複挿入を起こさない。
+  it("セル間に空白の無い複雑表でも、その表がcontentに在れば救出をスキップする(重複させない)", () => {
+    const inline =
+      "<table><tr><th rowspan='2'>地域</th><th colspan='2'>人口</th></tr>" +
+      "<tr><th>男</th><th>女</th></tr><tr><td>東</td><td>1</td><td>2</td></tr></table>";
+    const [dropped] = collectDataTables(body(`<h2>統計</h2>${inline}`));
+    const result = reinsertDroppedTables(`<div><h2>統計</h2>${inline}</div>`, [dropped!]);
+    expect(result.appended).toBe(0);
+  });
+});
+
+describe("normalizeRetainedTables", () => {
+  const COMPLEX =
+    "<table><tr><th rowspan='2'>地域</th><th colspan='2'>人口</th></tr>" +
+    "<tr><th>男</th><th>女</th></tr><tr><td>東</td><td>1</td><td>2</td></tr></table>";
+
+  it("colspan/rowspan・多段ヘッダを持つ複雑表を正規化する", () => {
+    const out = normalizeRetainedTables(`<p>説明</p>${COMPLEX}`);
+    expect(out).not.toContain("colspan");
+    expect(out).not.toContain("rowspan");
+    expect(out).toContain("<th>人口 男</th>");
+    expect(out).toContain("<th>人口 女</th>");
+  });
+
+  it("2回適用しても結果が変わらない(冪等)", () => {
+    const once = normalizeRetainedTables(`<p>説明</p>${COMPLEX}`);
+    expect(normalizeRetainedTables(once)).toBe(once);
+  });
+
+  it("救出経路で正規化済み(normalizeTableHtml出力)の表を通しても壊さない", () => {
+    const normalized = normalizeTableHtml(COMPLEX);
+    const html = `<div>${normalized}</div>`;
+    expect(normalizeRetainedTables(html)).toBe(html);
+  });
+
+  it("span無し単純表は変更しない(差分最小・turndownに委ねる)", () => {
+    const html = `<div>${DATA_TABLE}</div>`;
+    expect(normalizeRetainedTables(html)).toBe(html);
+  });
+
+  it("span無しの全ヘッダ表(スタイル目的のth)は対象外で素通しする", () => {
+    // 全行thの表を多段ヘッダとして畳むとデータ行が消えるため、正規化対象から除外する。
+    const allTh =
+      "<table><tr><th>名前</th><th>役割</th></tr><tr><th>Alice</th><th>PM</th></tr>" +
+      "<tr><th>Bob</th><th>Dev</th></tr></table>";
+    expect(normalizeRetainedTables(allTh)).toBe(allTh);
+  });
+
+  it("レイアウト目的の1列表・1行表は触らない", () => {
+    const oneCol = "<table><tr><td>メニューA</td></tr><tr><td>メニューB</td></tr></table>";
+    expect(normalizeRetainedTables(oneCol)).toBe(oneCol);
+    const oneRow = "<table><tr><td>A</td><td>B</td></tr></table>";
+    expect(normalizeRetainedTables(oneRow)).toBe(oneRow);
+  });
+
+  it("表を含まない本文はそのまま返す", () => {
+    expect(normalizeRetainedTables("<p>本文のみ</p>")).toBe("<p>本文のみ</p>");
+  });
+
+  it("入れ子表は最外表として1回だけ正規化する(内側は二重処理しない)", () => {
+    const nested =
+      "<table><tr><th colspan='2'>外</th></tr>" +
+      "<tr><td>a</td><td><table><tr><th colspan='2'>内</th></tr><tr><td>x</td><td>y</td></tr></table></td></tr></table>";
+    const out = normalizeRetainedTables(nested);
+    // 外表のcolspanは展開され「外」が2列に並ぶ。内表はセル内にそのまま保持される。
+    expect(out.match(/外/g)?.length).toBe(2);
+    expect(out).toContain("内");
   });
 });
