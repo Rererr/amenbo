@@ -225,6 +225,7 @@ interface TableQueryHost {
 
 /** 挿入先ノード(Readability出力を再パースした要素)の最小インターフェース。 */
 interface InsertHostElement {
+  tagName: string;
   textContent: string;
   insertAdjacentHTML(position: "afterend", html: string): void;
 }
@@ -250,6 +251,11 @@ export interface DroppedTable {
   probes: string[];
   /** 表の直前の見出し(優先)または近傍段落の正規化テキスト。位置復元のアンカー。無ければ空。 */
   anchor: string;
+  /**
+   * anchorの由来。heading由来は見出し要素の完全一致で照合し(「人口」等の短く非一意な見出しが
+   * 段落の部分文字列へ吸着して表が無関係な節へ誤挿入されるのを防ぐ)、paragraph由来は包含判定する。
+   */
+  anchorKind: "heading" | "paragraph" | "";
 }
 
 const ANCHOR_MAX_LENGTH = 80;
@@ -440,23 +446,29 @@ function normalizeForSignature(text: string): string {
   return text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
+interface TableAnchor {
+  text: string;
+  kind: "heading" | "paragraph" | "";
+}
+
 /**
  * document順に並べた要素列から、tableIndexの表の直前アンカー(見出し優先・無ければ近傍段落)を求める。
  * 見出しは節の先頭に表を戻すのに最適。見出しが皆無なページ用に段落をフォールバックにする。
+ * 由来(heading/paragraph)を返し、照合方法(完全一致/包含)を呼び出し側で出し分けられるようにする。
  */
-function findTableAnchor(seq: TableCandidate[], tableIndex: number): string {
+function findTableAnchor(seq: TableCandidate[], tableIndex: number): TableAnchor {
   let paragraph = "";
   for (let i = tableIndex - 1; i >= 0; i--) {
     const el = seq[i];
     if (!el || el.tagName === "TABLE") continue; // 別の表は飛ばす。
     const text = normalizeForSignature(el.textContent);
     if (/^H[1-6]$/.test(el.tagName)) {
-      if (text.length > 0) return text.slice(0, ANCHOR_MAX_LENGTH); // 見出し優先。
+      if (text.length > 0) return { text: text.slice(0, ANCHOR_MAX_LENGTH), kind: "heading" }; // 見出し優先。
     } else if (!paragraph && text.length >= ANCHOR_MIN_PARAGRAPH_LENGTH) {
       paragraph = text.slice(0, ANCHOR_MAX_LENGTH);
     }
   }
-  return paragraph;
+  return paragraph ? { text: paragraph, kind: "paragraph" } : { text: "", kind: "" };
 }
 
 /**
@@ -507,10 +519,12 @@ export function collectDataTables(body: TableQueryHost): DroppedTable[] {
       if (cells > maxCells) maxCells = cells;
     }
     if (maxCells < 2) continue;
+    const anchor = findTableAnchor(seq, i);
     result.push({
       html: normalizeTableHtml(table.outerHTML),
       probes: buildTableProbes(table),
-      anchor: findTableAnchor(seq, i),
+      anchor: anchor.text,
+      anchorKind: anchor.kind,
     });
   }
   return result;
@@ -532,9 +546,26 @@ function isTableAlreadyPresent(table: DroppedTable, contentText: string): boolea
 }
 
 /**
+ * 表アンカーの照合。heading由来は見出し要素(h1-h6)の正規化テキスト完全一致に限定する
+ * (「人口」等の短く非一意な見出しが段落の部分文字列へ吸着し、表が無関係な節へ誤挿入されるのを防ぐ。
+ *  実測: zh.wikipedia 广东省で人口統計表が航空節へ誤挿入)。anchorが80字で切り詰められている場合のみ
+ * 前方一致を許す。paragraph由来は従来どおり包含判定する。
+ */
+function matchesTableAnchor(node: InsertHostElement, table: DroppedTable): boolean {
+  if (table.anchor.length === 0) return false;
+  const nodeText = normalizeForSignature(node.textContent);
+  if (table.anchorKind === "heading") {
+    if (!/^H[1-6]$/.test(node.tagName)) return false;
+    return nodeText === table.anchor || (table.anchor.length === ANCHOR_MAX_LENGTH && nodeText.startsWith(table.anchor));
+  }
+  return nodeText.includes(table.anchor);
+}
+
+/**
  * Readability出力に含まれない表だけを、可能なら元の位置(アンカー直後)へ、無理なら末尾へ再結合する。
  * アンカー(表の直前見出し/段落)がReadability出力に残っていれば、その要素の直後に挿入して
- * 「表が本来属していた節」へ戻す(記事構造=意味の保持)。残っていなければ末尾フォールバック。
+ * 「表が本来属していた節」へ戻す(記事構造=意味の保持)。残っていなければ末尾フォールバック
+ * (誤配置より末尾が安全)。
  */
 export function reinsertDroppedTables(contentHtml: string, tables: DroppedTable[]): { html: string; appended: number } {
   if (tables.length === 0) return { html: contentHtml, appended: 0 };
@@ -551,9 +582,7 @@ export function reinsertDroppedTables(contentHtml: string, tables: DroppedTable[
 
   const tail: string[] = [];
   for (const table of missing) {
-    const anchorNode = table.anchor
-      ? anchorNodes.find((node) => normalizeForSignature(node.textContent).includes(table.anchor))
-      : undefined;
+    const anchorNode = anchorNodes.find((node) => matchesTableAnchor(node, table));
     if (anchorNode) {
       anchorNode.insertAdjacentHTML("afterend", table.html);
     } else {
@@ -564,6 +593,201 @@ export function reinsertDroppedTables(contentHtml: string, tables: DroppedTable[
   const inserted = host.body.innerHTML;
   const html = tail.length > 0 ? `${inserted}\n${tail.join("\n")}` : inserted;
   return { html, appended: missing.length };
+}
+
+/** 救出対象の見出し。位置復元のため直後段落テキストをアンカーとして持つ。 */
+export interface DroppedHeading {
+  /** 見出しレベル(2-6)。h1はReadabilityがtitleへ昇格させるため対象外。 */
+  level: number;
+  /** normalizeForSignatureで正規化した見出しのプレーンテキスト。outlineに要る階層とテキストのみ持つ。 */
+  text: string;
+  /**
+   * 節スコープ内の十分長いコンテンツ要素(段落/表/リスト等)を文書順に並べた位置復元アンカー候補。
+   * 最初の段落まで(段落を含む)を最大HEADING_ANCHOR_CANDIDATE_MAX件持ち、照合は先頭から試して
+   * 最初に一致した要素の直前へ挿入する。単一アンカーにしないのは、節先頭のブロックが
+   * Readabilityに落とされるノイズ(廃止グラフ注意書き等)だった場合に、後続の実在要素
+   * (データ表や本文段落)へ吸着させるため。段落優先にせず文書順なのは、節の先頭が表のとき
+   * 見出しを表の前に立てるため(段落優先だと見出しが表の後ろへ入り、表が前の節へ帰属してしまう)。
+   * 空配列=節本文なし(復元しない)。
+   */
+  anchors: HeadingAnchorCandidate[];
+}
+
+export interface HeadingAnchorCandidate {
+  text: string;
+  /**
+   * block(表/リスト)由来はnormalizeTableHtml再構築で空白が消えるため全空白除去で照合し、
+   * paragraph由来は空白正規化ベースの包含で照合する(全空白除去を段落由来へ広げると欧文で偽陽性が増える)。
+   */
+  kind: "paragraph" | "block";
+}
+
+/** collectHeadingsが走査するDOM要素の最小インターフェース。 */
+interface HeadingCandidate {
+  tagName: string;
+  textContent: string;
+  parentElement: HeadingCandidate | null;
+  closest(selector: string): HeadingCandidate | null;
+}
+interface HeadingQueryHost {
+  querySelectorAll(selector: string): ArrayLike<HeadingCandidate>;
+}
+
+/** 表の内側(入れ子表を含む)にある要素か。anchor採取・挿入先の双方で表内要素を除外するのに使う。 */
+interface TableNestable {
+  tagName: string;
+  parentElement: { closest(selector: string): unknown } | null;
+  closest(selector: string): unknown;
+}
+function isNestedInTable(el: TableNestable): boolean {
+  // TABLE自身はclosestが自分を返すため祖先表は親から探す。他要素はel自身から探す。
+  const from = el.tagName === "TABLE" ? el.parentElement : el;
+  return from?.closest("table") != null;
+}
+
+/** 見出しレベル(H1-H6→1-6)を返す。見出しでなければ0。 */
+function headingLevel(tagName: string): number {
+  const match = /^H([1-6])$/.exec(tagName);
+  return match ? Number(match[1]) : 0;
+}
+
+const HEADING_ANCHOR_SELECTOR = "h1, h2, h3, h4, h5, h6, p, table, ul, ol, dl";
+
+const HEADING_ANCHOR_CANDIDATE_MAX = 4;
+
+/**
+ * document順の要素列から、headingIndexの見出しの節スコープ内アンカーを求める。
+ * スコープは「自レベル以下(数値がlevel以下)の見出しに達するまで」。子見出し(数値が大きい)は
+ * 跨いで走査を続ける(親h2の直後に子h3が続く構造でも親の段落まで辿り着けるようにするため)。
+ * 段落(p)を最優先し、無ければ表/リスト等ブロックの先頭をフォールバックにする(表・リストのみの節用)。
+ * 表の内側の要素はanchorにしない(挿入先から除外されるため命中しても復元できない)。
+ * 由来(paragraph/block)を返し、照合方法を呼び出し側で出し分けられるようにする。無ければ空。
+ */
+function findHeadingAnchor(seq: HeadingCandidate[], headingIndex: number): HeadingAnchorCandidate[] {
+  const level = headingLevel(seq[headingIndex]?.tagName ?? "");
+  const candidates: HeadingAnchorCandidate[] = [];
+  for (let i = headingIndex + 1; i < seq.length; i++) {
+    const el = seq[i];
+    if (!el) continue;
+    const elLevel = headingLevel(el.tagName);
+    if (elLevel > 0) {
+      if (elLevel <= level) break; // 同レベル/上位の見出し=節の終端。子見出しは跨いで継続。
+      continue;
+    }
+    if (isNestedInTable(el)) continue;
+    const text = normalizeForSignature(el.textContent);
+    if (text.length < ANCHOR_MIN_PARAGRAPH_LENGTH) continue;
+    const kind: "paragraph" | "block" = el.tagName === "P" ? "paragraph" : "block";
+    candidates.push({ text: text.slice(0, ANCHOR_MAX_LENGTH), kind });
+    // 段落は照合が安定しているため、最初の段落が候補に入ったら打ち切る(それが落ちている節は
+    // 本文ごと消えているとみなす)。ブロックだけが続く節は上限まで候補を積む。
+    if (kind === "paragraph" || candidates.length >= HEADING_ANCHOR_CANDIDATE_MAX) break;
+  }
+  return candidates;
+}
+
+/**
+ * Readabilityは見出しがラッパー要素(編集リンク付きdiv等)に包まれていると本文整形時にh2-h6を
+ * 丸ごと落とし、outline/section機能が依存する節構造を全消失させる。parse前のdocumentからh2-h6を
+ * 採取し、節スコープ内の段落/ブロックをアンカーにして位置復元に備える。
+ * parseは渡したdocumentを破壊的に変更するため、必ずparse前に呼ぶこと。
+ * h1はReadabilityがtitleへ昇格させるため対象外(復元するとtitleと二重化する)。
+ * 見出し内リンク等のmarkupは持たない(outlineに要るのはテキストと階層のみ)。
+ */
+export function collectHeadings(body: HeadingQueryHost): DroppedHeading[] {
+  const result: DroppedHeading[] = [];
+  const seq = Array.from(body.querySelectorAll(HEADING_ANCHOR_SELECTOR));
+  for (let i = 0; i < seq.length; i++) {
+    const el = seq[i];
+    if (!el) continue;
+    const level = headingLevel(el.tagName);
+    if (level < 2) continue; // h1(title二重化)と非見出し(p/表/リスト)を除外。
+    const text = normalizeForSignature(el.textContent);
+    if (text.length === 0) continue; // 空見出しは捨てる。
+    result.push({ level, text, anchors: findHeadingAnchor(seq, i) });
+  }
+  return result;
+}
+
+/** reinsertDroppedHeadingsが既存見出し照合・アンカー直前挿入に使うDOM最小インターフェース。 */
+interface HeadingHostElement {
+  tagName: string;
+  textContent: string;
+  parentElement: { closest(selector: string): unknown } | null;
+  closest(selector: string): unknown;
+  insertAdjacentHTML(position: "beforebegin", html: string): void;
+}
+interface HeadingInsertHost {
+  body: {
+    innerHTML: string;
+    querySelectorAll(selector: string): ArrayLike<HeadingHostElement>;
+  };
+}
+
+const HEADING_INSERT_TARGET_SELECTOR = "p, blockquote, table, ul, ol, dl";
+
+/**
+ * 見出しアンカーの照合を由来で出し分ける。
+ * block(表/リスト)由来は両辺の全空白を除去して包含判定する。normalizeTableHtmlで再構築された表は
+ * セル間に空白が入らないため、生DOM textContent由来のanchorと空白がズレて通常の照合が外れる
+ * (実測: 表由来anchorが全滅)。CJKでは空白の意味が薄く除去による誤一致リスクは無視できるが、
+ * 欧文での偽陽性を避けるため段落由来には広げず、paragraph由来はnormalizeForSignatureベースの包含に留める。
+ */
+function matchesAnchorText(nodeText: string, anchor: string, kind: "paragraph" | "block"): boolean {
+  if (anchor.length === 0) return false;
+  if (kind === "block") {
+    const needle = anchor.replace(/\s+/g, "");
+    return needle.length > 0 && nodeText.replace(/\s+/g, "").includes(needle);
+  }
+  return normalizeForSignature(nodeText).includes(anchor);
+}
+
+/**
+ * Readabilityが落とした見出しを、アンカー(直後段落)がReadability出力に残っている場合のみ、
+ * その段落の直前(beforebegin)へ`<hN>text</hN>`として戻す。
+ *
+ * 表救出(reinsertDroppedTables)との最重要差分は「アンカー不在の見出しは復元しない・末尾
+ * フォールバックもしない」こと。表=データそのもの(失うと情報欠落)だが、見出し=節のラベルであり、
+ * 節本文がReadability出力に残っていない見出しを戻してもノイズにしかならない。アンカーの生存確認が
+ * 「その節が本文として残っているか」の判定を兼ね、nav/フッター等Readabilityが正しく落とした節の
+ * 見出しを自然に除外する(サイト固有知識なしでnavbox見出しを拾わない)。
+ * 同一テキストの見出しは最初の1件のみ扱う(同名節の複数復元はアンカー取り違えリスクの方が大きい)。
+ * 挿入は「同テキストの見出しが本文に無い」場合のみのため、再適用しても増えない(冪等)。
+ */
+export function reinsertDroppedHeadings(contentHtml: string, headings: DroppedHeading[]): { html: string; restored: number } {
+  if (headings.length === 0) return { html: contentHtml, restored: 0 };
+
+  const { document } = parseHTML(`<!DOCTYPE html><html><body>${contentHtml}</body></html>`);
+  const host = document as unknown as HeadingInsertHost;
+
+  const existing = new Set<string>();
+  for (const el of Array.from(host.body.querySelectorAll("h1, h2, h3, h4, h5, h6"))) {
+    const text = normalizeForSignature(el.textContent);
+    if (text.length > 0) existing.add(text);
+  }
+
+  // 表の内側の要素は挿入先から除外する(td内のpにマッチして見出しが表の中へ入り込むのを防ぐ)。
+  const anchorNodes = Array.from(host.body.querySelectorAll(HEADING_INSERT_TARGET_SELECTOR)).filter((node) => !isNestedInTable(node));
+  const handled = new Set<string>();
+  let restored = 0;
+  for (const heading of headings) {
+    if (handled.has(heading.text)) continue; // 同一テキストは最初の1件のみ扱う。
+    handled.add(heading.text);
+    if (existing.has(heading.text)) continue; // 既に本文にある見出しは戻さない。
+    if (heading.anchors.length === 0) continue; // アンカー不在=節本文が残っていないので復元しない。
+    // 候補を文書順に試し、最初に一致した要素の直前へ挿入する(節先頭のブロックが落ちていれば
+    // 後続のデータ表・段落へ吸着する)。
+    let anchorNode: HeadingHostElement | undefined;
+    for (const candidate of heading.anchors) {
+      anchorNode = anchorNodes.find((node) => matchesAnchorText(node.textContent, candidate.text, candidate.kind));
+      if (anchorNode) break;
+    }
+    if (!anchorNode) continue; // 全候補が出力に無い=その節は落とされているので復元しない。
+    anchorNode.insertAdjacentHTML("beforebegin", `<h${heading.level}>${escapeHtml(heading.text)}</h${heading.level}>`);
+    restored++;
+  }
+
+  return restored > 0 ? { html: host.body.innerHTML, restored } : { html: contentHtml, restored: 0 };
 }
 
 /** normalizeRetainedTablesが本文HTMLの表を走査・置換するためのDOM最小インターフェース。 */
@@ -719,8 +943,8 @@ function inlineCellBlocks(table: InlineBlockElement): boolean {
  * 救出経路(reinsertDroppedTables)は「Readabilityが落とした表」しか正規化しないため、
  * Readability/アダプタ/ジオメトリ/selector等が本文に保持した複雑表は未正規化のまま
  * turndownへ渡ると列ズレ・空セルになる。turndown直前の全経路共通パスでこれを補う。
- * (検証URLの日本語Wikipedia rowspan表はアダプタ経路=Readability非経由のため、
- *  readability経路限定ではなく全経路に適用する必要がある。)
+ * (アダプタ経路(例: zenn等)はReadabilityを経由しないため、readability経路限定ではなく
+ *  全経路に適用する必要がある。)
  * 正規化はspan/多段ヘッダを持つ最外データ表だけを対象にし、レイアウト表・単純表・
  * 既に正規化済みの表(救出で挿入済みを含む)は触らないため冪等。
  * インライン化はブロック要素を持つ全ての表が対象(セル内ul等によるturndown-gfmのouterHTML
@@ -870,16 +1094,24 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
         prunedBlockCount = pruneLowValueBlocks(document.body);
       }
 
-      // Readabilityはリンク密度の高いデータ表(各国人口ソート表等)を本文から丸ごと落とすことがある。
-      // parseは渡したdocumentを破壊的に変更するため、parse前に救出候補の表を位置アンカー付きで採取しておく。
+      // Readabilityはリンク密度の高いデータ表(各国人口ソート表等)を本文から丸ごと落とし、
+      // 見出しをラッパー要素ごと剥ぐこともある。parseは渡したdocumentを破壊的に変更するため、
+      // parse前に救出候補の表・見出しを位置アンカー付きで採取しておく。
       const dataTables = document.body ? collectDataTables(document.body as unknown as TableQueryHost) : [];
+      const droppedHeadings = document.body ? collectHeadings(document.body as unknown as HeadingQueryHost) : [];
 
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;
 
       if (article && article.content && (article.textContent ?? "").trim().length >= MIN_READABILITY_TEXT_LENGTH) {
-        // Readabilityが取りこぼしたデータ表を、可能なら元の位置へ戻して本文へ再結合する。
-        contentHtml = reinsertDroppedTables(article.content, dataTables).html;
+        // 見出し→表→見出しの順で戻す。1回目の見出し復元で表のアンカー(表直前の見出し優先)を
+        // 立ててから表を戻す。表が1つでも戻ったときだけ2回目を回し、Readabilityが落として救出で
+        // 本文へ戻った表をアンカーに持つ見出し(データ表のみの節)を拾う(1回目は表が本文に無く
+        // 復元できない)。表が戻らなければcontentは不変で2回目は必ずno-opなので、一般ページに
+        // 常時パースコストを乗せないよう分岐する。reinsertDroppedHeadingsは既存見出し集合で冪等。
+        const withHeadings = reinsertDroppedHeadings(article.content, droppedHeadings).html;
+        const tableStep = reinsertDroppedTables(withHeadings, dataTables);
+        contentHtml = tableStep.appended > 0 ? reinsertDroppedHeadings(tableStep.html, droppedHeadings).html : tableStep.html;
         title = article.title || title;
         extractionMethod = "readability";
       } else if (geometryHtml) {
