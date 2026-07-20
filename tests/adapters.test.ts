@@ -27,12 +27,15 @@ describe("findAdapter", () => {
     expect(findAdapter("prtimes.jp")?.name).toBe("prtimes");
   });
 
-  it("ja.wikipedia.orgにマッチする(Phase 4追加)", () => {
-    expect(findAdapter("ja.wikipedia.org")?.name).toBe("wikipedia-ja");
+  it("ja/zh/ko.wikipedia.orgにマッチする(CJK一般化)", () => {
+    expect(findAdapter("ja.wikipedia.org")?.name).toBe("wikipedia-cjk");
+    expect(findAdapter("zh.wikipedia.org")?.name).toBe("wikipedia-cjk");
+    expect(findAdapter("ko.wikipedia.org")?.name).toBe("wikipedia-cjk");
   });
 
-  it("他言語版のwikipedia(例: en.wikipedia.org)にはマッチしない(日本語特化の範囲限定)", () => {
+  it("CJK外のwikipedia(例: en.wikipedia.org)は対象外(CJK限定)", () => {
     expect(findAdapter("en.wikipedia.org")).toBeNull();
+    expect(findAdapter("de.wikipedia.org")).toBeNull();
   });
 
   it("サブドメイン無しの完全一致にもマッチする(境界を跨がない)", () => {
