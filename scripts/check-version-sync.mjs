@@ -25,11 +25,14 @@ function parseTagArg(argv) {
 function main() {
   const pkg = readJson("package.json");
   const server = readJson("server.json");
+  const lockfile = readJson("package-lock.json");
   const tagVersion = parseTagArg(process.argv.slice(2));
 
   const entries = [
     { label: "package.json", version: pkg.version },
     { label: "server.json (top-level)", version: server.version },
+    { label: "package-lock.json (top-level)", version: lockfile.version },
+    { label: "package-lock.json packages[\"\"]", version: lockfile.packages?.[""]?.version },
   ];
   for (const [i, p] of (server.packages ?? []).entries()) {
     entries.push({ label: `server.json packages[${i}].version`, version: p.version });
@@ -42,10 +45,29 @@ function main() {
   // entries.map((e) => e.version) が全てundefinedになり、Setのサイズが1のまま
   // 「一致している」と誤って成功してしまう。各エントリが非空文字列であることを
   // 先に検証し、欠落していれば「どのファイルのどのフィールドが欠落か」を明示して失敗させる。
+  // USER_AGENT検証より前に実行することで、pkg.version を使う前に存在確認を行う。
   const missing = entries.filter((e) => typeof e.version !== "string" || e.version.trim().length === 0);
   if (missing.length > 0) {
     const detail = missing.map((e) => `  - ${e.label}: バージョンが欠落しています(値: ${JSON.stringify(e.version)})`).join("\n");
     console.error(`バージョンフィールドの欠落を検出しました:\n${detail}`);
+    process.exit(1);
+  }
+
+  // USER_AGENT から major.minor を抽出して検証
+  const httpContent = readFileSync(join(rootDir, "src/fetcher/http.ts"), "utf8");
+  const uaMatch = httpContent.match(/export const USER_AGENT = "amenbo\/([\d.]+)/);
+  if (!uaMatch) {
+    console.error("USER_AGENT定数が見つかるか、形式が期待と異なります (src/fetcher/http.ts)");
+    process.exit(1);
+  }
+  const userAgentVersion = uaMatch[1];
+  const pkgMajorMinor = pkg.version.split(".").slice(0, 2).join(".");
+  if (userAgentVersion !== pkgMajorMinor) {
+    console.error(
+      `USER_AGENT版数の不一致を検出しました:\n` +
+        `  - package.json (major.minor): ${pkgMajorMinor}\n` +
+        `  - src/fetcher/http.ts USER_AGENT: ${userAgentVersion}`
+    );
     process.exit(1);
   }
 
