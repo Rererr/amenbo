@@ -14,6 +14,7 @@ Most general-purpose scraping tools assume the English-speaking web. On Japanese
 - **Mojibake**: automatic detection of Shift_JIS / EUC-JP / ISO-2022-JP
 - **Furigana**: strips `<ruby>` reading annotations to prevent duplicated body text
 - **Information rendered as images**: pages built around image-based pricing tables or banners automatically fall back to screenshots when text extraction is poor
+- **Dropped tables**: data tables with high link density (e.g., comparison tables) can be dropped entirely during content extraction; amenbo detects such tables, restores them to their original position, and normalizes colspan/rowspan and multi-level headers
 - **Major Japanese sites**: dedicated adapters for Qiita / Zenn / note / Hatena Blog / Yahoo! News / PR TIMES / Japanese Wikipedia
 
 For a measured comparison against similar tools (official fetch MCP / Jina Reader / Playwright MCP / PixelRAG pixelshot), see the article "[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)" (Japanese). The benchmark harness and raw logs are in [`bench/`](./bench/).
@@ -136,7 +137,7 @@ Cache, diff responses (`unchanged`/`diff`), and rate-control state (robots.txt /
 | `url` | Target URL (http/https only; PDF supported) |
 | `mode` | `auto` (default; switches Markdown/screenshot by quality score) / `markdown` / `outline` (heading summary) / `screenshot` |
 | `selector` | CSS selector to narrow down the body content |
-| `section` | Section ID obtained from outline; returns only that section's Markdown |
+| `section` | Section ID obtained from outline; returns only that section's Markdown (if the section has ancestor headings, the response includes `section_path`, a breadcrumb joined by ` › `) |
 | `page` | Page number (default 1) |
 | `max_tokens` | Approximate token cap per page (default 8000) |
 | `force_full` | true disables diff responses and boilerplate removal, always returning the full text |
