@@ -11,12 +11,10 @@
  * ページ構造がクエリ毎に大きく異なり単一セレクタでの決定的抽出が難しいため、
  * Phase 3の初期セットからは見送り、確認が取れた6サイトのみを実装する。
  *
- * Phase 4追加: ja/zh/ko.wikipedia.org。Readabilityが記事中の全<h2>-<h6>見出しを剥ぎ落として
- * しまう(MediaWikiが見出しを`<div class="mw-heading">`等でラップし編集リンクを併記する
- * 構造をReadabilityの本文整形ロジックが正しく扱えないため)ことを実機検証で確認しており、
- * アダプタでReadabilityを完全にバイパスすることで見出し構造を保つ(outlineモードの実用性に直結)。
- * CJK各版はMediaWikiのクラス名が言語非依存なため単一アダプタで賄う。en等は既存ベンチ実測との
- * 兼ね合いから対象外(全言語化はen実測を伴う別判断)。
+ * Wikipediaアダプタは置かない(v0.4.1で撤去): 外部サイトの仕様変更・筆者独自記法への追従を
+ * 要するサイト固有対応は避ける方針。Readabilityが見出しを剥がす問題はサイトを問わない一般問題
+ * として、汎用の見出し救出(extract/markdown.tsのcollectHeadings/reinsertDroppedHeadings)で
+ * 対応する(実キャプチャja/zh/koでアダプタ経路とのパリティを計測確認済み)。
  */
 import type { SiteAdapter } from "./types.js";
 
@@ -57,13 +55,6 @@ export const SITE_ADAPTERS: SiteAdapter[] = [
     hostPattern: /(^|\.)prtimes\.jp$/i,
     contentSelectors: ["#press-release-body", "article"],
     notes: "PR TIMESリリース本文。",
-  },
-  {
-    name: "wikipedia-cjk",
-    hostPattern: /(^|\.)(?:ja|zh|ko)\.wikipedia\.org$/i,
-    contentSelectors: [".mw-parser-output"],
-    removeSelectors: [".mw-editsection", ".navbox", ".ambox", ".hatnote", ".noprint", ".mw-empty-elt"],
-    notes: "Wikipedia日本語/中国語/韓国語版の本文(MediaWiki出力)。Readabilityが見出しを剥がすため必須。MediaWikiのクラス名は言語非依存で、CJK各版に同一セレクタが通用する。",
   },
 ];
 
