@@ -237,7 +237,11 @@ interface InsertHost {
 export interface DroppedTable {
   /** turndownへ渡す正規化済みHTML(colspan/rowspan展開・多段ヘッダ結合後)。 */
   html: string;
-  /** 元の表テキスト先頭。Readability出力に既にある表かの重複判定に使う(正規化前基準)。 */
+  /**
+   * 表のouterHTMLをタグ→空白で正規化した先頭。Readability出力に既にある表かの重複判定に使う。
+   * contentHtml側も同じnormalizeForSignatureで比較するため、セル区切りに空白が入るか否かで
+   * 照合が揺れないよう、textContentではなくouterHTML基準に揃える(空白非対称による重複挿入対策)。
+   */
   signature: string;
   /** 表の直前の見出し(優先)または近傍段落の正規化テキスト。位置復元のアンカー。無ければ空。 */
   anchor: string;
@@ -257,8 +261,15 @@ interface NormRow {
   closest(selector: string): unknown;
   children: ArrayLike<NormCell>;
 }
+interface NormCaption {
+  closest(selector: string): unknown;
+  innerHTML: string;
+}
 interface NormTable {
   querySelectorAll(selector: string): ArrayLike<NormRow>;
+}
+interface NormDocument {
+  querySelectorAll(selector: string): ArrayLike<NormCaption>;
 }
 interface GridCell {
   html: string;
@@ -274,13 +285,20 @@ function clampSpan(value: string | null): number {
 /**
  * turndownのGFMテーブル変換はcolspan/rowspan・多段ヘッダを扱えず列ズレや空セルを生む。
  * グリッドを再構築してspanを実セルへ展開し、先頭の連続ヘッダ行は1行へ結合してから
- * 全行同一列数の単純表を返す。救出経路の表のみに適用する(影響を局所化)。
+ * 全行同一列数の単純表を返す。救出経路(collectDataTables)とReadability/アダプタ等が
+ * 本文に保持した複雑表(normalizeRetainedTables)の双方から呼ばれる。
+ * spanの無い単純表・既に正規化済みの表に対しては構造を変えず冪等に振る舞う。
+ * captionは再構築で失われないよう先頭へ復元する。
  */
 export function normalizeTableHtml(tableHtml: string): string {
   const { document } = parseHTML(`<!DOCTYPE html><html><body>${tableHtml}</body></html>`);
   const tableEl = document.querySelector("table");
   if (!tableEl) return tableHtml;
   const table = tableEl as unknown as NormTable;
+  // 自表直下のcaptionのみ拾う(入れ子表のcaptionを巻き込まない)。
+  const caption = Array.from((document as unknown as NormDocument).querySelectorAll("caption")).find(
+    (cap) => cap.closest("table") === tableEl,
+  );
 
   // 入れ子の表の行を巻き込まないよう、直接の行(closestが自表と一致)だけを対象にする。
   const rows = Array.from(table.querySelectorAll("tr")).filter((tr) => tr.closest("table") === tableEl);
@@ -315,12 +333,16 @@ export function normalizeTableHtml(tableHtml: string): string {
   while (headerCount < rowCount && isHeaderRow[headerCount]) headerCount++;
 
   const cellHtml = (r: number, c: number): string => grid[r]?.[c]?.html ?? "";
-  const out: string[] = ["<table>"];
-  const emitRow = (cells: string[], tag: "th" | "td"): void => {
-    out.push(`<tr>${cells.map((h) => `<${tag}>${h}</${tag}>`).join("")}</tr>`);
-  };
+  const rowFrom = (r: number): string[] => Array.from({ length: numCols }, (_, c) => cellHtml(r, c));
+  const emitRow = (cells: string[], tag: "th" | "td"): string => `<tr>${cells.map((h) => `<${tag}>${h}</${tag}>`).join("")}</tr>`;
 
-  if (headerCount >= 2) {
+  const headerRows: string[] = [];
+  const bodyRows: string[] = [];
+
+  // 全行がヘッダ(headerCount === rowCount)の表を結合するとデータ行が消えるため、
+  // 結合はデータ行が1行以上残る場合(headerCount < rowCount)に限る。全ヘッダ表は
+  // else分岐で先頭行のみヘッダ扱いにし、残りは各行を保持する(スタイル目的でthを使う表の保護)。
+  if (headerCount >= 2 && headerCount < rowCount) {
     // 多段ヘッダ: 列ごとに上→下のセルを重複除去して連結し、1行のヘッダへ畳む。
     const merged: string[] = [];
     for (let c = 0; c < numCols; c++) {
@@ -331,16 +353,25 @@ export function normalizeTableHtml(tableHtml: string): string {
       }
       merged.push(parts.join(" "));
     }
-    emitRow(merged, "th");
-    for (let r = headerCount; r < rowCount; r++) {
-      emitRow(Array.from({ length: numCols }, (_, c) => cellHtml(r, c)), "td");
-    }
+    headerRows.push(emitRow(merged, "th"));
+    for (let r = headerCount; r < rowCount; r++) bodyRows.push(emitRow(rowFrom(r), "td"));
   } else {
-    // ヘッダ0/1行: spanの展開のみ行い、行のth/tdは元の判定を踏襲する。
+    // ヘッダ0/1行(全ヘッダ表を含む): spanのみ展開。先頭がヘッダ行ならthead、残りはtbodyへ。
     for (let r = 0; r < rowCount; r++) {
-      emitRow(Array.from({ length: numCols }, (_, c) => cellHtml(r, c)), isHeaderRow[r] ? "th" : "td");
+      if (r === 0 && isHeaderRow[0]) headerRows.push(emitRow(rowFrom(r), "th"));
+      else bodyRows.push(emitRow(rowFrom(r), isHeaderRow[r] ? "th" : "td"));
     }
   }
+
+  // captionを内包したままでもヘッダ行を見失わないよう、ヘッダはthead・データはtbodyで囲う
+  // (turndown-gfmはtrがtableの先頭子でないとヘッダと認識せず、captionがあると降格するため)。
+  const out: string[] = ["<table>"];
+  if (caption) {
+    const capHtml = caption.innerHTML.trim();
+    if (capHtml) out.push(`<caption>${capHtml}</caption>`);
+  }
+  if (headerRows.length > 0) out.push(`<thead>${headerRows.join("")}</thead>`);
+  if (bodyRows.length > 0) out.push(`<tbody>${bodyRows.join("")}</tbody>`);
   out.push("</table>");
   return out.join("");
 }
@@ -393,8 +424,9 @@ export function collectDataTables(body: TableQueryHost): DroppedTable[] {
     if (maxCells < 2) continue;
     result.push({
       html: normalizeTableHtml(table.outerHTML),
-      // 重複判定は正規化前の元テキスト基準にする(Readability保持時の照合を安定させる)。
-      signature: normalizeForSignature(table.textContent).slice(0, ANCHOR_MAX_LENGTH),
+      // 重複判定はcontentHtml側(タグ→空白で正規化)と同じ変換を通したouterHTML基準に揃える。
+      // textContent基準だとソースのセル間空白有無に依存して照合が外れ、重複挿入を招く。
+      signature: normalizeForSignature(table.outerHTML).slice(0, ANCHOR_MAX_LENGTH),
       anchor: findTableAnchor(seq, i),
     });
   }
@@ -433,6 +465,84 @@ export function reinsertDroppedTables(contentHtml: string, tables: DroppedTable[
   const inserted = host.body.innerHTML;
   const html = tail.length > 0 ? `${inserted}\n${tail.join("\n")}` : inserted;
   return { html, appended: missing.length };
+}
+
+/** normalizeRetainedTablesが本文HTMLの表を走査・置換するためのDOM最小インターフェース。 */
+interface RetainedCell {
+  tagName: string;
+  getAttribute(name: string): string | null;
+}
+interface RetainedRow {
+  closest(selector: string): unknown;
+  children: ArrayLike<RetainedCell>;
+}
+interface RetainedTableEl {
+  outerHTML: string;
+  parentElement: { closest(selector: string): unknown } | null;
+  insertAdjacentHTML(position: "afterend", html: string): void;
+  remove(): void;
+  querySelectorAll(selector: string): ArrayLike<RetainedRow>;
+}
+interface RetainedHost {
+  body: {
+    innerHTML: string;
+    querySelectorAll(selector: string): ArrayLike<RetainedTableEl>;
+  };
+}
+
+/**
+ * 正規化が必要な「データ表」かを判定する。2行2列以上かつ、colspan/rowspanを持つか
+ * 「先頭に2行以上の連続ヘッダ行があり、かつその後にデータ行が残る(多段ヘッダ)」表のみtrue。
+ * 単純表・レイアウト表・全行がヘッダの表は、turndownに任せて差分と誤破壊を避けるため弾く
+ * (全ヘッダ表を多段ヘッダとして畳むとデータ行が消えるため対象外)。
+ */
+function needsTableNormalization(table: RetainedTableEl): boolean {
+  const rows = Array.from(table.querySelectorAll("tr")).filter((tr) => tr.closest("table") === table);
+  if (rows.length < 2) return false;
+  let maxCells = 0;
+  let hasSpan = false;
+  let leadingHeaderRows = 0;
+  let inLeadingHeaders = true;
+  for (const row of rows) {
+    const cells = Array.from(row.children).filter((el) => el.tagName === "TD" || el.tagName === "TH");
+    if (cells.length > maxCells) maxCells = cells.length;
+    for (const cell of cells) {
+      if (clampSpan(cell.getAttribute("colspan")) > 1 || clampSpan(cell.getAttribute("rowspan")) > 1) hasSpan = true;
+    }
+    const allTh = cells.length > 0 && cells.every((cell) => cell.tagName === "TH");
+    if (inLeadingHeaders && allTh) leadingHeaderRows++;
+    else inLeadingHeaders = false;
+  }
+  if (maxCells < 2) return false;
+  const hasMultiHeaderWithData = leadingHeaderRows >= 2 && leadingHeaderRows < rows.length;
+  return hasSpan || hasMultiHeaderWithData;
+}
+
+/**
+ * 本文HTMLに保持された複雑表(colspan/rowspan・多段ヘッダ)をその場で正規化する。
+ * 救出経路(reinsertDroppedTables)は「Readabilityが落とした表」しか正規化しないため、
+ * Readability/アダプタ/ジオメトリ/selector等が本文に保持した複雑表は未正規化のまま
+ * turndownへ渡ると列ズレ・空セルになる。turndown直前の全経路共通パスでこれを補う。
+ * (検証URLの日本語Wikipedia rowspan表はwikipedia-jaアダプタ経路=Readability非経由のため、
+ *  readability経路限定ではなく全経路に適用する必要がある。)
+ * 最外のデータ表かつspan/多段ヘッダを持つものだけを対象にし、レイアウト表・単純表・
+ * 既に正規化済みの表(救出で挿入済みを含む)は触らないため冪等。
+ */
+export function normalizeRetainedTables(contentHtml: string): string {
+  if (!contentHtml.includes("<table")) return contentHtml;
+  const { document } = parseHTML(`<!DOCTYPE html><html><body>${contentHtml}</body></html>`);
+  const host = document as unknown as RetainedHost;
+
+  let changed = false;
+  for (const table of Array.from(host.body.querySelectorAll("table"))) {
+    if (table.parentElement?.closest("table")) continue; // 入れ子表は最外表の正規化に含まれる。
+    if (!needsTableNormalization(table)) continue;
+    table.insertAdjacentHTML("afterend", normalizeTableHtml(table.outerHTML));
+    table.remove();
+    changed = true;
+  }
+
+  return changed ? host.body.innerHTML : contentHtml;
 }
 
 export function extractMarkdown(html: string, options: ExtractOptions = {}): ExtractResult {
@@ -511,8 +621,11 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
     }
   }
 
+  // turndownは複雑表(colspan/rowspan・多段ヘッダ)を列ズレ・空セルにするため、変換前に
+  // 全経路共通で最外データ表を正規化する(救出経路で正規化済みの表・単純表・レイアウト表は素通し)。
+  const normalizedHtml = normalizeRetainedTables(contentHtml);
   const turndown = createTurndownService();
-  const rawMarkdown = turndown.turndown(contentHtml).trim();
+  const rawMarkdown = turndown.turndown(normalizedHtml).trim();
   const markdown = normalizeCjkText(rawMarkdown);
 
   return {

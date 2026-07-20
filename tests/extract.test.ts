@@ -70,6 +70,121 @@ describe("extractMarkdown", () => {
   });
 });
 
+describe("extractMarkdown - 複雑表の正規化(全経路)", () => {
+  // Readabilityが本文に保持する複雑表(colspan/rowspan・多段ヘッダ)。救出経路ではなく
+  // 「保持された表」なので、turndown直前の共通パスで正規化されないと列ズレ・空セルになる。
+  const readabilityComplex = `<!DOCTYPE html><html lang="ja"><head><title>料金プラン</title></head><body>
+    <article>
+      <h1>料金プランの比較</h1>
+      <p>${"当サービスの各プランについて説明します。以下は代表的な項目です。".repeat(3)}</p>
+      <h2>プラン別料金表</h2>
+      <table>
+        <tr><th rowspan="2">プラン</th><th colspan="2">国内</th></tr>
+        <tr><th>月額</th><th>年額</th></tr>
+        <tr><td>ベーシック</td><td>500円</td><td>5000円</td></tr>
+        <tr><td>プロ</td><td>1500円</td><td>15000円</td></tr>
+      </table>
+      <p>${"以上が料金プランの概要です。詳細はお問い合わせください。".repeat(4)}</p>
+    </article></body></html>`;
+
+  it("Readability経路で保持された複雑表を列ズレなく単一の表へ正規化する", () => {
+    const result = extractMarkdown(readabilityComplex, { url: "https://example.com/pricing" });
+    expect(result.extractionMethod).toBe("readability");
+    // 区切り行はちょうど1本(表が二重挿入されていない)。
+    expect(result.markdown.match(/^\| --- \|/gm) ?? []).toHaveLength(1);
+    // 多段ヘッダが列ごとに結合される。
+    expect(result.markdown).toContain("国内月額");
+    expect(result.markdown).toContain("国内年額");
+    // 全表行が同一列数(=列ズレなし)。
+    const rows = result.markdown.split("\n").filter((line) => line.trim().startsWith("|"));
+    const colCounts = new Set(rows.map((line) => line.split("|").length));
+    expect(colCounts.size).toBe(1);
+  });
+
+  // wikipedia-jaアダプタはReadabilityをバイパスするため、readability経路限定の正規化では
+  // 日本語Wikipediaのrowspan表(実世界で最頻)を救えない。共通パス配置の回帰テスト。
+  const wikipediaComplex = `<!DOCTYPE html><html lang="ja"><head><title>統計 - Wikipedia</title></head><body>
+    <div class="mw-parser-output">
+      <p>${"この記事は各年の統計をまとめたものである。".repeat(3)}</p>
+      <table class="wikitable">
+        <tr><th rowspan="2">年</th><th colspan="2">人口</th></tr>
+        <tr><th>男</th><th>女</th></tr>
+        <tr><td>2020</td><td>100</td><td>110</td></tr>
+        <tr><td>2021</td><td>101</td><td>111</td></tr>
+      </table>
+    </div></body></html>`;
+
+  it("アダプタ経路(wikipedia-ja/Readability非経由)で保持された複雑表も正規化する", () => {
+    const result = extractMarkdown(wikipediaComplex, { url: "https://ja.wikipedia.org/wiki/統計" });
+    expect(result.extractionMethod).toBe("adapter");
+    expect(result.adapterName).toBe("wikipedia-ja");
+    expect(result.markdown.match(/^\| --- \|/gm) ?? []).toHaveLength(1);
+    expect(result.markdown).toContain("人口男");
+    expect(result.markdown).toContain("人口女");
+    const rows = result.markdown.split("\n").filter((line) => line.trim().startsWith("|"));
+    expect(new Set(rows.map((line) => line.split("|").length)).size).toBe(1);
+  });
+
+  it("th無し・span無しの単純表(レイアウト相当)を正規化対象外として素通しする", () => {
+    // th無し・単純セルのみの表はデータ表判定/多段ヘッダ判定に掛からず正規化対象外。
+    const layoutHtml = `<!DOCTYPE html><html lang="ja"><head><title>会社概要</title></head><body>
+      <article>
+        <h1>会社概要</h1>
+        <p>${"当社の基本情報を以下にまとめています。".repeat(4)}</p>
+        <table>
+          <tr><td>設立</td><td>2020年</td></tr>
+          <tr><td>所在地</td><td>東京都</td></tr>
+        </table>
+        <p>${"以上が当社の概要です。お気軽にお問い合わせください。".repeat(4)}</p>
+      </article></body></html>`;
+    const result = extractMarkdown(layoutHtml, { url: "https://example.com/about" });
+    expect(result.markdown).toContain("設立");
+    expect(result.markdown).toContain("2020年");
+    expect(result.markdown).toContain("所在地");
+    expect(result.markdown).toContain("東京都");
+  });
+
+  it("全行がヘッダ(全セルth)の表でもデータ行を消失させない", () => {
+    // 全ヘッダ表を多段ヘッダとして畳むと2行目以降が消えるリグレッションの回帰テスト。
+    const allThHtml = `<!DOCTYPE html><html lang="ja"><head><title>担当表</title></head><body>
+      <article>
+        <h1>担当者一覧</h1>
+        <p>${"以下は担当者の一覧表です。各行がメンバーを表します。".repeat(3)}</p>
+        <table>
+          <tr><th>名前</th><th>役割</th></tr>
+          <tr><th>Alice</th><th>PM</th></tr>
+          <tr><th>Bob</th><th>Dev</th></tr>
+          <tr><th>Carol</th><th>QA</th></tr>
+        </table>
+        <p>${"以上が担当者の一覧です。".repeat(6)}</p>
+      </article></body></html>`;
+    const result = extractMarkdown(allThHtml, { url: "https://example.com/team" });
+    for (const cell of ["Alice", "Bob", "Carol", "PM", "Dev", "QA"]) {
+      expect(result.markdown).toContain(cell);
+    }
+  });
+
+  it("複雑表のcaptionテキストを出力に残す", () => {
+    const captionHtml = `<!DOCTYPE html><html lang="ja"><head><title>売上</title></head><body>
+      <article>
+        <h1>地域別売上</h1>
+        <p>${"以下は地域別の売上をまとめた表です。".repeat(4)}</p>
+        <table>
+          <caption>2024年度地域別売上一覧</caption>
+          <tr><th rowspan="2">地域</th><th colspan="2">売上</th></tr>
+          <tr><th>上期</th><th>下期</th></tr>
+          <tr><td>東日本</td><td>100</td><td>200</td></tr>
+        </table>
+        <p>${"以上が売上の概要です。".repeat(6)}</p>
+      </article></body></html>`;
+    const result = extractMarkdown(captionHtml, { url: "https://example.com/sales" });
+    expect(result.markdown).toContain("2024年度地域別売上一覧");
+    // 多段ヘッダは正しくヘッダ行として残る(captionでヘッダが降格していない)。
+    expect(result.markdown).toContain("売上上期");
+    expect(result.markdown).toContain("売上下期");
+  });
+});
+
 describe("extractMarkdown - Phase 4 ジオメトリ抽出", () => {
   // Readabilityが本文を特定できない(全体で31文字しかなくMIN_READABILITY_TEXT_LENGTH未満)、
   // 最小限のdiv soupページ。data-amenbo-gid付きの要素はブラウザ側が実際に付与するのと同じ形。
