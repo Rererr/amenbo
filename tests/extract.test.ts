@@ -344,3 +344,128 @@ describe("extractMarkdown - J7 サイトアダプタ", () => {
     expect(result.markdown).not.toContain("関連項目のナビゲーションボックス");
   });
 });
+
+// WikipediaのTemplateStyles(<style>が本文中のspan/table内に直接埋まる構造)を模した回帰テスト。
+// 実測(ko/zh.wikipedia.org)で発覚したCSSリーク: turndownにstyle/script/noscriptを除外する
+// ルールが無いため、Readabilityの本文選定より前に採取される救出表や、Readabilityを経由しない
+// アダプタ経路では、CSSテキストがそのまま地の文へ混入していた。
+describe("extractMarkdown - CSSリーク除去(style/script/noscript)", () => {
+  const readabilityLeakHtml = `<!DOCTYPE html>
+    <html lang="ko"><head><title>서울특별시 - Wikipedia</title></head>
+    <body>
+      <article>
+        <h1>서울특별시</h1>
+        <p>서울特別市<span class="mw-empty-elt"><style data-mw-deduplicate="TemplateStyles:r1">.mw-parser-output .hatnote{font-size:90%}.mw-parser-output div.hatnote{padding-left:1.6em}</style></span>은 대한민국의 수도이다.</p>
+        <p>${"서울은 한반도 중앙에 위치한 도시로 오랜 역사를 가지고 있다.".repeat(6)}</p>
+      </article>
+    </body></html>`;
+
+  it("Readability経路: spanに包まれたTemplateStyles相当のstyleを除去し地の文への吸収を防ぐ", () => {
+    const result = extractMarkdown(readabilityLeakHtml, { url: "https://ko.wikipedia.org/wiki/서울특별시" });
+    expect(result.extractionMethod).toBe("readability");
+    expect(result.markdown).not.toContain("mw-parser-output");
+    expect(result.markdown).not.toContain("hatnote");
+    expect(result.markdown).toContain("서울特別市");
+    expect(result.markdown).toContain("대한민국의 수도이다");
+  });
+
+  const adapterLeakHtml = `<!DOCTYPE html>
+    <html lang="ja"><head><title>日本語 - Wikipedia</title></head>
+    <body>
+      <div class="mw-parser-output">
+        <style data-mw-deduplicate="TemplateStyles:r2">.mw-parser-output .ambox{border:1px solid #a2a9b1}</style>
+        <p>日本語は日本国内や日本人同士の間で使用されている言語である。</p>
+        <div class="mw-heading mw-heading2"><h2 id="特徴">特徴</h2></div>
+        <p>${"日本語の音韻的特徴について説明する文章です。".repeat(5)}</p>
+      </div>
+    </body></html>`;
+
+  it("アダプタ経路(Readability非経由)でもstyleを除去する(ja.wikipedia)", () => {
+    const result = extractMarkdown(adapterLeakHtml, { url: "https://ja.wikipedia.org/wiki/日本語" });
+    expect(result.adapterName).toBe("wikipedia-ja");
+    expect(result.markdown).not.toContain("mw-parser-output");
+    expect(result.markdown).not.toContain("ambox");
+    expect(result.markdown).toContain("日本語は日本国内や日本人同士の間で使用されている言語である");
+  });
+
+  it("script/noscriptも同様に除去する", () => {
+    const html = `<!DOCTYPE html><html><body><article><h1>見出し</h1>
+      <script>trackPageView();</script>
+      <noscript>JavaScriptを有効にしてください</noscript>
+      <p>${"本文の段落です。".repeat(20)}</p>
+    </article></body></html>`;
+    const result = extractMarkdown(html, { url: "https://example.com/article" });
+    expect(result.markdown).not.toContain("trackPageView");
+    expect(result.markdown).not.toContain("JavaScriptを有効にしてください");
+  });
+
+  it("adapter経路に残るnoscriptテキストも除去する(Readability非経由)", () => {
+    const html = `<!DOCTYPE html>
+      <html lang="ja"><head><title>日本語 - Wikipedia</title></head>
+      <body>
+        <div class="mw-parser-output">
+          <noscript>JavaScriptを有効にしてください</noscript>
+          <p>日本語は日本国内や日本人同士の間で使用されている言語である。</p>
+          <div class="mw-heading mw-heading2"><h2 id="特徴">特徴</h2></div>
+          <p>${"日本語の音韻的特徴について説明する文章です。".repeat(5)}</p>
+        </div>
+      </body></html>`;
+    const result = extractMarkdown(html, { url: "https://ja.wikipedia.org/wiki/日本語" });
+    expect(result.adapterName).toBe("wikipedia-ja");
+    expect(result.markdown).not.toContain("JavaScriptを有効にしてください");
+  });
+
+  // 【最優先の回帰テスト】noscriptを抽出処理より前に除去すると、Readability.parse()内の
+  // _unwrapNoscriptImages(遅延読み込みプレースホルダimgをnoscript内の実画像へ差し替える処理)が
+  // 機能する前に対象が消え、劣化したプレースホルダ画像しか残らなくなる。noscriptの除去は
+  // Readability.parse()実行後(turndown直前の最終段)まで遅らせる必要がある。
+  it("Readability経路: 遅延読み込みプレースホルダをnoscript内の実画像URLへ差し替える(Readability本来の機能を壊さない)", () => {
+    const html = `<!DOCTYPE html><html><body><article><h1>見出し</h1>
+      <p>${"本文の段落です。".repeat(15)}</p>
+      <img src="placeholder.gif"><noscript><img src="https://example.com/real-photo.jpg"></noscript>
+      <p>${"続きの本文です。".repeat(15)}</p>
+    </article></body></html>`;
+    const result = extractMarkdown(html, { url: "https://example.com/article" });
+    expect(result.extractionMethod).toBe("readability");
+    expect(result.markdown).toContain("real-photo.jpg");
+    expect(result.markdown).not.toContain("placeholder.gif");
+    expect(result.markdown).not.toContain("<noscript");
+  });
+
+  // Readability.parse()は結果を使わない場合(body-fallback採用時)でも、渡されたdocumentへ
+  // 常に破壊的に適用される。そのため画像復元はbody-fallback/geometry経路でも同様に効く。
+  it("body-fallback経路でもReadability.parse()の画像復元が先に効く(常にparse()が呼ばれるため)", () => {
+    const html = `<!DOCTYPE html><html><body>
+      <div>短い。</div>
+      <img src="placeholder.gif"><noscript><img src="https://example.com/real-photo.jpg"></noscript>
+    </body></html>`;
+    const result = extractMarkdown(html, { url: "https://example.com/old-site" });
+    expect(result.extractionMethod).toBe("body-fallback");
+    expect(result.markdown).toContain("real-photo.jpg");
+    expect(result.markdown).not.toContain("placeholder.gif");
+  });
+
+  // Readability自体が_prepDocumentで<style>をpre/code文脈を問わず無条件除去するため(サードパーティ
+  // 挙動でありこの修正のスコープ外)、selector経路(Readability非経由)でこの保護を検証する。
+  it("pre/code内に実要素として置かれたCSS/JSコード例は本文として保持する", () => {
+    const html = `<!DOCTYPE html><html><body>
+      <pre><style>.example{color:red}</style></pre>
+    </body></html>`;
+    const result = extractMarkdown(html, { url: "https://example.com/article", selector: "pre" });
+    expect(result.markdown).toContain(".example{color:red}");
+  });
+
+  // 実測(zh.wikipedia.org/广东省)で発覚した副作用の回帰テスト: collectDataTablesはReadability解析
+  // 前のouterHTMLからシグネチャを作るため、styleが残ったままだとReadability出力側(style除去済み)
+  // とシグネチャが一致せず「表が見つからない」と誤判定し、同じ表を重複挿入していた。
+  it("表セル内にstyleがあっても表を重複挿入しない", () => {
+    const html = `<!DOCTYPE html><html><body><article><h1>広東省</h1>
+      <p>${"広東省は中華人民共和国の省の一つである。".repeat(6)}</p>
+      <table><tr><th>坐標</th></tr><tr><td><style>.geo-default{display:inline}</style>23.4°N 113.5°E</td></tr></table>
+      <p>${"広東省の概要について続けて説明する文章です。".repeat(6)}</p>
+    </article></body></html>`;
+    const result = extractMarkdown(html, { url: "https://zh.wikipedia.org/wiki/广东省" });
+    expect(result.markdown).not.toContain("display:inline");
+    expect(result.markdown.match(/23\.4°N 113\.5°E/g)?.length).toBe(1);
+  });
+});

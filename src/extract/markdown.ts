@@ -116,7 +116,9 @@ function collectQualityInput(document: { body: QualityHostElement | null }, geom
     };
   }
 
-  // 元のDOMを変更しないよう、複製上でscript/style/noscriptを取り除いてから可視テキストを測る
+  // script/styleはこの時点で既にremoveStyleLeakElementsにより除去済み(ここでの除去は防御的で
+  // 実質no-op)。noscriptはReadability.parse()の画像復元(_unwrapNoscriptImages)のため意図的に
+  // 残してあるので、統計を歪めないよう複製上でのみ除去する(元のDOMは変更しない)。
   const clone = body.cloneNode(true);
   for (const el of Array.from(clone.querySelectorAll("script, style, noscript"))) {
     el.remove();
@@ -545,10 +547,81 @@ export function normalizeRetainedTables(contentHtml: string): string {
   return changed ? host.body.innerHTML : contentHtml;
 }
 
+/** removeStyleLeakElementsが除去対象を検索・除去できる最小限のDOM互換インターフェース。 */
+interface StyleLeakElement {
+  closest(selector: string): unknown;
+  remove(): void;
+}
+export interface StyleLeakHostDocument {
+  querySelectorAll(selector: string): ArrayLike<StyleLeakElement>;
+}
+
+/**
+ * turndownにはstyle/scriptの内容を除外するルールが無く、DOM上に残っていると
+ * 地の文への吸収(defaultReplacementが子孫テキストをそのまま連結する)か、gfmプラグインの
+ * 複雑表フォールバック(node.outerHTMLをそのままダンプする)経由でMarkdownへ混入する。
+ * Readability自身は_prepDocumentで<style>を除去するが、それはparse()呼び出し時点の
+ * ドキュメントにしか効かない: 救出表(collectDataTables)はparse前のouterHTMLを採取するため
+ * 道連れにしてしまい、アダプタ/selector経路はReadabilityを経由すらしない。抽出方式に関わらず
+ * 確実に除去するため、全ての抽出処理より前にドキュメント全体から取り除く
+ * (removeConsentBannersより前: バナー判定のテキスト長ヒューリスティックが埋め込みCSSで
+ * 水増しされるのも防げる)。pre/code内は著者が意図的に置いたコード例とみなし対象外にする。
+ *
+ * noscriptは対象に含めない: Readability.parse()は内部の_unwrapNoscriptImages()で、遅延読み込み
+ * プレースホルダimgをnoscript内の実画像へ差し替えてからnoscriptを除去する(style/scriptには
+ * 無い復元ロジック)。ここで先回りして除去すると差し替え元のnoscriptが消え、劣化した
+ * プレースホルダ画像しか残らなくなる。noscript自体の除去はremoveResidualNoscriptElements
+ * (turndown直前の全経路共通パス、Readability実行後)に委ねる。
+ */
+export function removeStyleLeakElements(document: StyleLeakHostDocument): void {
+  for (const el of Array.from(document.querySelectorAll("style, script"))) {
+    if (el.closest("pre, code")) continue;
+    el.remove();
+  }
+}
+
+/** removeResidualNoscriptElementsが除去対象を検索・除去できる最小限のDOM互換インターフェース。 */
+interface NoscriptElement {
+  closest(selector: string): unknown;
+  remove(): void;
+}
+interface NoscriptHostDocument {
+  body: {
+    innerHTML: string;
+    querySelectorAll(selector: string): ArrayLike<NoscriptElement>;
+  };
+}
+
+/**
+ * <noscript>の除去は、Readability.parse()内の_unwrapNoscriptImages()(遅延読み込み
+ * プレースホルダimgをnoscript内の実画像へ差し替える処理)より後に行う必要がある
+ * (removeStyleLeakElementsのコメント参照)。readability/geometry/body-fallback経路は
+ * Readability.parse()が常に呼ばれる(結果を使わない場合も含め、渡したdocumentへ破壊的に
+ * 適用される)ため、この時点で画像差し替え・noscript除去は既に完了しており本関数は素通りする。
+ * 一方adapter/selector経路はReadabilityを経由しないため<noscript>が残ったままで、
+ * 地の文へ混入する。turndown直前の全経路共通パスに置くことで、経由済みの経路には影響を
+ * 与えず(冪等)、未経由の経路だけを確実にカバーする。pre/code内は著者が意図的に置いた
+ * コード例とみなし対象外にする。
+ */
+export function removeResidualNoscriptElements(html: string): string {
+  if (!/<noscript[\s>]/i.test(html)) return html;
+  const { document } = parseHTML(`<!DOCTYPE html><html><body>${html}</body></html>`);
+  const host = document as unknown as NoscriptHostDocument;
+
+  let changed = false;
+  for (const el of Array.from(host.body.querySelectorAll("noscript"))) {
+    if (el.closest("pre, code")) continue;
+    el.remove();
+    changed = true;
+  }
+  return changed ? host.body.innerHTML : html;
+}
+
 export function extractMarkdown(html: string, options: ExtractOptions = {}): ExtractResult {
   const url = options.url ?? "about:blank";
   const { document } = parseHTML(html);
 
+  removeStyleLeakElements(document as unknown as StyleLeakHostDocument);
   stripRubyAnnotations(document);
   removeConsentBanners(document as unknown as ConsentBannerHostDocument);
 
@@ -624,8 +697,10 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
   // turndownは複雑表(colspan/rowspan・多段ヘッダ)を列ズレ・空セルにするため、変換前に
   // 全経路共通で最外データ表を正規化する(救出経路で正規化済みの表・単純表・レイアウト表は素通し)。
   const normalizedHtml = normalizeRetainedTables(contentHtml);
+  // adapter/selector経路(Readability非経由)に残り得るnoscriptを最終段で除去する。詳細はコメント参照。
+  const sanitizedHtml = removeResidualNoscriptElements(normalizedHtml);
   const turndown = createTurndownService();
-  const rawMarkdown = turndown.turndown(normalizedHtml).trim();
+  const rawMarkdown = turndown.turndown(sanitizedHtml).trim();
   const markdown = normalizeCjkText(rawMarkdown);
 
   return {
