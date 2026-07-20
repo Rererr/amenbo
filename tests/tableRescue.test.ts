@@ -179,7 +179,7 @@ describe("normalizeTableHtml", () => {
 });
 
 describe("reinsertDroppedTables", () => {
-  const table: DroppedTable = { html: DATA_TABLE, probes: ["国 人口 日本 1.2億"], anchor: "各国の人口" };
+  const table: DroppedTable = { html: DATA_TABLE, probes: ["国 人口 日本 1.2億"], anchor: "各国の人口", anchorKind: "heading" };
 
   it("アンカー見出しがReadability出力に残っていれば、その直後へ挿入する", () => {
     const content = "<h2>各国の人口</h2><p>説明文。</p><h2>次の節</h2><p>別の話。</p>";
@@ -209,6 +209,46 @@ describe("reinsertDroppedTables", () => {
     const result = reinsertDroppedTables("<p>x</p>", []);
     expect(result.appended).toBe(0);
     expect(result.html).toBe("<p>x</p>");
+  });
+});
+
+describe("reinsertDroppedTables アンカー由来別の照合", () => {
+  it("heading由来アンカーは段落の部分文字列へ吸着せず末尾へ回す(短く非一意な見出しの誤配置防止)", () => {
+    // zh.wikipedia 广东省の再現: 表アンカーが短い見出し「人口」のとき、航空節の段落に含まれる
+    // 「人口」へincludesで吸着すると人口統計表が航空節へ誤挿入される。heading由来は見出し完全一致に
+    // 限定するため吸着せず、一致する見出しが無ければ末尾へ回る(誤配置より末尾が安全)。
+    const table: DroppedTable = { html: DATA_TABLE, probes: ["国 人口 日本 1.2億"], anchor: "人口", anchorKind: "heading" };
+    const content = "<h2>航空</h2><p>空港が広い人口カバー圏を持つことを説明する本文。</p><h2>参考文献</h2><p>文献一覧。</p>";
+    const result = reinsertDroppedTables(content, [table]);
+    expect(result.appended).toBe(1);
+    // 表は航空節の段落へ吸着せず、末尾(参考文献より後)へ付く。
+    expect(result.html.indexOf("人口</th>")).toBeGreaterThan(result.html.indexOf("参考文献"));
+  });
+
+  it("heading由来アンカーは見出し要素の完全一致で挿入する(同名見出しがあれば直後へ)", () => {
+    const table: DroppedTable = { html: DATA_TABLE, probes: ["国 人口 日本 1.2億"], anchor: "人口", anchorKind: "heading" };
+    const content = "<h2>航空</h2><p>人口カバー圏の説明。</p><h2>人口</h2><p>人口動態の説明。</p>";
+    const result = reinsertDroppedTables(content, [table]);
+    expect(result.appended).toBe(1);
+    // 完全一致する見出し「人口」の直後へ入る(段落の部分一致「人口カバー圏」ではない)。
+    // 表は<h2>人口</h2>の直後・その節の段落「人口動態」より前に置かれる。
+    expect(result.html.indexOf("人口</th>")).toBeGreaterThan(result.html.indexOf("<h2>人口</h2>"));
+    expect(result.html.indexOf("人口</th>")).toBeLessThan(result.html.indexOf("人口動態"));
+  });
+
+  it("paragraph由来アンカーは従来どおり段落の包含で照合し節内へ挿入する", () => {
+    const table: DroppedTable = {
+      html: DATA_TABLE,
+      probes: ["国 人口 日本 1.2億"],
+      anchor: "各国の統計を扱う十分に長い段落",
+      anchorKind: "paragraph",
+    };
+    const content = "<p>各国の統計を扱う十分に長い段落がここにある。</p><h2>次の節</h2><p>別の話。</p>";
+    const result = reinsertDroppedTables(content, [table]);
+    expect(result.appended).toBe(1);
+    // 段落の直後・次の節より前(末尾フォールバックではなく節内復元)。
+    expect(result.html.indexOf("人口</th>")).toBeGreaterThan(result.html.indexOf("各国の統計"));
+    expect(result.html.indexOf("人口</th>")).toBeLessThan(result.html.indexOf("次の節"));
   });
 });
 
