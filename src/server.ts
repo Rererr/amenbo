@@ -20,7 +20,6 @@ import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/proto
 import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
-  formatLinksResponse,
   handleFetchTool,
   handleScreenshotTool,
   politeness,
@@ -28,6 +27,7 @@ import {
   resolvePackageVersion,
 } from "./core.js";
 import { AmenboError } from "./errors.js";
+import { formatLinksResponse } from "./formatting.js";
 import { discoverLinks } from "./links.js";
 
 // テスト用export(既存スタイルに合わせた最小のテスト可能化。InMemoryTransport経由の
