@@ -619,24 +619,128 @@ function needsTableNormalization(table: RetainedTableEl): boolean {
   return hasSpan || hasMultiHeaderWithData;
 }
 
+/** セル内ブロック要素をインライン化するためのDOM最小インターフェース。 */
+interface InlineBlockElement {
+  tagName: string;
+  innerHTML: string;
+  textContent: string;
+  parentElement: InlineBlockElement | null;
+  previousSibling: InlineBlockNode | null;
+  children: ArrayLike<InlineBlockElement>;
+  closest(selector: string): InlineBlockElement | null;
+  querySelectorAll(selector: string): ArrayLike<InlineBlockElement>;
+  insertAdjacentHTML(position: "beforebegin", html: string): void;
+  remove(): void;
+}
+
+/** 前方兄弟の走査用。要素(nodeType 1)とテキスト(nodeType 3)を区別できる最小形。 */
+interface InlineBlockNode {
+  nodeType: number;
+  tagName?: string;
+  textContent: string | null;
+  previousSibling: InlineBlockNode | null;
+}
+
+const CELL_BLOCK_SELECTOR = "ul, ol, h1, h2, h3, h4, h5, h6, hr, blockquote, pre";
+
+/** テキストをHTMLへ差し戻す際の最小エスケープ(pre→codeでtextContentを埋め込むため)。 */
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /**
- * 本文HTMLに保持された複雑表(colspan/rowspan・多段ヘッダ)をその場で正規化する。
+ * 直前に非空白の内容があり、かつそれが<br>でない場合にtrue。インライン化した置換文字列が
+ * 先行テキストと無境界に連結される(例: 親liのテキストと入れ子リスト先頭項目が「親1子1」化する)
+ * のを防ぐため、置換文字列の先頭に<br>を足すべきかの判定に使う。
+ */
+function needsLeadingBreak(el: InlineBlockElement): boolean {
+  let prev = el.previousSibling;
+  while (prev) {
+    if (prev.nodeType === 1) return prev.tagName !== "BR";
+    if (prev.nodeType === 3 && (prev.textContent ?? "").trim().length > 0) return true;
+    prev = prev.previousSibling;
+  }
+  return false;
+}
+
+/** ブロック要素をGFM表セルに収まるインラインHTMLへ変換する。 */
+function inlineReplacement(el: InlineBlockElement): string {
+  const tag = el.tagName;
+  // hr(それ自体が区切り)とblockquote(ブロック子要素を保持したままのunwrap)以外は純インラインに
+  // なるため、先行内容との境界を<br>で明示する。
+  const lead = tag !== "HR" && tag !== "BLOCKQUOTE" && needsLeadingBreak(el) ? "<br>" : "";
+  if (tag === "UL" || tag === "OL") {
+    // マーカー無しで各liを<br>連結する(番号・入れ子構造は落とし、テキストとリンクを残す)。
+    const items = Array.from(el.children)
+      .filter((child) => child.tagName === "LI")
+      .map((li) => li.innerHTML.trim())
+      .filter((html) => html.length > 0)
+      .join("<br>");
+    return lead + items;
+  }
+  if (/^H[1-6]$/.test(tag)) return `${lead}<strong>${el.innerHTML.trim()}</strong><br>`;
+  if (tag === "HR") return "<br>";
+  if (tag === "BLOCKQUOTE") return el.innerHTML; // unwrap(子を保持)。
+  return `${lead}<code>${escapeHtml(el.textContent.replace(/\s*\n\s*/g, " ").trim())}</code>`; // PRE。
+}
+
+/** rootからの深さ(祖先数)を返す。入れ子リスト等を深い方から平坦化する順序付けに使う。 */
+function depthWithin(el: InlineBlockElement, root: InlineBlockElement): number {
+  let depth = 0;
+  let cur = el.parentElement;
+  while (cur && cur !== root) {
+    depth++;
+    cur = cur.parentElement;
+  }
+  return depth;
+}
+
+/**
+ * 表のセル内ブロック要素(ul/ol/h1-6/hr/blockquote/pre)をインライン化する。
+ * turndown-gfmはこれらを含む表をtableShouldBeHtml判定でouterHTMLごとダンプする(joplin-table-wrapper
+ * のHTMLリーク)ため、プラグインを触らず入力側で発動条件を消す。入れ子表そのものは触らず、
+ * 入れ子表内の要素はその入れ子表を処理する呼び出しに委ねる(closestが自表と一致する要素のみ対象)。
+ * 入れ子リストは深い方から平坦化する。
+ */
+function inlineCellBlocks(table: InlineBlockElement): boolean {
+  const targets = Array.from(table.querySelectorAll(CELL_BLOCK_SELECTOR)).filter((el) => el.closest("table") === table);
+  if (targets.length === 0) return false;
+  targets.sort((a, b) => depthWithin(b, table) - depthWithin(a, table));
+  for (const el of targets) {
+    el.insertAdjacentHTML("beforebegin", inlineReplacement(el));
+    el.remove();
+  }
+  return true;
+}
+
+/**
+ * 本文HTMLに保持された複雑表(colspan/rowspan・多段ヘッダ)をその場で正規化し、あわせて全表の
+ * セル内ブロック要素をインライン化する。
  * 救出経路(reinsertDroppedTables)は「Readabilityが落とした表」しか正規化しないため、
  * Readability/アダプタ/ジオメトリ/selector等が本文に保持した複雑表は未正規化のまま
  * turndownへ渡ると列ズレ・空セルになる。turndown直前の全経路共通パスでこれを補う。
- * (検証URLの日本語Wikipedia rowspan表はwikipedia-jaアダプタ経路=Readability非経由のため、
+ * (検証URLの日本語Wikipedia rowspan表はアダプタ経路=Readability非経由のため、
  *  readability経路限定ではなく全経路に適用する必要がある。)
- * 最外のデータ表かつspan/多段ヘッダを持つものだけを対象にし、レイアウト表・単純表・
+ * 正規化はspan/多段ヘッダを持つ最外データ表だけを対象にし、レイアウト表・単純表・
  * 既に正規化済みの表(救出で挿入済みを含む)は触らないため冪等。
+ * インライン化はブロック要素を持つ全ての表が対象(セル内ul等によるturndown-gfmのouterHTML
+ * ダンプを防ぐため)。入れ子表もgfmからは単体の表として変換される(外表スキップ時に内表だけが
+ * GFM表になる)ので、最外表に限定せず各表を個別にインライン化する。正規化より先に全表を
+ * インライン化するのは、外表の正規化(remove+再挿入)後では旧サブツリー内の入れ子表への
+ * 変更が出力へ反映されないため。
  */
 export function normalizeRetainedTables(contentHtml: string): string {
   if (!contentHtml.includes("<table")) return contentHtml;
   const { document } = parseHTML(`<!DOCTYPE html><html><body>${contentHtml}</body></html>`);
   const host = document as unknown as RetainedHost;
 
+  const tables = Array.from(host.body.querySelectorAll("table"));
   let changed = false;
-  for (const table of Array.from(host.body.querySelectorAll("table"))) {
-    if (table.parentElement?.closest("table")) continue; // 入れ子表は最外表の正規化に含まれる。
+  for (const table of tables) {
+    if (inlineCellBlocks(table as unknown as InlineBlockElement)) changed = true;
+  }
+  for (const table of tables) {
+    if (table.parentElement?.closest("table")) continue; // 入れ子表は最外表側で処理する。
     if (!needsTableNormalization(table)) continue;
     table.insertAdjacentHTML("afterend", normalizeTableHtml(table.outerHTML));
     table.remove();

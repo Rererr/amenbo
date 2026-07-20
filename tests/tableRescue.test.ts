@@ -351,3 +351,71 @@ describe("normalizeRetainedTables", () => {
     expect(out).toContain("内");
   });
 });
+
+describe("normalizeRetainedTables セル内ブロックのインライン化", () => {
+  it("セル内のul(リスト)をマーカー無しの<br>連結へインライン化する", () => {
+    const html =
+      "<table><tr><th>項目</th><th>詳細</th></tr>" +
+      "<tr><td>特徴</td><td><ul><li>軽量</li><li>高速</li></ul></td></tr></table>";
+    const out = normalizeRetainedTables(html);
+    expect(out).not.toContain("<ul>");
+    expect(out).not.toContain("<li>");
+    expect(out).toContain("軽量<br>高速");
+  });
+
+  it("入れ子リストは深い方から平坦化し、親項目テキストと子項目の境界に<br>を挟む", () => {
+    const html =
+      "<table><tr><th>A</th><th>B</th></tr>" +
+      "<tr><td>x</td><td><ul><li>親1<ul><li>子1</li><li>子2</li></ul></li><li>親2</li></ul></td></tr></table>";
+    const out = normalizeRetainedTables(html);
+    expect(out).not.toContain("<ul>");
+    expect(out).not.toContain("<li>");
+    // 「親1子1」のような無境界連結にならない。
+    expect(out).toContain("親1<br>子1<br>子2<br>親2");
+  });
+
+  it("セル内の見出し/hr/blockquote/preをインライン化する", () => {
+    const html =
+      "<table><tr><th>種別</th><th>内容</th></tr>" +
+      "<tr><td>混在</td><td><h3>小見出し</h3><hr><blockquote>引用文</blockquote><pre>code\nline</pre></td></tr></table>";
+    const out = normalizeRetainedTables(html);
+    expect(out).not.toContain("<h3>");
+    expect(out).not.toContain("<hr>");
+    expect(out).not.toContain("<blockquote>");
+    expect(out).not.toContain("<pre>");
+    expect(out).toContain("<strong>小見出し</strong>");
+    expect(out).toContain("引用文");
+    expect(out).toContain("<code>code line</code>");
+  });
+
+  it("入れ子表そのものはインライン化で触らない(セル内に保持)", () => {
+    const html =
+      "<table><tr><th>外A</th><th>外B</th></tr>" +
+      "<tr><td>x</td><td><table><tr><td>内1</td><td>内2</td></tr></table></td></tr></table>";
+    const out = normalizeRetainedTables(html);
+    expect(out).toContain("内1");
+    expect(out).toContain("内2");
+  });
+
+  // 入れ子表はgfmから単体の表として変換される(外表スキップ時に内表だけがGFM表になる)ため、
+  // 内表のセル内リストを残すと内表がouterHTMLダンプされる。
+  it("入れ子表のセル内リストもインライン化する", () => {
+    const html =
+      "<table><tr><th>外A</th><th>外B</th></tr>" +
+      "<tr><td>x</td><td><table><tr><td>内1</td><td><ul><li>甲</li><li>乙</li></ul></td></tr></table></td></tr></table>";
+    const out = normalizeRetainedTables(html);
+    expect(out).not.toContain("<ul>");
+    expect(out).toContain("甲<br>乙");
+  });
+
+  // 外表が正規化(remove+再挿入)される場合でも、先に入れ子表をインライン化した結果が
+  // 再構築後のouterHTMLへ反映されることを固定する(処理順のデグレ検出)。
+  it("正規化対象の外表の中の入れ子表のリストもインライン化する", () => {
+    const html =
+      "<table><tr><th colspan='2'>統計</th></tr><tr><th>項目</th><th>詳細</th></tr>" +
+      "<tr><td>x</td><td><table><tr><td>内1</td><td><ul><li>甲</li><li>乙</li></ul></td></tr></table></td></tr></table>";
+    const out = normalizeRetainedTables(html);
+    expect(out).not.toContain("<ul>");
+    expect(out).toContain("甲<br>乙");
+  });
+});
