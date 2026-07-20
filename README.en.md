@@ -15,7 +15,7 @@ Most general-purpose scraping tools assume the English-speaking web. On Japanese
 - **Furigana**: strips `<ruby>` reading annotations to prevent duplicated body text
 - **Information rendered as images**: pages built around image-based pricing tables or banners automatically fall back to screenshots when text extraction is poor
 - **Dropped or malformed tables**: data tables with high link density (e.g., comparison tables) can be dropped entirely during content extraction; amenbo detects such tables and restores them to their original position. Tables kept in the body are also normalized for colspan/rowspan and multi-level headers to prevent column misalignment
-- **Major Japanese sites**: dedicated adapters for Qiita / Zenn / note / Hatena Blog / Yahoo! News / PR TIMES / Japanese Wikipedia
+- **Major Japanese sites**: dedicated adapters for Qiita / Zenn / note / Hatena Blog / Yahoo! News / PR TIMES / Wikipedia (Japanese / Chinese / Korean)
 
 For a measured comparison against similar tools (official fetch MCP / Jina Reader / Playwright MCP / PixelRAG pixelshot), see the article "[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)" (Japanese). The benchmark harness and raw logs are in [`bench/`](./bench/).
 
