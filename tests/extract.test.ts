@@ -101,12 +101,12 @@ describe("extractMarkdown - 複雑表の正規化(全経路)", () => {
     expect(colCounts.size).toBe(1);
   });
 
-  // wikipedia-cjkアダプタはReadabilityをバイパスするため、readability経路限定の正規化では
-  // 日本語Wikipediaのrowspan表(実世界で最頻)を救えない。共通パス配置の回帰テスト。
-  const wikipediaComplex = `<!DOCTYPE html><html lang="ja"><head><title>統計 - Wikipedia</title></head><body>
-    <div class="mw-parser-output">
+  // アダプタ経路はReadabilityをバイパスするため、readability経路限定の正規化では
+  // アダプタが保持した複雑表を救えない。共通パス配置の回帰テスト(zennアダプタで検証)。
+  const adapterComplex = `<!DOCTYPE html><html lang="ja"><head><title>統計まとめ</title></head><body>
+    <div class="znc">
       <p>${"この記事は各年の統計をまとめたものである。".repeat(3)}</p>
-      <table class="wikitable">
+      <table>
         <tr><th rowspan="2">年</th><th colspan="2">人口</th></tr>
         <tr><th>男</th><th>女</th></tr>
         <tr><td>2020</td><td>100</td><td>110</td></tr>
@@ -114,10 +114,10 @@ describe("extractMarkdown - 複雑表の正規化(全経路)", () => {
       </table>
     </div></body></html>`;
 
-  it("アダプタ経路(wikipedia-cjk/Readability非経由)で保持された複雑表も正規化する", () => {
-    const result = extractMarkdown(wikipediaComplex, { url: "https://ja.wikipedia.org/wiki/統計" });
+  it("アダプタ経路(Readability非経由)で保持された複雑表も正規化する", () => {
+    const result = extractMarkdown(adapterComplex, { url: "https://zenn.dev/someone/articles/abc123" });
     expect(result.extractionMethod).toBe("adapter");
-    expect(result.adapterName).toBe("wikipedia-cjk");
+    expect(result.adapterName).toBe("zenn");
     expect(result.markdown.match(/^\| --- \|/gm) ?? []).toHaveLength(1);
     expect(result.markdown).toContain("人口男");
     expect(result.markdown).toContain("人口女");
@@ -315,9 +315,8 @@ describe("extractMarkdown - J7 サイトアダプタ", () => {
     expect(result.markdown).toContain("本文段落です");
   });
 
-  // Phase 4追加: MediaWikiは見出しを<div class="mw-heading">でラップし編集リンクを併記するため、
-  // Readabilityが記事中の全見出しを剥がしてしまうことを実機検証で確認済み(実URLで再現)。
-  // アダプタでReadabilityを完全にバイパスすることで見出し構造を保つ。
+  // Wikipediaアダプタは置かない方針(サイト固有対応をしない)。MediaWiki風の見出しラッパー構造は
+  // Readability経路+汎用見出し救出で扱い、言語を問わず見出し構造が残ることをここで固定する。
   const wikipediaHtml = `<!DOCTYPE html>
     <html lang="ja"><head><title>日本語 - Wikipedia</title></head>
     <body>
@@ -331,20 +330,14 @@ describe("extractMarkdown - J7 サイトアダプタ", () => {
       </div>
     </body></html>`;
 
-  it("ja.wikipedia.orgではadapterName='wikipedia-cjk'になり、見出し構造を保持する(Readabilityは見出しを剥がすため)", () => {
+  it("wikipedia風構造はアダプタ非適用でreadability経路になり、見出し構造が残る", () => {
     const result = extractMarkdown(wikipediaHtml, { url: "https://ja.wikipedia.org/wiki/日本語" });
-    expect(result.adapterName).toBe("wikipedia-cjk");
+    expect(result.adapterName).toBeNull();
+    expect(result.extractionMethod).toBe("readability");
     const headingLines = result.markdown.split("\n").filter((line) => /^#{1,6}\s/.test(line));
     expect(headingLines).toEqual(["## 特徴", "### 音韻"]);
   });
 
-  it("ja.wikipedia.orgでは編集リンク・navboxを除去する", () => {
-    const result = extractMarkdown(wikipediaHtml, { url: "https://ja.wikipedia.org/wiki/日本語" });
-    expect(result.markdown).not.toContain("編集");
-    expect(result.markdown).not.toContain("関連項目のナビゲーションボックス");
-  });
-
-  // zh/ko版もMediaWiki同一構造のためwikipedia-cjkアダプタでReadabilityをバイパスし見出しを保つ。
   const zhWikipediaHtml = `<!DOCTYPE html>
     <html lang="zh"><head><title>广东省 - 维基百科</title></head>
     <body>
@@ -357,9 +350,9 @@ describe("extractMarkdown - J7 サイトアダプタ", () => {
       </div>
     </body></html>`;
 
-  it("zh.wikipedia.orgでもadapterName='wikipedia-cjk'になり、見出し構造を保持する", () => {
+  it("zh版の同構造でも見出し構造が残る(言語対称性)", () => {
     const result = extractMarkdown(zhWikipediaHtml, { url: "https://zh.wikipedia.org/wiki/广东省" });
-    expect(result.adapterName).toBe("wikipedia-cjk");
+    expect(result.adapterName).toBeNull();
     const headingLines = result.markdown.split("\n").filter((line) => /^#{1,6}\s/.test(line));
     expect(headingLines).toEqual(["## 历史", "### 地理"]);
   });
@@ -376,9 +369,9 @@ describe("extractMarkdown - J7 サイトアダプタ", () => {
       </div>
     </body></html>`;
 
-  it("ko.wikipedia.orgでもadapterName='wikipedia-cjk'になり、見出し構造を保持する", () => {
+  it("ko版の同構造でも見出し構造が残る(言語対称性)", () => {
     const result = extractMarkdown(koWikipediaHtml, { url: "https://ko.wikipedia.org/wiki/서울특별시" });
-    expect(result.adapterName).toBe("wikipedia-cjk");
+    expect(result.adapterName).toBeNull();
     const headingLines = result.markdown.split("\n").filter((line) => /^#{1,6}\s/.test(line));
     expect(headingLines).toEqual(["## 역사", "### 지리"]);
   });
@@ -409,21 +402,21 @@ describe("extractMarkdown - CSSリーク除去(style/script/noscript)", () => {
   });
 
   const adapterLeakHtml = `<!DOCTYPE html>
-    <html lang="ja"><head><title>日本語 - Wikipedia</title></head>
+    <html lang="ja"><head><title>記事タイトル</title></head>
     <body>
-      <div class="mw-parser-output">
-        <style data-mw-deduplicate="TemplateStyles:r2">.mw-parser-output .ambox{border:1px solid #a2a9b1}</style>
+      <div class="znc">
+        <style>.znc .info-box{border:1px solid #a2a9b1}</style>
         <p>日本語は日本国内や日本人同士の間で使用されている言語である。</p>
-        <div class="mw-heading mw-heading2"><h2 id="特徴">特徴</h2></div>
+        <h2 id="特徴">特徴</h2>
         <p>${"日本語の音韻的特徴について説明する文章です。".repeat(5)}</p>
       </div>
     </body></html>`;
 
-  it("アダプタ経路(Readability非経由)でもstyleを除去する(ja.wikipedia)", () => {
-    const result = extractMarkdown(adapterLeakHtml, { url: "https://ja.wikipedia.org/wiki/日本語" });
-    expect(result.adapterName).toBe("wikipedia-cjk");
-    expect(result.markdown).not.toContain("mw-parser-output");
-    expect(result.markdown).not.toContain("ambox");
+  it("アダプタ経路(Readability非経由)でもstyleを除去する", () => {
+    const result = extractMarkdown(adapterLeakHtml, { url: "https://zenn.dev/someone/articles/abc123" });
+    expect(result.adapterName).toBe("zenn");
+    expect(result.markdown).not.toContain("info-box");
+    expect(result.markdown).not.toContain("border:1px");
     expect(result.markdown).toContain("日本語は日本国内や日本人同士の間で使用されている言語である");
   });
 
@@ -440,17 +433,17 @@ describe("extractMarkdown - CSSリーク除去(style/script/noscript)", () => {
 
   it("adapter経路に残るnoscriptテキストも除去する(Readability非経由)", () => {
     const html = `<!DOCTYPE html>
-      <html lang="ja"><head><title>日本語 - Wikipedia</title></head>
+      <html lang="ja"><head><title>記事タイトル</title></head>
       <body>
-        <div class="mw-parser-output">
+        <div class="znc">
           <noscript>JavaScriptを有効にしてください</noscript>
           <p>日本語は日本国内や日本人同士の間で使用されている言語である。</p>
-          <div class="mw-heading mw-heading2"><h2 id="特徴">特徴</h2></div>
+          <h2 id="特徴">特徴</h2>
           <p>${"日本語の音韻的特徴について説明する文章です。".repeat(5)}</p>
         </div>
       </body></html>`;
-    const result = extractMarkdown(html, { url: "https://ja.wikipedia.org/wiki/日本語" });
-    expect(result.adapterName).toBe("wikipedia-cjk");
+    const result = extractMarkdown(html, { url: "https://zenn.dev/someone/articles/abc123" });
+    expect(result.adapterName).toBe("zenn");
     expect(result.markdown).not.toContain("JavaScriptを有効にしてください");
   });
 
@@ -506,5 +499,29 @@ describe("extractMarkdown - CSSリーク除去(style/script/noscript)", () => {
     const result = extractMarkdown(html, { url: "https://zh.wikipedia.org/wiki/广东省" });
     expect(result.markdown).not.toContain("display:inline");
     expect(result.markdown.match(/23\.4°N 113\.5°E/g)?.length).toBe(1);
+  });
+});
+
+describe("extractMarkdown - Readability経路のノイズ除去", () => {
+  // 専用アダプタ撤去に伴い「編集リンク・navbox除去」をアダプタ設定へ頼らず、readability経路の
+  // 汎用ヒューリスティック(pruning/Readabilityのリンク密度判定)で落ちることを固定する。
+  // 実物同様に多数の<a>を含むリンク密度の高いnavbox風リンク集が本文へ混入しないことをロックする。
+  it("リンク密度の高いnavbox風リンク集が本文へ混入しない", () => {
+    const para = "本文の段落です。読者に必要な情報を十分な分量で提供し、Readabilityが本文と判定できるだけの文字数を確保します。具体例や背景説明も交えて丁寧に述べます。";
+    const links = Array.from({ length: 40 }, (_, i) => `<li><a href="/related/${i}">関連項目リンク番号${i}</a></li>`).join("");
+    const navbox = `<div class="navbox"><ul>${links}</ul></div>`;
+    const html = `<!DOCTYPE html><html lang="ja"><head><title>本文の記事タイトル</title></head><body>
+      <article>
+        <h2>本編の見出し</h2>
+        <p>${para}</p><p>${para}</p><p>${para}</p>
+        ${navbox}
+      </article></body></html>`;
+    const result = extractMarkdown(html, { url: "https://example.com/article" });
+    expect(result.extractionMethod).toBe("readability");
+    // 本編は残る。
+    expect(result.markdown).toContain("本編の見出し");
+    // リンク密度の高いリンク集は本文へ混入しない。
+    expect(result.markdown).not.toContain("関連項目リンク番号");
+    expect(result.markdown).not.toContain("/related/");
   });
 });
