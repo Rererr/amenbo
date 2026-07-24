@@ -2,7 +2,7 @@
 
 English | [日本語](./README.md)
 
-**Skims the web without making waves** — a Japanese-web-native MCP server for low-impact, token-efficient web collection.
+**Skims the web without making waves** — a Japanese-web-native MCP server for low-impact, token-efficient web collection: outline→section progressive disclosure and diff-only refetches keep context small.
 
 amenbo (アメンボ / water strider) is an [MCP](https://modelcontextprotocol.io) server for coding agents such as Claude Code and Codex. Like the insect gliding across water without making ripples, it collects information from the web **with minimal load on target sites and minimal tokens** — optimized especially for **Japanese websites**. In shell environments without an MCP client, it also works as a CLI sharing the same core ([Using as a CLI](#using-as-a-cli)).
 
