@@ -56,9 +56,27 @@ npm install
 npm run build
 ```
 
-### Registering with Claude Code
+### Registering with MCP clients
 
-Add to `.mcp.json` (or your global config):
+Claude Code (`--scope user` makes it available in all projects; drop it for per-project registration):
+
+```bash
+claude mcp add --scope user amenbo -- amenbo
+```
+
+Codex CLI:
+
+```bash
+codex mcp add amenbo -- amenbo
+```
+
+VS Code:
+
+```bash
+code --add-mcp '{"name":"amenbo","command":"amenbo"}'
+```
+
+For other clients (Cursor / Cline, etc.), add the following entry to the client's MCP settings (Cursor: `~/.cursor/mcp.json`; Cline: the settings JSON in the MCP Servers view):
 
 ```json
 {
@@ -70,7 +88,7 @@ Add to `.mcp.json` (or your global config):
 }
 ```
 
-For a local build, use `"command": "node", "args": ["/path/to/amenbo/dist/server.js"]`.
+To avoid a global install, use `"command": "npx", "args": ["-y", "amenbo"]`. For a local build, use `"command": "node", "args": ["/path/to/amenbo/dist/server.js"]`.
 
 ### Teaching your agent how to use it (recommended prompt)
 
@@ -98,6 +116,8 @@ Tool definitions alone don't convey usage conventions like "fetch with progressi
 - Fetch failures due to robots.txt denial or anti-bot measures are by design (no circumvention).
   Report failures to the user as-is
 ```
+
+Instead of editing `CLAUDE.md`, you can also load the conventions into just the current session: on MCP-prompt-capable clients, the server ships the same conventions as a `usage` prompt (`/mcp__amenbo__usage` in Claude Code).
 
 ## Using as a CLI
 

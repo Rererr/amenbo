@@ -56,9 +56,27 @@ npm install
 npm run build
 ```
 
-### Claude Code への登録
+### MCP クライアントへの登録
 
-`.mcp.json`(またはグローバル設定)に追加します:
+Claude Code(`--scope user` は全プロジェクト共通。プロジェクト単位なら外す):
+
+```bash
+claude mcp add --scope user amenbo -- amenbo
+```
+
+Codex CLI:
+
+```bash
+codex mcp add amenbo -- amenbo
+```
+
+VS Code:
+
+```bash
+code --add-mcp '{"name":"amenbo","command":"amenbo"}'
+```
+
+その他のクライアント(Cursor / Cline など)は、各クライアントの MCP 設定(Cursor: `~/.cursor/mcp.json`、Cline: MCP Servers 画面の settings JSON)に次のエントリを追加します:
 
 ```json
 {
@@ -70,7 +88,7 @@ npm run build
 }
 ```
 
-ローカルビルドを使う場合は `"command": "node", "args": ["/path/to/amenbo/dist/server.js"]`。
+グローバルインストールを避ける場合は `"command": "npx", "args": ["-y", "amenbo"]`、ローカルビルドを使う場合は `"command": "node", "args": ["/path/to/amenbo/dist/server.js"]` を指定してください。
 
 ### エージェントに使い方を教える(推奨プロンプト)
 
@@ -93,6 +111,8 @@ npm run build
 - 料金表・レイアウトなど視覚情報が目的なら `screenshot`。`scale: 0.5` 程度で画像トークンを減らせる
 - robots.txt 拒否や bot 対策による取得失敗は仕様(回避しない)。失敗はそのままユーザーに報告する
 ```
+
+`CLAUDE.md` に書かず、その場のセッションだけに読み込むこともできます。MCP プロンプト対応クライアントでは、サーバーが同じ作法を `usage` プロンプトとして配布しています(Claude Code では `/mcp__amenbo__usage`)。
 
 ## CLIとして使う
 
