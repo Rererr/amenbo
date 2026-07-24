@@ -57,7 +57,9 @@ describe("server.ts - usageプロンプト", () => {
     expect(message?.content).toMatchObject({ type: "text" });
     const text = message?.content.type === "text" ? message.content.text : "";
 
-    const readme = readFileSync(new URL("../README.en.md", import.meta.url), "utf8");
+    // Windows CIではcheckout時のautocrlfでREADMEがCRLFになるため、LF固定の
+    // USAGE_PROMPT_TEXTと比較する前に正規化する(改行差は「同期ドリフト」ではない)。
+    const readme = readFileSync(new URL("../README.en.md", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     const fencedBlock = readme.match(/```markdown\n(## Use amenbo for web fetching[\s\S]*?)\n```/)?.[1];
     if (fencedBlock === undefined) {
       throw new Error("README.en.mdの推奨プロンプトブロックが見つかりません(見出し文言かフェンスの変更を確認してください)");
