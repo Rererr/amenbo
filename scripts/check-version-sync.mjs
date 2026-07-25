@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// package.json / server.json (トップレベル+packages[].version) / (任意で)タグ の版数一致を検証する。
+// package.json / server.json (トップレベル+packages[].version) / CITATION.cff / (任意で)タグ の版数一致を検証する。
 // リリース時の同期漏れ(v0.6.0全配布実害あり)を機械的に検出するためのゲート。
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -28,11 +28,18 @@ function main() {
   const lockfile = readJson("package-lock.json");
   const tagVersion = parseTagArg(process.argv.slice(2));
 
+  // CITATION.cff は Zenodo/GitHub の引用メタデータの正本。DOI発行時に版数がずれると
+  // 引用と実体が食い違うため、他の配布物と同じゲートで縛る。YAMLパーサは足さず
+  // USER_AGENT と同じく行頭の version キーだけを取る。
+  const cffContent = readFileSync(join(rootDir, "CITATION.cff"), "utf8");
+  const cffMatch = cffContent.match(/^version:\s*"?([\d.]+)"?\s*$/m);
+
   const entries = [
     { label: "package.json", version: pkg.version },
     { label: "server.json (top-level)", version: server.version },
     { label: "package-lock.json (top-level)", version: lockfile.version },
     { label: "package-lock.json packages[\"\"]", version: lockfile.packages?.[""]?.version },
+    { label: "CITATION.cff", version: cffMatch?.[1] },
   ];
   for (const [i, p] of (server.packages ?? []).entries()) {
     entries.push({ label: `server.json packages[${i}].version`, version: p.version });

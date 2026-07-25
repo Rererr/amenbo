@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: amenbo
+abstract: >-
+  A Japanese-web-native MCP (Model Context Protocol) server for low-impact,
+  token-efficient web collection. Outline-to-section progressive disclosure and
+  diff-only refetches keep agent context small, while robots.txt-aware,
+  rate-limited two-tier fetching keeps load on target sites low. Handles
+  loosely structured Japanese pages, legacy encodings, ruby annotations,
+  image-rendered information, and tables dropped by generic content extraction.
+type: software
+authors:
+  - name: Rererr
+    website: "https://github.com/Rererr"
+repository-code: "https://github.com/Rererr/amenbo"
+url: "https://github.com/Rererr/amenbo"
+license: MIT
+version: 0.5.0
+date-released: "2026-07-24"
+keywords:
+  - model-context-protocol
+  - mcp-server
+  - llm-agents
+  - token-efficiency
+  - content-extraction
+  - japanese-web
+  - web-scraping
+  - progressive-disclosure
+  - typescript
