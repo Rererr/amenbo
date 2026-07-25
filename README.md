@@ -2,6 +2,8 @@
 
 [English](./README.en.md) | 日本語
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21553636.svg)](https://doi.org/10.5281/zenodo.21553636)
+
 **Skims the web without making waves** — a Japanese-web-native MCP server for low-impact, token-efficient web collection: outline→section progressive disclosure and diff-only refetches keep context small.
 
 amenbo(アメンボ / water strider)は、Claude Code や Codex のようなコーディングエージェント向けの [MCP](https://modelcontextprotocol.io) サーバーです。水面に波を立てずに滑る虫のように、**収集先に負荷をかけず、少ないトークンで** Web から情報を集めます。とりわけ**日本語サイト**に最適化しています。MCP クライアントを持たないシェル環境からは、同じコアを共有する CLI としても使えます([CLIとして使う](#cliとして使う)参照)。
@@ -199,6 +201,12 @@ npm run typecheck   # strict 型チェック
 npm test            # vitest
 npm run build       # dist/ へビルド
 ```
+
+## 引用
+
+記事や研究で参照する場合は Zenodo の DOI を使ってください。上のバッジの `10.5281/zenodo.21553636` は**全バージョン共通の Concept DOI** で、常に最新版へ解決されます。特定の版を指す場合は、その版の DOI を [Zenodo のレコード](https://zenodo.org/records/21553637)から取得してください。
+
+機械可読な引用情報は [CITATION.cff](./CITATION.cff) にあります(GitHub の "Cite this repository" から BibTeX / APA を生成できます)。
 
 ## ライセンス
 
