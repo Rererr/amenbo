@@ -16,9 +16,9 @@ import { cleanupCacheDir } from "./helpers/tempCache.js";
 const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-server-usage-prompt-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
-const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
-const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-const { server } = await import("../src/server.js");
+const { InMemoryTransport } = await import("@modelcontextprotocol/server");
+const { Client } = await import("@modelcontextprotocol/client");
+const { createServer } = await import("../src/server.js");
 const { cache } = await import("../src/core.js");
 
 afterAll(() => {
@@ -30,7 +30,7 @@ afterAll(() => {
 async function connectedClient(): Promise<InstanceType<typeof Client>> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "amenbo-test-client", version: "1.0.0" });
-  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  await Promise.all([client.connect(clientTransport), createServer().connect(serverTransport)]);
   return client;
 }
 

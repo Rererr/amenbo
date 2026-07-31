@@ -37,9 +37,9 @@ vi.mock("../src/links.js", async (importOriginal) => {
 const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-server-progress-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
-const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
-const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-const { server } = await import("../src/server.js");
+const { InMemoryTransport } = await import("@modelcontextprotocol/server");
+const { Client } = await import("@modelcontextprotocol/client");
+const { createServer } = await import("../src/server.js");
 // core.jsのvi.mockはhandleFetchTool/handleScreenshotToolのみ差し替え、cacheは
 // actual(実シングルトン)をそのまま透過するため、ここでも実キャッシュを参照できる。
 const { cache } = await import("../src/core.js");
@@ -56,10 +56,13 @@ beforeEach(() => {
   discoverLinksMock.mockReset();
 });
 
+// InMemoryTransport同士を直結した接続は2025系(legacy era)として確立する
+// (2026-07-28 eraへのpinはserveStdio/createMcpHandlerが持つ非公開の配線を通るため、
+// ここでは再現できない)。新era側の疎通はscripts/mcp-modern-smoke.mjsが実プロセスで担保する。
 async function connectedClient(): Promise<InstanceType<typeof Client>> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "amenbo-test-client", version: "1.0.0" });
-  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  await Promise.all([client.connect(clientTransport), createServer().connect(serverTransport)]);
   return client;
 }
 
@@ -74,7 +77,7 @@ describe("server.ts - fetchツールのMCP progress notifications配線", () => 
     const client = await connectedClient();
     const received: Array<{ progress: number; message?: string }> = [];
 
-    const result = await client.callTool({ name: "fetch", arguments: { url: "https://example.com/" } }, undefined, {
+    const result = await client.callTool({ name: "fetch", arguments: { url: "https://example.com/" } }, {
       onprogress: (p) => {
         received.push({ progress: p.progress, message: p.message });
       },
@@ -115,7 +118,7 @@ describe("server.ts - screenshotツールのMCP progress notifications配線", (
     const client = await connectedClient();
     const received: Array<{ progress: number; message?: string }> = [];
 
-    await client.callTool({ name: "screenshot", arguments: { url: "https://example.com/" } }, undefined, {
+    await client.callTool({ name: "screenshot", arguments: { url: "https://example.com/" } }, {
       onprogress: (p) => {
         received.push({ progress: p.progress, message: p.message });
       },
@@ -152,7 +155,7 @@ describe("server.ts - linksツールのMCP progress notifications配線", () => 
     const client = await connectedClient();
     const received: Array<{ progress: number; message?: string }> = [];
 
-    await client.callTool({ name: "links", arguments: { url: "https://example.com/" } }, undefined, {
+    await client.callTool({ name: "links", arguments: { url: "https://example.com/" } }, {
       onprogress: (p) => {
         received.push({ progress: p.progress, message: p.message });
       },

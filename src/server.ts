@@ -17,10 +17,9 @@
  */
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+import { McpServer } from "@modelcontextprotocol/server";
+import type { ServerContext } from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 import {
   handleFetchTool,
@@ -33,134 +32,29 @@ import { AmenboError } from "./errors.js";
 import { formatLinksResponse } from "./formatting.js";
 import { discoverLinks } from "./links.js";
 
-// テスト用export(既存スタイルに合わせた最小のテスト可能化。InMemoryTransport経由の
-// MCP progress notifications統合テストでclient.connect()の相手として使う)。
-export const server = new McpServer({ name: "amenbo", version: resolvePackageVersion() });
-
 /**
  * MCP progress notifications: リクエストにprogressToken(_meta.progressToken)が付いている
  * クライアントに対してのみ、進捗メッセージをホストUIへ通知するコールバックを組み立てる。
  * progressTokenが無い(=進捗通知に対応しない/希望しないクライアント)場合はundefinedを返し、
  * core.ts側の各通知ポイントは呼び出し自体を行わない(条件分岐のみでオーバーヘッドは実質ゼロ)。
  *
- * sendNotificationはtotalを送らない(処理量が事前に不定なため)。失敗はツール本処理を
+ * notifyはtotalを送らない(処理量が事前に不定なため)。失敗はツール本処理を
  * 壊さないようベストエフォートで握りつぶし、原因のみstderrへ記録する。
  */
-function buildProgressNotifier(extra: RequestHandlerExtra<ServerRequest, ServerNotification>): ((message: string) => void) | undefined {
-  const progressToken = extra._meta?.progressToken;
+function buildProgressNotifier(ctx: ServerContext): ((message: string) => void) | undefined {
+  const progressToken = ctx.mcpReq._meta?.progressToken;
   if (progressToken === undefined) return undefined;
 
   let progress = 0;
   return (message: string) => {
     progress += 1;
-    void extra.sendNotification({ method: "notifications/progress", params: { progressToken, progress, message } }).catch((error: unknown) => {
+    void ctx.mcpReq.notify({ method: "notifications/progress", params: { progressToken, progress, message } }).catch((error: unknown) => {
       console.error("進捗通知(notifications/progress)の送信に失敗しました:", error);
     });
   };
 }
 
-server.registerTool(
-  "fetch",
-  {
-    title: "Fetch a web page as Markdown",
-    description:
-      "Fetch a web page (Japanese-web-native) as low-impact, token-efficient Markdown. Built-in robots.txt compliance, rate limiting, and caching. " +
-      "mode: auto (default; quality score picks Markdown or screenshot) / markdown / outline (heading summary) / screenshot. " +
-      "Refetching a cached URL returns cache: unchanged, or diff (changed sections only), to save tokens. PDF URLs are handled automatically.",
-    inputSchema: {
-      url: z.string().url().describe("Target URL (http/https only; PDF supported)"),
-      mode: z.enum(["auto", "markdown", "outline", "screenshot"]).optional().describe("Default: auto"),
-      selector: z.string().optional().describe("CSS selector to narrow the content"),
-      section: z.string().optional().describe("Section ID obtained from outline mode; returns only that section's Markdown"),
-      page: z.number().int().positive().optional().describe("Page number (default 1)"),
-      max_tokens: z.number().int().positive().optional().describe("Approximate token budget per page (default 8000)"),
-      force_full: z.boolean().optional().describe("Default false. If true, disables diff responses (unchanged/diff) and boilerplate-block removal, always returning the full content"),
-    },
-    annotations: {
-      readOnlyHint: true,
-      openWorldHint: true,
-    },
-  },
-  async ({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull }, extra) => {
-    try {
-      const onProgress = buildProgressNotifier(extra);
-      const content = await handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull, onProgress });
-      return { content };
-    } catch (error) {
-      const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
-      if (!(error instanceof AmenboError)) {
-        console.error(error);
-      }
-      return { content: [{ type: "text" as const, text: message }], isError: true };
-    }
-  },
-);
-
-server.registerTool(
-  "links",
-  {
-    title: "List links from a page (sitemap/RSS-first)",
-    description: "Low-impact link discovery: prefers sitemap.xml / RSS / Atom feeds when available, otherwise extracts in-page links.",
-    inputSchema: {
-      url: z.string().url().describe("Starting URL"),
-      filter: z.string().optional().describe("Substring match against URL/link text, or a glob using *"),
-    },
-    annotations: {
-      readOnlyHint: true,
-      openWorldHint: true,
-    },
-  },
-  async ({ url, filter }, extra) => {
-    try {
-      const onProgress = buildProgressNotifier(extra);
-      const result = await discoverLinks(url, politeness, { ...(filter ? { filter } : {}), onProgress });
-      return { content: [{ type: "text" as const, text: formatLinksResponse(url, result) }] };
-    } catch (error) {
-      const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
-      if (!(error instanceof AmenboError)) {
-        console.error(error);
-      }
-      return { content: [{ type: "text" as const, text: message }], isError: true };
-    }
-  },
-);
-
-server.registerTool(
-  "screenshot",
-  {
-    title: "Capture a tiled screenshot of a web page",
-    description: "For explicit visual inspection. Renders the page with a headless browser and returns tiled PNG screenshots. Built-in robots.txt compliance, rate limiting, and caching.",
-    inputSchema: {
-      url: z.string().url().describe("Target URL (http/https only)"),
-      fullPage: z.boolean().optional().describe("Default true. If false, captures only the first viewport (1 tile)"),
-      width: z.number().int().positive().optional().describe("Tile width in px (default 1280)"),
-      scale: z.number().min(0.5).max(1.0).optional().describe("Resolution scale (0.5-1.0, default 1.0); lower reduces image tokens"),
-    },
-    annotations: {
-      readOnlyHint: true,
-      openWorldHint: true,
-    },
-  },
-  async ({ url, fullPage, width, scale }, extra) => {
-    try {
-      const onProgress = buildProgressNotifier(extra);
-      const content = await handleScreenshotTool({ url, fullPage, width, scale, onProgress });
-      return { content };
-    } catch (error) {
-      const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
-      if (!(error instanceof AmenboError)) {
-        console.error(error);
-      }
-      return { content: [{ type: "text" as const, text: message }], isError: true };
-    }
-  },
-);
-
-// MCPプロトコル面は既存ツールのtitle/description同様に英語固定のため、この定数は
-// README.en.md の「推奨プロンプト」ブロックと一言一句同期を保つこと(完全一致を
-// tests/serverUsagePrompt.test.ts が検証する)。README.md の日本語ブロックは対応する訳文で、
-// 内容の連動は人が保つ。README側は導入者がコピペで使う独立したドキュメントとして
-// 存在する必要があるため、単一ソース化(README側からこの定数を読み込む等)はしていない。
+/** MCPプロトコル面は英語固定のため、ツールのtitle/description同様この定数も英語で書く。 */
 const USAGE_PROMPT_TEXT = `## Use amenbo for web fetching
 
 - Fetch pages with \`fetch\` (default mode \`auto\`). For pages that look long or where only part
@@ -182,24 +76,148 @@ const USAGE_PROMPT_TEXT = `## Use amenbo for web fetching
 - Fetch failures due to robots.txt denial or anti-bot measures are by design (no circumvention).
   Report failures to the user as-is`;
 
-server.registerPrompt(
-  "usage",
-  {
-    title: "How to use amenbo efficiently",
-    description: "Usage conventions for token-efficient, low-impact fetching (progressive disclosure, diff refetch, links).",
-  },
-  () => ({
-    messages: [{ role: "user" as const, content: { type: "text" as const, text: USAGE_PROMPT_TEXT } }],
-  }),
-);
+// USAGE_PROMPT_TEXTは README.en.md の「推奨プロンプト」ブロックと一言一句同期を保つこと(完全一致を
+// tests/serverUsagePrompt.test.ts が検証する)。README.md の日本語ブロックは対応する訳文で、
+// 内容の連動は人が保つ。README側は導入者がコピペで使う独立したドキュメントとして
+// 存在する必要があるため、単一ソース化(README側からこの定数を読み込む等)はしていない。
+
+/**
+ * ツール3個とプロンプト1個を登録したMCPサーバーインスタンスを1つ組み立てる。
+ *
+ * モジュールトップレベルのシングルトンにしていないのは、serveStdioがプロトコル世代
+ * (2025系 / 2026-07-28)を接続の1通目で判定してから世代ごとのインスタンスをpinする都合上、
+ * 1プロセス内でこのファクトリを複数回呼びうるため(同一インスタンスを二度connectすると失敗する)。
+ * テストからはこの関数を直接呼んでInMemoryTransportへ繋ぐ。
+ */
+export function createServer(): McpServer {
+  const server = new McpServer({ name: "amenbo", version: resolvePackageVersion() });
+
+  server.registerTool(
+    "fetch",
+    {
+      title: "Fetch a web page as Markdown",
+      description:
+        "Fetch a web page (Japanese-web-native) as low-impact, token-efficient Markdown. Built-in robots.txt compliance, rate limiting, and caching. " +
+        "mode: auto (default; quality score picks Markdown or screenshot) / markdown / outline (heading summary) / screenshot. " +
+        "Refetching a cached URL returns cache: unchanged, or diff (changed sections only), to save tokens. PDF URLs are handled automatically.",
+      inputSchema: z.object({
+        url: z.string().url().describe("Target URL (http/https only; PDF supported)"),
+        mode: z.enum(["auto", "markdown", "outline", "screenshot"]).optional().describe("Default: auto"),
+        selector: z.string().optional().describe("CSS selector to narrow the content"),
+        section: z.string().optional().describe("Section ID obtained from outline mode; returns only that section's Markdown"),
+        page: z.number().int().positive().optional().describe("Page number (default 1)"),
+        max_tokens: z.number().int().positive().optional().describe("Approximate token budget per page (default 8000)"),
+        force_full: z.boolean().optional().describe("Default false. If true, disables diff responses (unchanged/diff) and boilerplate-block removal, always returning the full content"),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull }, ctx) => {
+      try {
+        const onProgress = buildProgressNotifier(ctx);
+        const content = await handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull, onProgress });
+        return { content };
+      } catch (error) {
+        const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
+        if (!(error instanceof AmenboError)) {
+          console.error(error);
+        }
+        return { content: [{ type: "text" as const, text: message }], isError: true };
+      }
+    },
+  );
+
+  server.registerTool(
+    "links",
+    {
+      title: "List links from a page (sitemap/RSS-first)",
+      description: "Low-impact link discovery: prefers sitemap.xml / RSS / Atom feeds when available, otherwise extracts in-page links.",
+      inputSchema: z.object({
+        url: z.string().url().describe("Starting URL"),
+        filter: z.string().optional().describe("Substring match against URL/link text, or a glob using *"),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ url, filter }, ctx) => {
+      try {
+        const onProgress = buildProgressNotifier(ctx);
+        const result = await discoverLinks(url, politeness, { ...(filter ? { filter } : {}), onProgress });
+        return { content: [{ type: "text" as const, text: formatLinksResponse(url, result) }] };
+      } catch (error) {
+        const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
+        if (!(error instanceof AmenboError)) {
+          console.error(error);
+        }
+        return { content: [{ type: "text" as const, text: message }], isError: true };
+      }
+    },
+  );
+
+  server.registerTool(
+    "screenshot",
+    {
+      title: "Capture a tiled screenshot of a web page",
+      description: "For explicit visual inspection. Renders the page with a headless browser and returns tiled PNG screenshots. Built-in robots.txt compliance, rate limiting, and caching.",
+      inputSchema: z.object({
+        url: z.string().url().describe("Target URL (http/https only)"),
+        fullPage: z.boolean().optional().describe("Default true. If false, captures only the first viewport (1 tile)"),
+        width: z.number().int().positive().optional().describe("Tile width in px (default 1280)"),
+        scale: z.number().min(0.5).max(1.0).optional().describe("Resolution scale (0.5-1.0, default 1.0); lower reduces image tokens"),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ url, fullPage, width, scale }, ctx) => {
+      try {
+        const onProgress = buildProgressNotifier(ctx);
+        const content = await handleScreenshotTool({ url, fullPage, width, scale, onProgress });
+        return { content };
+      } catch (error) {
+        const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
+        if (!(error instanceof AmenboError)) {
+          console.error(error);
+        }
+        return { content: [{ type: "text" as const, text: message }], isError: true };
+      }
+    },
+  );
+
+  server.registerPrompt(
+    "usage",
+    {
+      title: "How to use amenbo efficiently",
+      description: "Usage conventions for token-efficient, low-impact fetching (progressive disclosure, diff refetch, links).",
+    },
+    () => ({
+      messages: [{ role: "user" as const, content: { type: "text" as const, text: USAGE_PROMPT_TEXT } }],
+    }),
+  );
+
+  return server;
+}
 
 /** MCP stdioサーバーを起動する。CLI(cli.ts)が引数なし/`serve`サブコマンド時に呼ぶ後方互換経路でもある。 */
 export async function runServer(): Promise<void> {
   // レビュー指摘対応: exit/SIGINT/SIGTERMハンドラ(core.ts)はサーバー常駐プロセスでのみ
   // 必要なため、importするだけで走るモジュールトップレベルではなくここで明示的に登録する。
   registerCoreShutdownHandlers();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  serveStdio(createServer, {
+    // 既定値と同じだが明示する: 'reject'にすると initialize で口を開ける2025系クライアント
+    // (現行のClaude Desktop/Cline等)が繋がらなくなるため、後方互換を捨てない判断をコードに残す。
+    legacy: "serve",
+    // 経路上のエラーでプロセスを落とさないのは、単発の送信失敗で常駐サーバーごと
+    // 巻き添えにしないため(進捗通知の失敗を握りつぶすのと同じ方針)。
+    onerror: (error: Error) => {
+      console.error("MCP stdio接続でエラーが発生しました:", error);
+    },
+  });
 }
 
 /**
