@@ -16,6 +16,7 @@ function mcpSession(cmd, args, env) {
   const child = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
   let buf = "";
   const pending = new Map();
+  const notifications = [];
   let stderr = "";
   child.stderr.on("data", (d) => { stderr += d; });
   child.stdout.on("data", (d) => {
@@ -27,6 +28,7 @@ function mcpSession(cmd, args, env) {
       try {
         const msg = JSON.parse(line);
         if (msg.id !== undefined && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
+        else if (msg.method !== undefined) notifications.push(msg);
       } catch { /* 非JSON行は無視 */ }
     }
   });
@@ -38,7 +40,58 @@ function mcpSession(cmd, args, env) {
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   });
   const notify = (method, params) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
-  return { child, rpc, notify, getStderr: () => stderr };
+  return { child, rpc, notify, notifications, getStderr: () => stderr };
+}
+
+// 進捗通知(notifications/progress)は実際の取得処理の中でしか発生しないため、取得を伴う
+// このスモークでしか経路を確認できない。eraごとに通知の出口が別(新eraはserveStdioの
+// subscriptionsルータを経由する)ため、legacy側と新era側の両方で到達を確かめる。
+const PROGRESS_TOKEN = "e2e-progress";
+const MODERN_VERSION = "2026-07-28";
+const MODERN_META = {
+  "io.modelcontextprotocol/protocolVersion": MODERN_VERSION,
+  "io.modelcontextprotocol/clientCapabilities": {},
+  "io.modelcontextprotocol/clientInfo": { name: "amenbo-ci-e2e", version: "0.0.1" },
+};
+// 実在しないTLD(RFC 2606の.invalid)へ同一ホスト2回投げる。1回目は間隔調整の対象が無く待機が
+// 発生しないため進捗は出ない(実測)。収集先サイトを使わないのは、通知配線の確認のために
+// 外部サイトへ追加の取得をかけたくないため。取得自体は必ず失敗するが、待機はその手前で起きる。
+const PROGRESS_URLS = ["https://amenbo-e2e-progress.invalid/", "https://amenbo-e2e-progress.invalid/x"];
+
+function progressCount(s) {
+  return s.notifications.filter(
+    (n) => n.method === "notifications/progress" && n.params?.progressToken === PROGRESS_TOKEN,
+  ).length;
+}
+
+/** 同一セッションで2回取得を試み、進捗通知が届いた件数を返す(取得の成否は問わない)。 */
+async function probeProgress(s, extraMeta) {
+  for (const url of PROGRESS_URLS) {
+    const resp = await s.rpc("tools/call", {
+      name: "fetch",
+      arguments: { url },
+      _meta: { ...extraMeta, progressToken: PROGRESS_TOKEN },
+    }, CALL_TIMEOUT_MS);
+    if (resp.error) throw new Error(`tools/callがJSON-RPCエラー: ${JSON.stringify(resp.error).slice(0, 300)}`);
+  }
+  return progressCount(s);
+}
+
+/** ハンドシェイク無し(2026-07-28)のセッションで進捗通知が届くことを確認する。 */
+async function checkModernProgress() {
+  const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-e2e-modern-"));
+  const s = mcpSession("node", [SERVER_PATH], { AMENBO_CACHE_DIR: cacheDir });
+  try {
+    const count = await probeProgress(s, MODERN_META);
+    if (count === 0) return "modern-progress: notifications/progress が0件(新eraで進捗通知が塞がっている)";
+    console.log(`OK modern-progress (${MODERN_VERSION}): 進捗通知${count}件`);
+    return null;
+  } catch (e) {
+    return `modern-progress: ${String(e)}`;
+  } finally {
+    s.child.kill();
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
 }
 
 async function initSession(s) {
@@ -120,17 +173,35 @@ async function main() {
         console.log(`NG ${c.id}: ${String(e)}`);
       }
     }
+    try {
+      const legacyProgress = await probeProgress(s, undefined);
+      if (legacyProgress === 0) {
+        failures.push("legacy-progress: notifications/progress が0件(2025系で進捗通知が塞がっている)");
+        console.log("NG legacy-progress: 進捗通知が0件");
+      } else {
+        console.log(`OK legacy-progress: 進捗通知${legacyProgress}件`);
+      }
+    } catch (e) {
+      failures.push(`legacy-progress: ${String(e)}`);
+      console.log(`NG legacy-progress: ${String(e)}`);
+    }
   } finally {
     s.child.kill();
     rmSync(cacheDir, { recursive: true, force: true });
   }
 
+  const modernFailure = await checkModernProgress();
+  if (modernFailure !== null) {
+    failures.push(modernFailure);
+    console.log(`NG ${modernFailure}`);
+  }
+
   if (failures.length > 0) {
-    console.error(`\n${failures.length}/${CASES.length}件が失敗しました:`);
+    console.error(`\n${failures.length}件が失敗しました:`);
     for (const f of failures) console.error(`  - ${f}`);
     process.exit(1);
   }
-  console.log(`\nOK: 全${CASES.length}件成功`);
+  console.log(`\nOK: 取得${CASES.length}件 + 進捗通知2era すべて成功`);
 }
 
 main().catch((e) => {

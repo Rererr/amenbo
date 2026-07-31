@@ -208,16 +208,31 @@ export async function runServer(): Promise<void> {
   // レビュー指摘対応: exit/SIGINT/SIGTERMハンドラ(core.ts)はサーバー常駐プロセスでのみ
   // 必要なため、importするだけで走るモジュールトップレベルではなくここで明示的に登録する。
   registerCoreShutdownHandlers();
-  serveStdio(createServer, {
-    // 既定値と同じだが明示する: 'reject'にすると initialize で口を開ける2025系クライアント
-    // (現行のClaude Desktop/Cline等)が繋がらなくなるため、後方互換を捨てない判断をコードに残す。
-    legacy: "serve",
-    // 経路上のエラーでプロセスを落とさないのは、単発の送信失敗で常駐サーバーごと
-    // 巻き添えにしないため(進捗通知の失敗を握りつぶすのと同じ方針)。
-    onerror: (error: Error) => {
-      console.error("MCP stdio接続でエラーが発生しました:", error);
+  serveStdio(
+    () => {
+      // ファクトリの失敗をここで致命扱いにしているのは、serveStdioが同期関数で
+      // 例外をonerrorへ流すだけのため、放置すると「全リクエストが内部エラーを返し続けるのに
+      // 終了コード0で生き続けるプロセス」になるから。組み立てに失敗したサーバーは何も返せない。
+      try {
+        return createServer();
+      } catch (error) {
+        console.error("amenboサーバーの初期化に失敗しました:", error);
+        process.exit(1);
+      }
     },
-  });
+    {
+      // 既定値と同じだが明示する: 'reject'にすると initialize で口を開ける2025系クライアント
+      // (現行のClaude Desktop/Cline等)が繋がらなくなるため、後方互換を捨てない判断をコードに残す。
+      legacy: "serve",
+      // ここでプロセスを落とさないのは、onerrorが単発の送信失敗と接続レベルの障害を
+      // 区別せず同じ口へ流すため(落とすと送信失敗ごときで常駐サーバーを巻き添えにする)。
+      // 起動不能の検出は上のファクトリ側が担う。トランスポート自体のstart失敗だけは
+      // SDKのAPI上ここへしか現れず切り分けられないため、記録に留める。
+      onerror: (error: Error) => {
+        console.error("MCP stdio接続でエラーが発生しました:", error);
+      },
+    },
+  );
 }
 
 /**

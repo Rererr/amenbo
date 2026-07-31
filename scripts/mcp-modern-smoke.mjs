@@ -5,6 +5,10 @@
 //
 // 新eraのリクエストはヘッダを持たないstdioでは params._meta の予約キーだけがera判定材料になる
 // (protocolVersion と clientCapabilities が必須)。ハーネスはmcp-init-smoke.mjsと同形。
+//
+// ここでは取得を伴わないプロトコル面だけを見る。新eraでの進捗通知の到達確認は実際の取得が要る
+// ため、外部ネットワークに依存してよいe2e-smoke.mjs側に置いてある(このスモークが載るpnpmジョブを
+// 収集先サイトの都合で赤くしないため)。
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,10 +25,6 @@ const envelope = (protocolVersion) => ({
   "io.modelcontextprotocol/clientCapabilities": {},
   "io.modelcontextprotocol/clientInfo": { name: "amenbo-ci-modern-smoke", version: "0.0.1" },
 });
-
-// 実在しないTLD(RFC 2606の.invalid)を使うのは、外部サイトへ負荷をかけずにpolitenessと
-// エラーラッピングの経路を通すため。取得は必ず失敗するが、進捗通知はその手前で出る。
-const UNREACHABLE_URL = "https://amenbo-modern-smoke.invalid/";
 
 function mcpSession(cmd, args, env) {
   const child = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
@@ -61,7 +61,7 @@ function fail(message, session) {
   throw new Error(`${message}\nstderr:\n${session.getStderr().slice(0, 2000)}`);
 }
 
-/** ハンドシェイク無しでツール・プロンプトが引けること、進捗通知が新era経路でも届くことを確認する。 */
+/** ハンドシェイク無しでツール・プロンプトが引けることを確認する。 */
 async function checkModernSession() {
   const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-modern-smoke-"));
   const s = mcpSession("node", [SERVER_PATH], { AMENBO_CACHE_DIR: cacheDir });
@@ -80,21 +80,7 @@ async function checkModernSession() {
       fail(`prompts/list が想定外です: ${promptNames.join(",")}`, s);
     }
 
-    // 同一ホストへ2回続けて投げると、2回目はpolitenessの待機が必ず入り進捗が出る
-    // (1回目は間隔調整の対象が無いため出ないことがある)。
-    const progressToken = "modern-smoke-1";
-    for (const url of [UNREACHABLE_URL, `${UNREACHABLE_URL}x`]) {
-      const call = await s.rpc("tools/call", { name: "fetch", arguments: { url }, _meta: { progressToken } });
-      if (call.error) fail(`tools/call がJSON-RPCエラーになりました: ${JSON.stringify(call.error)}`, s);
-    }
-    const progress = s.notifications.filter(
-      (n) => n.method === "notifications/progress" && n.params?.progressToken === progressToken,
-    );
-    if (progress.length === 0) {
-      fail("notifications/progress が新eraで1件も届きませんでした(進捗通知の経路が塞がっている可能性)", s);
-    }
-
-    console.log(`OK: modern era (${MODERN_VERSION}) — tools=${names.join(",")} prompts=${promptNames.join(",")} progress=${progress.length}件`);
+    console.log(`OK: modern era (${MODERN_VERSION}) — tools=${names.join(",")} prompts=${promptNames.join(",")}`);
   } finally {
     s.child.kill();
     rmSync(cacheDir, { recursive: true, force: true });
