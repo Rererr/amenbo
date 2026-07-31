@@ -92,6 +92,8 @@ For other clients (Cursor / Cline, etc.), add the following entry to the client'
 
 To avoid a global install, use `"command": "npx", "args": ["-y", "amenbo"]`. For a local build, use `"command": "node", "args": ["/path/to/amenbo/dist/server.js"]`.
 
+Over stdio, amenbo answers both MCP 2026-07-28 (stateless core) and the 2025-era revisions, so the configuration above works whichever revision your client speaks.
+
 ### Teaching your agent how to use it (recommended prompt)
 
 Tool definitions alone don't convey usage conventions like "fetch with progressive disclosure." Paste the following into `CLAUDE.md` or `AGENTS.md` so your agent uses amenbo efficiently:
