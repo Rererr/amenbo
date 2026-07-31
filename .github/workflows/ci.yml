@@ -53,7 +53,11 @@ jobs:
       # 追加の緩和なしで検出する。ネイティブビルド依存の再混入をこのデフォルトブロックで検出する。
       - run: pnpm install
       - run: pnpm run build
+      # 2つのeraスモークを同じジョブに並べているのは、distを1度ビルドすれば両方に使え、
+      # かつ「片方のeraに倒れる退行」を隣り合わせで検出できるため(別ジョブに分けると
+      # 一方だけ落ちたときにera判定の退行だと気づきにくい)。
       - run: node scripts/mcp-init-smoke.mjs
+      - run: node scripts/mcp-modern-smoke.mjs
 
   e2e:
     runs-on: ubuntu-latest
