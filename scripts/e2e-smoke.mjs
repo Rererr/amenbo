@@ -111,15 +111,18 @@ function textOf(result) {
     .join("\n");
 }
 
+const WIKIPEDIA_TABLE_URL = "https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7";
+const AOZORA_URL = "https://www.aozora.gr.jp/cards/000148/files/789_14547.html";
+
 const CASES = [
   {
     id: "wikipedia-table",
-    url: "https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7",
+    url: WIKIPEDIA_TABLE_URL,
     check: (text) => /^\|.*\|$/m.test(text) || "Markdown表(|区切り)が含まれていない",
   },
   {
     id: "aozora-shiftjis",
-    url: "https://www.aozora.gr.jp/cards/000148/files/789_14547.html",
+    url: AOZORA_URL,
     check: (text) => text.includes("吾輩") || "文字化けの疑い(「吾輩」を含まない)",
   },
   {
@@ -138,9 +141,74 @@ const CASES = [
   },
 ];
 
+async function callText(s, name, args) {
+  const resp = await s.rpc("tools/call", { name, arguments: args }, CALL_TIMEOUT_MS);
+  if (resp.error) throw new Error(`RPCエラー ${JSON.stringify(resp.error).slice(0, 300)}`);
+  if (resp.result?.isError) throw new Error(`isError=true ${textOf(resp.result).slice(0, 300)}`);
+  return textOf(resp.result);
+}
+
+/** 応答ヘッダ行(`key: value`)の値を取り出す。 */
+function fieldOf(text, key) {
+  return text.match(new RegExp(`^${key}: (.+)$`, "m"))?.[1];
+}
+
+// amenboの主機能(段階開示・再取得の節約・sitemap優先)は単発のfetchでは1つも通らないため、
+// 取得ケースとは別に置く。CASESの後に同一セッションで走らせ、温まったキャッシュを再利用する
+// (段階開示と再検証はどちらも「2回目の取得」でしか現れないため、新しい取得先を増やさずに済む)。
+const ZENN_URL = "https://zenn.dev/";
+const FEATURE_CHECKS = [
+  {
+    id: "outline-section",
+    async run(s) {
+      const outline = await callText(s, "fetch", { url: WIKIPEDIA_TABLE_URL, mode: "outline" });
+      if (fieldOf(outline, "mode_used") !== "outline") return `mode_usedがoutlineでない: ${fieldOf(outline, "mode_used")}`;
+      const total = Number.parseInt(fieldOf(outline, "total_tokens") ?? "", 10);
+      const sectionId = outline.match(/\[(s\d+)\]/)?.[1];
+      if (sectionId === undefined) return "outlineに節ID([sN])が含まれていない";
+
+      const section = await callText(s, "fetch", { url: WIKIPEDIA_TABLE_URL, section: sectionId });
+      if (fieldOf(section, "section") !== sectionId) return `section指定が反映されていない: ${fieldOf(section, "section")}`;
+      const tokens = Number.parseInt(fieldOf(section, "tokens") ?? "", 10);
+      if (!(tokens > 0 && total > 0 && tokens < total)) {
+        return `節のトークン(${tokens})が全体(${total})を下回っていない(段階開示が効いていない)`;
+      }
+      console.log(`OK outline-section: 全体${total}tok → 節${sectionId}のみ${tokens}tok`);
+      return null;
+    },
+  },
+  {
+    id: "conditional-get",
+    async run(s) {
+      // AMENBO_CACHE_TTL_MS=1 で起動しているため、2回目は必ずTTL超過となり再検証へ入る。
+      const again = await callText(s, "fetch", { url: AOZORA_URL });
+      const cache = fieldOf(again, "cache");
+      const tier = fieldOf(again, "fetch_tier");
+      if (cache !== "revalidated") return `2回目の取得がrevalidatedでない: cache=${cache}(304での再検証が効いていない)`;
+      if (tier !== "cache") return `本文を取り直している: fetch_tier=${tier}`;
+      console.log(`OK conditional-get: cache=${cache} fetch_tier=${tier}(本文の再転送なし)`);
+      return null;
+    },
+  },
+  {
+    id: "links-sitemap",
+    async run(s) {
+      const text = await callText(s, "links", { url: ZENN_URL });
+      const source = fieldOf(text, "source");
+      if (source !== "sitemap") return `sitemap優先で引けていない: source=${source}`;
+      const count = Number.parseInt(fieldOf(text, "count") ?? "", 10);
+      if (!(count > 0)) return `リンクが0件(count=${fieldOf(text, "count")})`;
+      console.log(`OK links-sitemap: source=${source} count=${count}`);
+      return null;
+    },
+  },
+];
+
 async function main() {
   const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-e2e-"));
-  const s = mcpSession("node", [SERVER_PATH], { AMENBO_CACHE_DIR: cacheDir });
+  // TTLを1msにするのはconditional-getのため。取得ケースは毎回新しいキャッシュディレクトリで
+  // 1回ずつしか叩かないので、この指定でCASES側の挙動は変わらない(すべてmissのまま)。
+  const s = mcpSession("node", [SERVER_PATH], { AMENBO_CACHE_DIR: cacheDir, AMENBO_CACHE_TTL_MS: "1" });
   const failures = [];
   try {
     await initSession(s);
@@ -173,6 +241,19 @@ async function main() {
         console.log(`NG ${c.id}: ${String(e)}`);
       }
     }
+    for (const f of FEATURE_CHECKS) {
+      try {
+        const failure = await f.run(s);
+        if (failure !== null) {
+          failures.push(`${f.id}: ${failure}`);
+          console.log(`NG ${f.id}: ${failure}`);
+        }
+      } catch (e) {
+        failures.push(`${f.id}: ${String(e)}`);
+        console.log(`NG ${f.id}: ${String(e)}`);
+      }
+    }
+
     try {
       const legacyProgress = await probeProgress(s, undefined);
       if (legacyProgress === 0) {
@@ -201,7 +282,7 @@ async function main() {
     for (const f of failures) console.error(`  - ${f}`);
     process.exit(1);
   }
-  console.log(`\nOK: 取得${CASES.length}件 + 進捗通知2era すべて成功`);
+  console.log(`\nOK: 取得${CASES.length}件 + 主機能${FEATURE_CHECKS.length}件 + 進捗通知2era すべて成功`);
 }
 
 main().catch((e) => {
