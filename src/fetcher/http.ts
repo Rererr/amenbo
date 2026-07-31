@@ -158,6 +158,22 @@ export function assertHttpScheme(urlStr: string): URL {
  * 実接続については下記「TOCTOU対策」のssrfSafeLookupで接続時点そのものを検証しており、
  * この関数はスキーム検証と早期の分かりやすいエラーメッセージのための一次防御にあたる。
  */
+/**
+ * アドレス判定の差し替え点。既定は本番の判定そのもので、テストがループバック上の
+ * フィクスチャサーバーへ実HTTPで到達するためだけに差し替える。
+ *
+ * 環境変数のような利用者から触れる緩和手段にしていないのは、公開物にSSRF保護を
+ * 弱める手段を常設したくないため。この関数を呼べる時点で同一プロセス内でコードを
+ * 実行できており、防御水準は変わらない(politenessのnow/sleep注入、ssrfProxyの
+ * resolve注入と同じ、テスト容易性のための内部seam)。
+ */
+let blockAddress: (address: string) => boolean = isPrivateOrReservedIp;
+
+/** テスト専用。nullで本番の判定へ戻す(テストのafterEachで必ず戻すこと)。 */
+export function setAddressPolicyForTests(policy: ((address: string) => boolean) | null): void {
+  blockAddress = policy ?? isPrivateOrReservedIp;
+}
+
 export async function guardPublicAddress(urlStr: string): Promise<void> {
   const url = assertHttpScheme(urlStr);
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
@@ -181,7 +197,7 @@ export async function guardPublicAddress(urlStr: string): Promise<void> {
   }
 
   for (const address of addresses) {
-    if (isPrivateOrReservedIp(address)) {
+    if (blockAddress(address)) {
       throw new PrivateAddressError(urlStr, address);
     }
   }
@@ -208,7 +224,7 @@ const ssrfSafeLookup: LookupFunction = (hostname, options, callback) => {
       return;
     }
 
-    const safeAddresses = addresses.filter((entry) => !isPrivateOrReservedIp(entry.address));
+    const safeAddresses = addresses.filter((entry) => !blockAddress(entry.address));
     if (safeAddresses.length === 0) {
       const blockedAddress = addresses[0]?.address ?? hostname;
       callback(new PrivateAddressError(hostname, blockedAddress) as unknown as NodeJS.ErrnoException, "", 0);
