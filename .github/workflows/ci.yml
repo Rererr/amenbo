@@ -58,15 +58,3 @@ jobs:
       # 一方だけ落ちたときにera判定の退行だと気づきにくい)。
       - run: node scripts/mcp-init-smoke.mjs
       - run: node scripts/mcp-modern-smoke.mjs
-
-  e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "26"
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: node scripts/e2e-smoke.mjs

@@ -1,0 +1,31 @@
+name: E2E (実URL)
+
+# 実在サイトを叩くため、push/PR毎には走らせない。低負荷を掲げるツールの検証が
+# 収集先へ毎回出ていくのは筋が通らず、相手サイトの都合(WAF・改装・障害)で
+# 無関係な変更が赤くなる問題もある。
+#
+# push毎に守るのはローカルのフィクスチャサーバーに対する統合テスト
+# (tests/httpFixtureIntegration.test.ts)で、HTTP層は決定的・オフラインで検証できる。
+# こちらはフィクスチャでは作れない現実の逸脱(charset宣言の誤り・CDNヘッダ・圧縮・
+# リダイレクト・実サイトのsitemap方言)を見るための定点観測として、
+# リリース直前(タグ)と週1、あとは手動で回す。
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    # 毎週月曜 06:00 JST(日曜 21:00 UTC)
+    - cron: "0 21 * * 0"
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "26"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/e2e-smoke.mjs

@@ -38,6 +38,9 @@ v0.5.1 では GitHub / Zenodo のみ公開し、npm と MCP Registry は 0.5.0 �
 - [ ] `node scripts/mcp-init-smoke.mjs`（2025系）と `node scripts/mcp-modern-smoke.mjs`（2026-07-28）が
       **両方**通る — 片方だけ通る状態は、SDK の era 判定がどちらかに倒れた退行を意味する。
       ユニットテストは InMemoryTransport 直結のため 2025 系しか通らず、ここを省くと新era側が無検証になる
+- [ ] `node scripts/e2e-smoke.mjs`（実URL）が通る — タグ push でも `e2e.yml` が自動実行するが、
+      落ちてから気づくとタグを打ち直すことになるため先に手元で通す。実サイト相手なので
+      push 毎には走っていない（push 毎に走るのはローカルのフィクスチャに対する統合テスト）
 - [ ] `npm pack --dry-run` で tarball の中身と版数を確認（`files: ["dist"]` のため dist のみ）
 - [ ] **リリースに含めたい変更が全てタグ対象コミットに入っているか確認**
       — v0.5.1 では README への DOI バッジ追加がタグの後に入り、npm の README と
