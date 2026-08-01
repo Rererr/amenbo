@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { InvalidUrlError, PrivateAddressError } from "../src/errors.js";
+import { InvalidUrlError, PrivateAddressError, RobotsDeniedError } from "../src/errors.js";
 import { isChromiumHttp2NavigationError, navigateSafely } from "../src/fetcher/browser.js";
 
 /**
@@ -191,6 +191,40 @@ describe("navigateSafely", () => {
     const response = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000);
     expect(response?.status()).toBe(200);
     expect(page.url()).toBe("http://93.184.216.34/c");
+  });
+});
+
+describe("navigateSafely - 別オリジンへのリダイレクト時のrobots.txt確認", () => {
+  it("別オリジンへ着地する場合のみcheckRobotsが呼ばれる", async () => {
+    const page = new FakePage();
+    page.redirects.set("http://93.184.216.34/a", "http://93.184.216.34/b"); // 同一オリジン
+    page.redirects.set("http://93.184.216.34/b", "http://8.8.8.8/c"); // 別オリジン
+    const checkRobots = vi.fn(async () => {});
+
+    await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000, { checkRobots });
+
+    expect(checkRobots.mock.calls.map((call) => call[0])).toEqual(["http://8.8.8.8/c"]);
+  });
+
+  it("着地先がrobots.txtで拒否された場合はナビゲーションが失敗する", async () => {
+    const page = new FakePage();
+    page.redirects.set("http://93.184.216.34/a", "http://8.8.8.8/blocked");
+    const checkRobots = vi.fn(async (url: string) => {
+      throw new RobotsDeniedError(url);
+    });
+
+    await expect(
+      navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000, { checkRobots }),
+    ).rejects.toThrow(RobotsDeniedError);
+  });
+
+  it("checkRobots未指定なら従来通りSSRF検証のみで通過する(後方互換)", async () => {
+    const page = new FakePage();
+    page.redirects.set("http://93.184.216.34/a", "http://8.8.8.8/c");
+
+    const response = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000);
+
+    expect(response?.status()).toBe(200);
   });
 });
 

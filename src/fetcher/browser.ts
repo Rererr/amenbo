@@ -324,8 +324,14 @@ function guardRequestUrl(rawUrl: string, hostGuardCache: Map<string, Promise<voi
  * Playwright側では現実的に組み込めないため、遷移前検証+リクエスト時の再検証という
  * 「可能な範囲」の対策にとどめる。
  */
-export async function navigateSafely(page: Page, url: string, timeoutMs: number): Promise<PlaywrightResponse | null> {
+export async function navigateSafely(
+  page: Page,
+  url: string,
+  timeoutMs: number,
+  options: SafeNavigationOptions = {},
+): Promise<PlaywrightResponse | null> {
   await guardPublicAddress(url);
+  const initialOrigin = new URL(url).origin;
 
   let blockedError: AmenboError | null = null;
   const hostGuardCache = new Map<string, Promise<void>>();
@@ -335,6 +341,12 @@ export async function navigateSafely(page: Page, url: string, timeoutMs: number)
     try {
       if (isMainFrameNavigation) {
         await guardPublicAddress(requestUrl);
+        // HTTP層(guardedFetch)は別オリジンへのリダイレクト着地でrobots.txtを再確認するのに、
+        // ブラウザ層はSSRFしか見ていなかった。同じリダイレクトでも取得経路が違うだけで
+        // 拒否されたりされなかったりするため、判定を揃える。
+        if (options.checkRobots && new URL(requestUrl).origin !== initialOrigin) {
+          await options.checkRobots(requestUrl);
+        }
       } else {
         await guardRequestUrl(requestUrl, hostGuardCache);
       }
@@ -385,6 +397,14 @@ export interface BrowserNavigation {
   response: PlaywrightResponse | null;
 }
 
+export interface SafeNavigationOptions {
+  /**
+   * メインフレームが別オリジンへ遷移した際に呼ばれるrobots.txt確認
+   * (fetcher/http.tsのHttpGetOptions.checkRobotsと同じ役割)。拒否時はそのまま伝播する。
+   */
+  checkRobots?: ((url: string) => Promise<void>) | undefined;
+}
+
 /**
  * 共有chromiumでcontext/pageを作りnavigateSafelyでナビゲーションする。ERR_HTTP2_PROTOCOL_ERROR系
  * で失敗した場合のみ、システムのGoogle Chromeへ1回だけフォールバックする。
@@ -399,12 +419,13 @@ export async function openPageAndNavigate(
   url: string,
   timeoutMs: number,
   contextOptions: BrowserContextOptions = {},
+  navigationOptions: SafeNavigationOptions = {},
 ): Promise<BrowserNavigation> {
   const primaryBrowser = await getBrowser();
   const primaryContext = await primaryBrowser.newContext(contextOptions);
   try {
     const page = await primaryContext.newPage();
-    const response = await navigateSafely(page, url, timeoutMs);
+    const response = await navigateSafely(page, url, timeoutMs, navigationOptions);
     return { context: primaryContext, page, response };
   } catch (primaryError) {
     await primaryContext.close().catch(() => {});
@@ -431,7 +452,7 @@ export async function openPageAndNavigate(
 
     try {
       const page = await chromeContext.newPage();
-      const response = await navigateSafely(page, url, timeoutMs);
+      const response = await navigateSafely(page, url, timeoutMs, navigationOptions);
       return { context: chromeContext, page, response };
     } catch (fallbackError) {
       await chromeContext.close().catch(() => {});
@@ -441,8 +462,12 @@ export async function openPageAndNavigate(
 }
 
 /** Playwrightでページをレンダリングし、レンダリング後のHTMLを取得する。 */
-export async function fetchWithBrowser(url: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<BrowserFetchResult> {
-  const { context, page, response } = await openPageAndNavigate(url, timeoutMs, { userAgent: USER_AGENT });
+export async function fetchWithBrowser(
+  url: string,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  navigationOptions: SafeNavigationOptions = {},
+): Promise<BrowserFetchResult> {
+  const { context, page, response } = await openPageAndNavigate(url, timeoutMs, { userAgent: USER_AGENT }, navigationOptions);
   try {
     await hideConsentBanners(page).catch(() => {
       // ページ評価に失敗しても取得自体は継続する(ベストエフォート)
