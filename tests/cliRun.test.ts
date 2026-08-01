@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -94,6 +94,13 @@ afterEach(() => {
   stderrSpy.mockRestore();
 });
 
+/** outDir配下に保存された唯一のファイル名を返す(ファイル名にはURL由来のハッシュが入る)。 */
+function onlySavedName(dir: string): string {
+  const names = readdirSync(dir);
+  expect(names).toHaveLength(1);
+  return names[0]!;
+}
+
 describe("run() - CLIサブコマンドの主要経路", () => {
   it("正常なfetchはexit code 0で終了し、TextBlockを標準出力へ書く", async () => {
     handleFetchToolMock.mockResolvedValue([{ type: "text", text: "hello" }]);
@@ -151,7 +158,7 @@ describe("run() - CLIサブコマンドの主要経路", () => {
     const exitCode = await run(["screenshot", "https://example.com/", "--out-dir", outDir]);
 
     expect(exitCode).toBe(0);
-    const expectedPath = join(outDir, "amenbo-example.com-1.png");
+    const expectedPath = join(outDir, onlySavedName(outDir));
     expect(readFileSync(expectedPath)).toEqual(pngBytes);
     const writtenChunks = stdoutSpy.mock.calls.map((call) => String(call[0])).join("");
     expect(writtenChunks).toContain(expectedPath);
@@ -167,7 +174,8 @@ describe("run() - CLIサブコマンドの主要経路", () => {
     const exitCode = await run(["fetch", "https://example.com/"]);
 
     expect(exitCode).toBe(0);
-    const expectedPath = join(cacheDir, "screenshots-cli", "amenbo-example.com-1.png");
+    const screenshotsDir = join(cacheDir, "screenshots-cli");
+    const expectedPath = join(screenshotsDir, onlySavedName(screenshotsDir));
     expect(readFileSync(expectedPath)).toEqual(pngBytes);
     const writtenChunks = stdoutSpy.mock.calls.map((call) => String(call[0])).join("");
     expect(writtenChunks).toContain(expectedPath);
@@ -180,7 +188,7 @@ describe("run() - CLIサブコマンドの主要経路", () => {
     const exitCode = await run(["fetch", "https://example.com/", "--out-dir", outDir]);
 
     expect(exitCode).toBe(0);
-    const expectedPath = join(outDir, "amenbo-example.com-1.png");
+    const expectedPath = join(outDir, onlySavedName(outDir));
     expect(readFileSync(expectedPath)).toEqual(pngBytes);
   });
 
@@ -264,7 +272,12 @@ describe("run() - CLIサブコマンドの主要経路", () => {
 });
 
 describe("writeBlocks() - ImageBlockのファイル保存とパス生成", () => {
-  it("複数のImageBlockは連番付きファイル名(amenbo-<hostname>-<連番>.png)で保存される", () => {
+  /** outDir配下のPNGファイル名を列挙する。 */
+  function savedNames(dir: string): string[] {
+    return readdirSync(dir).sort();
+  }
+
+  it("複数のImageBlockは連番付きファイル名(amenbo-<hostname>-<URLハッシュ>-<連番>.png)で保存される", () => {
     const dir = mkdtempSync(join(tmpdir(), "amenbo-write-blocks-test-"));
     try {
       const png1 = Buffer.from([1, 2, 3]);
@@ -279,10 +292,41 @@ describe("writeBlocks() - ImageBlockのファイル保存とパス生成", () =>
         dir,
       );
 
-      const path1 = join(dir, "amenbo-blog.example.co.jp-1.png");
-      const path2 = join(dir, "amenbo-blog.example.co.jp-2.png");
-      expect(readFileSync(path1)).toEqual(png1);
-      expect(readFileSync(path2)).toEqual(png2);
+      const names = savedNames(dir);
+      expect(names).toHaveLength(2);
+      expect(names[0]).toMatch(/^amenbo-blog\.example\.co\.jp-[0-9a-f]{8}-1\.png$/);
+      expect(readFileSync(join(dir, names[0]!))).toEqual(png1);
+      expect(readFileSync(join(dir, names[1]!))).toEqual(png2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("同じホストの別ページを同じout-dirへ保存しても上書きしない", () => {
+    const dir = mkdtempSync(join(tmpdir(), "amenbo-write-blocks-test-"));
+    try {
+      const first = Buffer.from([1]);
+      const second = Buffer.from([2]);
+      writeBlocks([{ type: "image", data: first.toString("base64"), mimeType: "image/png" }], "https://example.com/a", dir);
+      writeBlocks([{ type: "image", data: second.toString("base64"), mimeType: "image/png" }], "https://example.com/b", dir);
+
+      const names = savedNames(dir);
+      expect(names).toHaveLength(2);
+      expect(new Set(names.map((name) => readFileSync(join(dir, name)).toString("hex")))).toEqual(new Set(["01", "02"]));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("同じURLの撮り直しは同じファイル名になる(これまで通り上書きされる)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "amenbo-write-blocks-test-"));
+    try {
+      writeBlocks([{ type: "image", data: Buffer.from([1]).toString("base64"), mimeType: "image/png" }], "https://example.com/a", dir);
+      writeBlocks([{ type: "image", data: Buffer.from([2]).toString("base64"), mimeType: "image/png" }], "https://example.com/a", dir);
+
+      const names = savedNames(dir);
+      expect(names).toHaveLength(1);
+      expect(readFileSync(join(dir, names[0]!))).toEqual(Buffer.from([2]));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -293,7 +337,9 @@ describe("writeBlocks() - ImageBlockのファイル保存とパス生成", () =>
     try {
       const png = Buffer.from([9]);
       writeBlocks([{ type: "image", data: png.toString("base64"), mimeType: "image/png" }], "not a url", dir);
-      expect(readFileSync(join(dir, "amenbo-page-1.png"))).toEqual(png);
+      const names = savedNames(dir);
+      expect(names[0]).toMatch(/^amenbo-page-[0-9a-f]{8}-1\.png$/);
+      expect(readFileSync(join(dir, names[0]!))).toEqual(png);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

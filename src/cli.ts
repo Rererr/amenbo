@@ -15,6 +15,7 @@
  *   共有する。CLIは1コマンド=1プロセスのため、politenessのドメイン毎レート制御は
  *   core.ts側でcacheをstoreとして注入したPolitenessManagerがプロセス間永続化する。
  */
+import { createHash } from "node:crypto";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -322,7 +323,7 @@ function resolveFetchScreenshotDir(): string {
   return join(resolveCacheDir(), "screenshots-cli");
 }
 
-/** ファイル名として安全なホスト名(取れなければ"page")。amenbo-<hostname>-<連番>.pngの命名に使う。 */
+/** ファイル名として安全なホスト名(取れなければ"page")。amenbo-<hostname>-<URLハッシュ>-<連番>.pngの命名に使う。 */
 function hostnameForFilename(url: string): string {
   try {
     return new URL(url).hostname.replace(/[^A-Za-z0-9.-]/g, "_") || "page";
@@ -334,6 +335,10 @@ function hostnameForFilename(url: string): string {
 /** TextBlockは標準出力へ、ImageBlockはoutDir配下へ保存しパスを列挙する。テスト用export。 */
 export function writeBlocks(blocks: Array<TextBlock | ImageBlock>, url: string, outDir: string): void {
   const hostname = hostnameForFilename(url);
+  // 同じホストの別ページを同じ--out-dirへ撮ると、連番だけでは同名になり前回の画像を
+  // 黙って上書きしてしまう。URLごとに短いハッシュを挟んで衝突を避ける
+  // (同じURLの撮り直しは同じ名前になり、これまで通り上書きされる)。
+  const urlDigest = createHash("sha256").update(url).digest("hex").slice(0, 8);
   const savedPaths: string[] = [];
   let sequence = 0;
 
@@ -347,7 +352,7 @@ export function writeBlocks(blocks: Array<TextBlock | ImageBlock>, url: string, 
       mkdirSync(outDir, { recursive: true });
     }
     const extension = block.mimeType === "image/png" ? "png" : "bin";
-    const filePath = join(outDir, `amenbo-${hostname}-${sequence}.${extension}`);
+    const filePath = join(outDir, `amenbo-${hostname}-${urlDigest}-${sequence}.${extension}`);
     writeFileSync(filePath, Buffer.from(block.data, "base64"));
     savedPaths.push(filePath);
   }
