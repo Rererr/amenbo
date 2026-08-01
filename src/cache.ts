@@ -119,6 +119,7 @@ interface PreparedStatements {
   deletePagesExpired: StatementSync;
   deleteDomainPagesExpired: StatementSync;
   deleteHostRequestsExpired: StatementSync;
+  deleteRobotsExpired: StatementSync;
   selectScreenshotsExpired: StatementSync;
   deleteScreenshotsExpired: StatementSync;
   getPage: StatementSync;
@@ -245,6 +246,7 @@ export class PageCache {
       deletePagesExpired: this.db.prepare("DELETE FROM pages WHERE fetched_at < ?"),
       deleteDomainPagesExpired: this.db.prepare("DELETE FROM domain_pages WHERE fetched_at < ?"),
       deleteHostRequestsExpired: this.db.prepare("DELETE FROM host_requests WHERE last_request_at < ?"),
+      deleteRobotsExpired: this.db.prepare("DELETE FROM robots_cache WHERE fetched_at < ?"),
       selectScreenshotsExpired: this.db.prepare("SELECT * FROM screenshots WHERE fetched_at < ?"),
       deleteScreenshotsExpired: this.db.prepare("DELETE FROM screenshots WHERE fetched_at < ?"),
       getPage: this.db.prepare("SELECT * FROM pages WHERE url = ?"),
@@ -336,6 +338,9 @@ export class PageCache {
     // code-reviewer指摘: host_requestsもM3の対象から漏れていた(訪問ホスト毎に1行増える
     // 無制限増加テーブルという点でdomain_pages等と同じ性質を持つため、他テーブルと一貫させる)。
     this.statements.deleteHostRequestsExpired.run(cutoff);
+    // robots_cacheも同じ性質(オリジン毎に1行)なのに掃除対象から漏れていた。
+    // 消えてもPolitenessManager側が取得し直すだけなので、他テーブルと同じTTLで揃える。
+    this.statements.deleteRobotsExpired.run(cutoff);
 
     const expiredScreenshots = this.statements.selectScreenshotsExpired.all(cutoff) as unknown as ScreenshotRow[];
     for (const row of expiredScreenshots) {

@@ -473,4 +473,28 @@ describe("PageCache - robots_cache(politenessのプロセス間robots.txtキャ�
     expect(cache2.getRobotsCache("https://example.com")).toEqual({ body: "永続化テスト", fetchedAt: 555 });
     cache2.close();
   });
+
+  it("M3: TTL超過したrobots_cacheエントリは起動時に削除される(オリジン毎に増える他テーブルと同じ扱い)", () => {
+    let now = 1_000_000;
+    const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    cache1.setRobotsCache("https://old.example.com", "body", now);
+    cache1.close();
+
+    now += 20 * 60 * 1000; // TTL(15分)超過
+    const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    expect(cache2.getRobotsCache("https://old.example.com")).toBeNull();
+    cache2.close();
+  });
+
+  it("M3: TTL内のrobots_cacheエントリは起動時に削除されない", () => {
+    let now = 1_000_000;
+    const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    cache1.setRobotsCache("https://fresh.example.com", "body", now);
+    cache1.close();
+
+    now += 5 * 60 * 1000; // TTL(15分)以内
+    const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    expect(cache2.getRobotsCache("https://fresh.example.com")).toEqual({ body: "body", fetchedAt: 1_000_000 });
+    cache2.close();
+  });
 });
