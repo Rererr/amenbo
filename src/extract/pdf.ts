@@ -50,10 +50,19 @@ export function assertPdfSizeWithinLimit(url: string, byteLength: number, maxByt
   }
 }
 
+/**
+ * pdf.jsはdataに渡したバイト列の下敷きのArrayBufferをワーカーへtransferするため、
+ * 呼び出し元の配列がその場でdetachされる(byteLengthが0になる)。テキスト層が無いPDFで
+ * 同じバイト列を画像化しようとすると必ず失敗していたため、渡す前に複製する。
+ */
+function toOwnedCopy(bytes: Uint8Array): Uint8Array {
+  return new Uint8Array(bytes);
+}
+
 /** PDFバイト列からテキスト層を抽出する。実質的にテキストが無ければhasTextLayer=false。 */
 export async function extractPdfText(bytes: Uint8Array): Promise<PdfTextResult> {
   // verbosity: 0 (ERRORS)にしてpdf.jsの警告ログでstdout/stderrを汚さないようにする
-  const loadingTask = getDocument({ data: bytes, useSystemFonts: true, verbosity: 0 });
+  const loadingTask = getDocument({ data: toOwnedCopy(bytes), useSystemFonts: true, verbosity: 0 });
   try {
     const doc = await loadingTask.promise;
     const pageCount = doc.numPages;
@@ -93,7 +102,7 @@ export interface PdfPageImage {
 /** テキスト層が無いPDFのフォールバック: 各ページをPNGにラスタライズする(先頭MAX_RENDER_PAGESまで)。 */
 export async function renderPdfPages(bytes: Uint8Array): Promise<PdfPageImage[]> {
   // verbosity: 0 (ERRORS)にしてpdf.jsの警告ログでstdout/stderrを汚さないようにする
-  const loadingTask = getDocument({ data: bytes, useSystemFonts: true, verbosity: 0 });
+  const loadingTask = getDocument({ data: toOwnedCopy(bytes), useSystemFonts: true, verbosity: 0 });
   try {
     const doc = await loadingTask.promise;
     const pageCount = Math.min(doc.numPages, MAX_RENDER_PAGES);
