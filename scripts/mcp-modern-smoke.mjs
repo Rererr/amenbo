@@ -80,7 +80,15 @@ async function checkModernSession() {
       fail(`prompts/list が想定外です: ${promptNames.join(",")}`, s);
     }
 
-    console.log(`OK: modern era (${MODERN_VERSION}) — tools=${names.join(",")} prompts=${promptNames.join(",")}`);
+    // 一覧が引けるだけでは、新eraでツールを1本も呼べない状態を見逃す。
+    // ネットワークへ出ないよう、スキーム検証で確実に弾かれるURLで呼び出し経路だけを確認する。
+    const call = await s.rpc("tools/call", { name: "fetch", arguments: { url: "file:///etc/passwd" } });
+    if (call.error) fail(`tools/call がプロトコルエラーになりました: ${JSON.stringify(call.error)}`, s);
+    if (call.result?.isError !== true) {
+      fail(`非対応スキームがツールエラーになりません: ${JSON.stringify(call.result).slice(0, 300)}`, s);
+    }
+
+    console.log(`OK: modern era (${MODERN_VERSION}) — tools=${names.join(",")} prompts=${promptNames.join(",")} tools/call=isError`);
   } finally {
     s.child.kill();
     rmSync(cacheDir, { recursive: true, force: true });
