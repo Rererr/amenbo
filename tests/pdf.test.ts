@@ -63,11 +63,37 @@ describe("extractPdfText(fixtureベース)", () => {
     expect(markdown).toContain("## ページ 1");
   });
 
+  it("ページ数上限を超えるPDFは先頭から打ち切り、抽出ページ数を申告する", async () => {
+    // 20MBのバイト上限は処理時間を抑えない(実測: 30,000ページ・9.8MBで92.5秒)。
+    // 打ち切ったこと自体は応答へ出すので、利用者は続きの有無を判断できる。
+    const bytes = fixture("sample-multipage.pdf");
+    const full = await extractPdfText(bytes);
+    const limited = await extractPdfText(bytes, { maxPages: 2 });
+
+
+    expect(full.pageCount).toBe(3);
+    expect(limited.pageCount).toBe(3); // 総ページ数は本来の値のまま申告する
+    expect(limited.extractedPageCount).toBe(2);
+    expect(limited.pages).toHaveLength(2);
+    expect(full.extractedPageCount).toBe(3);
+  });
+
   it("テキスト層の無いPDF(スキャン相当)はhasTextLayer=falseになる", async () => {
     const bytes = fixture("sample-blank.pdf");
     const result = await extractPdfText(bytes);
     expect(result.hasTextLayer).toBe(false);
     expect(result.pages).toEqual([]);
+  });
+
+  it("テキスト抽出は渡されたバイト列を壊さず、同じ配列で画像化まで続けられる", async () => {
+    // 実際の経路(handlePdfFetch)は同じバイト列でテキスト抽出→画像化と続けるため、
+    // 抽出側がバッファをdetachするとスキャンPDFのフォールバックが必ず失敗する。
+    const bytes = fixture("sample-blank.pdf");
+    const result = await extractPdfText(bytes);
+
+    expect(result.hasTextLayer).toBe(false);
+    expect(bytes.byteLength).toBeGreaterThan(0);
+    await expect(renderPdfPages(bytes)).resolves.not.toHaveLength(0);
   });
 });
 

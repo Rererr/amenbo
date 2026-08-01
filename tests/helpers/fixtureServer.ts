@@ -14,6 +14,8 @@ import type { AddressInfo } from "node:net";
 const PDF_BYTES = readFileSync(new URL("../fixtures/sample-text.pdf", import.meta.url));
 
 const ETAG = '"fixture-v1"';
+/** /target-a と /target-b が共有するETag(リソース間でETagが一意でない状況の再現用)。 */
+const SHARED_ETAG = '"shared-v1"';
 const LAST_MODIFIED = "Wed, 03 Jul 2024 18:34:01 GMT";
 
 const EN_ARTICLE = `<!DOCTYPE html>
@@ -90,17 +92,39 @@ const ETAG_HTML = `<!DOCTYPE html>
 成り立ちません。そのため、通常の記事と同程度の段落数を置いています。</p>
 </article></body></html>`;
 
+/** 本文抽出の対象として扱われる分量の記事を作る(短いとブラウザ層へ昇格して取得回数が増える)。 */
+function article(title: string, marker: string): string {
+  return `<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><title>${title}</title></head>
+<body><article><h1>${title}</h1>
+<p>${marker} この段落はどのURLの本文が返っているかを見分けるための目印を含みます。
+取得側がどの表現をキャッシュから返したのかを、内容そのもので判定できるようにしています。</p>
+<h2>この分量である理由</h2>
+<p>短すぎる本文は抽出の品質が低いと判定され、描画を伴う取得へ切り替わることがあります。
+そうなると同じページへの取得が余分に発生し、何回サーバーへ行ったかを数える検証が
+成り立ちません。そのため、通常の記事と同程度の段落数を置いています。</p>
+<p>内容そのものは検証結果に影響しませんが、本文抽出の対象として扱われる程度の分量が必要です。
+段落を複数置くことで、抽出器が本文領域を安定して選べるようにしています。</p>
+</article></body></html>`;
+}
+
 export interface FixtureServer {
   origin: string;
   /** パス毎のリクエスト回数(条件付きGETで実際に再取得したかの確認に使う)。 */
   hits: Map<string, number>;
   /** 最後に受け取ったIf-None-Matchヘッダ(条件付きGETが送られたかの確認に使う)。 */
   lastIfNoneMatch: string | undefined;
+  /** /moving のリダイレクト先パス(テストから差し替えて着地先の変化を模す)。 */
+  redirectTarget: string;
   close(): Promise<void>;
 }
 
 export async function startFixtureServer(): Promise<FixtureServer> {
-  const state: Pick<FixtureServer, "hits" | "lastIfNoneMatch"> = { hits: new Map(), lastIfNoneMatch: undefined };
+  const state: Pick<FixtureServer, "hits" | "lastIfNoneMatch" | "redirectTarget"> = {
+    hits: new Map(),
+    lastIfNoneMatch: undefined,
+    redirectTarget: "/target-a",
+  };
 
   const server: Server = createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0] ?? "/";
@@ -143,6 +167,27 @@ export async function startFixtureServer(): Promise<FixtureServer> {
         send(200, "text/html; charset=utf-8", ETAG_HTML, headers);
         return;
       }
+      case "/concurrent.html":
+        send(200, "text/html; charset=utf-8", article("同時取得の対象", "CONCURRENT"));
+        return;
+      case "/moving":
+        // 着地先が変わるリダイレクト(条件付きGETの検証用)
+        send(302, "text/plain; charset=utf-8", "", { Location: `${origin}${state.redirectTarget}` });
+        return;
+      case "/target-a":
+      case "/target-b": {
+        // どちらも同じETagを返す。ETagはリソース間で一意である必要がないため、
+        // 着地先が変わっても304が返る状況をこれで再現する。
+        state.lastIfNoneMatch = req.headers["if-none-match"];
+        const headers = { ETag: SHARED_ETAG };
+        if (req.headers["if-none-match"] === SHARED_ETAG) {
+          send(304, "text/html; charset=utf-8", "", headers);
+          return;
+        }
+        const marker = path === "/target-a" ? "TARGET-A" : "TARGET-B";
+        send(200, "text/html; charset=utf-8", article(`移動先(${marker})`, marker), headers);
+        return;
+      }
       case "/denied/secret.html":
         // robots.txtで拒否されるため、ここへ到達した時点で検証は失敗している
         send(200, "text/html; charset=utf-8", "<html><body><p>到達してはいけない本文</p></body></html>");
@@ -162,6 +207,12 @@ export async function startFixtureServer(): Promise<FixtureServer> {
     },
     get lastIfNoneMatch() {
       return state.lastIfNoneMatch;
+    },
+    get redirectTarget() {
+      return state.redirectTarget;
+    },
+    set redirectTarget(target: string) {
+      state.redirectTarget = target;
     },
     close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
   };

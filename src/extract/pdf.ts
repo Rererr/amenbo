@@ -23,6 +23,12 @@ export const DEFAULT_PDF_MAX_BYTES = 20 * 1024 * 1024; // 20MB
 const MIN_TEXT_CHARS_PER_PAGE = 30;
 // 画像フォールバック時、トークン予算保護のため先頭N ページのみラスタライズする
 const MAX_RENDER_PAGES = 10;
+/**
+ * テキスト抽出するページ数の上限。20MBのバイト上限は処理時間を抑えない
+ * (実測: 30,000ページ・9.8MBのPDFで92.5秒。ページ数に対して超線形に伸びる)。
+ * 3,000ページなら約1秒で、統計年鑑のような大部の資料でも実用上到達しない水準。
+ */
+const MAX_TEXT_PAGES = 3000;
 const RENDER_SCALE = 1.5;
 
 export interface PdfTextResult {
@@ -30,6 +36,8 @@ export interface PdfTextResult {
   /** ページ毎のプレーンテキスト(hasTextLayer=falseの場合は空配列)。 */
   pages: string[];
   pageCount: number;
+  /** 実際にテキスト抽出したページ数(上限で打ち切った場合はpageCountより小さい)。 */
+  extractedPageCount: number;
   title: string | null;
 }
 
@@ -50,6 +58,11 @@ export function assertPdfSizeWithinLimit(url: string, byteLength: number, maxByt
   }
 }
 
+export interface ExtractPdfTextOptions {
+  /** テキスト抽出するページ数の上限(既定 MAX_TEXT_PAGES)。 */
+  maxPages?: number;
+}
+
 /**
  * pdf.jsはdataに渡したバイト列の下敷きのArrayBufferをワーカーへtransferするため、
  * 呼び出し元の配列がその場でdetachされる(byteLengthが0になる)。テキスト層が無いPDFで
@@ -60,16 +73,17 @@ function toOwnedCopy(bytes: Uint8Array): Uint8Array {
 }
 
 /** PDFバイト列からテキスト層を抽出する。実質的にテキストが無ければhasTextLayer=false。 */
-export async function extractPdfText(bytes: Uint8Array): Promise<PdfTextResult> {
+export async function extractPdfText(bytes: Uint8Array, options: ExtractPdfTextOptions = {}): Promise<PdfTextResult> {
   // verbosity: 0 (ERRORS)にしてpdf.jsの警告ログでstdout/stderrを汚さないようにする
   const loadingTask = getDocument({ data: toOwnedCopy(bytes), useSystemFonts: true, verbosity: 0 });
   try {
     const doc = await loadingTask.promise;
     const pageCount = doc.numPages;
+    const extractedPageCount = Math.min(pageCount, options.maxPages ?? MAX_TEXT_PAGES);
     const pages: string[] = [];
     let totalChars = 0;
 
-    for (let i = 1; i <= pageCount; i++) {
+    for (let i = 1; i <= extractedPageCount; i++) {
       const page = await doc.getPage(i);
       const content = await page.getTextContent();
       const pageText = content.items.map((item) => ("str" in item ? item.str : "")).join("");
@@ -81,9 +95,9 @@ export async function extractPdfText(bytes: Uint8Array): Promise<PdfTextResult> 
     const infoTitle = (metadata?.info as { Title?: string } | undefined)?.Title ?? "";
     const title = infoTitle.trim() || null;
 
-    const hasTextLayer = pageCount > 0 && totalChars / pageCount >= MIN_TEXT_CHARS_PER_PAGE;
+    const hasTextLayer = extractedPageCount > 0 && totalChars / extractedPageCount >= MIN_TEXT_CHARS_PER_PAGE;
 
-    return { hasTextLayer, pages: hasTextLayer ? pages : [], pageCount, title };
+    return { hasTextLayer, pages: hasTextLayer ? pages : [], pageCount, extractedPageCount, title };
   } finally {
     await loadingTask.destroy();
   }

@@ -86,6 +86,21 @@ describe("linksツールの優先順", () => {
   }, 30_000);
 });
 
+describe("同一URLへの同時取得", () => {
+  it("並行して呼んでも取得は1回にまとまる", async () => {
+    const url = `${server.origin}/concurrent.html`;
+
+    const [first, second] = await Promise.all([fetchText(url), fetchText(url)]);
+
+    // politenessは取得の「開始間隔」を空けるだけで取得自体は並行するため、
+    // まとめないと同じURLへ2回取りにいく(先に始まった取得が後から完了して
+    // 新しいキャッシュを古い内容で上書きする競合も同時に塞いでいる)。
+    expect(server.hits.get("/concurrent.html")).toBe(1);
+    expect(first).toContain("CONCURRENT");
+    expect(second).toContain("CONCURRENT");
+  }, 30_000);
+});
+
 describe("条件付きGET", () => {
   it("TTL超過後の再取得はIf-None-Matchを送り、304なら本文を取り直さない", async () => {
     const first = await fetchText(`${server.origin}/etag.html`);
@@ -102,5 +117,22 @@ describe("条件付きGET", () => {
     expect(server.lastIfNoneMatch).toBe('"fixture-v1"');
     // 304なので本文は取り直していないが、サーバーへの往復自体は2回発生している。
     expect(server.hits.get("/etag.html")).toBe(2);
+  }, 30_000);
+
+  it("リダイレクト先が変わっていたら、304でもキャッシュ済みの本文を返さない", async () => {
+    const url = `${server.origin}/moving`;
+
+    server.redirectTarget = "/target-a";
+    expect(await fetchText(url)).toContain("TARGET-A");
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    server.redirectTarget = "/target-b";
+    const second = await fetchText(url);
+
+    // ETagはリソース間で一意である必要がないため、着地先が変わっても304は返りうる。
+    // その304を素直に受けると、target-aの本文をtarget-bの内容として返してしまう。
+    expect(server.lastIfNoneMatch).toBeUndefined(); // 条件付きヘッダ無しで取り直している
+    expect(second).toContain("TARGET-B");
+    expect(second).not.toContain("TARGET-A");
   }, 30_000);
 });

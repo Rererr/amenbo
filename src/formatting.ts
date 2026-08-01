@@ -225,7 +225,14 @@ export function formatHandoffResponse(handoff: HandoffResult, maxTokens: number)
 
 // ---- PDF対応(URL判定で独立経路。mode/selector/section等は適用しない) ----
 
-export function formatPdfTextResponse(title: string | null, finalUrl: string, cacheStatus: "fresh" | "miss", pdfPageCount: number, paginated: PaginatedResult): string {
+export function formatPdfTextResponse(
+  title: string | null,
+  finalUrl: string,
+  cacheStatus: "fresh" | "miss",
+  pdfPageCount: number,
+  paginated: PaginatedResult,
+  extractedPageCount: number = pdfPageCount,
+): string {
   const header = [
     `title: ${title ?? "(なし)"}`,
     `url: ${finalUrl}`,
@@ -235,6 +242,10 @@ export function formatPdfTextResponse(title: string | null, finalUrl: string, ca
     `page: ${paginated.page} of ${paginated.totalPages}`,
     `fetch_tier: pdf`,
     `pdf_pages: ${pdfPageCount}`,
+    // 打ち切りは黙って行わない(利用者が続きの有無を判断できるようにする)
+    ...(extractedPageCount < pdfPageCount
+      ? [`pdf_pages_extracted: ${extractedPageCount}(ページ数上限のため先頭${extractedPageCount}ページのみ抽出。以降はcurl等での直接取得が必要)`]
+      : []),
     ...budgetExceededLine(paginated),
   ].join("\n");
   return `${header}\n\n${paginated.content}`;
@@ -246,5 +257,6 @@ export function formatPdfResponseFromCache(url: string, cached: CacheEntry, maxT
   const title = (cached.metadata.title as string | null) ?? null;
   const finalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
   const pdfPageCount = Number(cached.metadata.pdfPageCount ?? 0);
-  return formatPdfTextResponse(title, finalUrl, "fresh", pdfPageCount, paginated);
+  const extractedPageCount = Number(cached.metadata.pdfExtractedPageCount ?? pdfPageCount);
+  return formatPdfTextResponse(title, finalUrl, "fresh", pdfPageCount, paginated, extractedPageCount);
 }

@@ -159,7 +159,7 @@ interface ExtractedPage {
   dataSourceHints: string[];
 }
 
-type FetchAndExtractResult = { status: "not_modified" } | { status: "handoff"; handoff: HandoffResult } | ExtractedPage;
+type FetchAndExtractResult = { status: "not_modified"; finalUrl: string } | { status: "handoff"; handoff: HandoffResult } | ExtractedPage;
 
 /** URLとselectorの組から、新規取得・変換したMarkdownと品質スコア/pruning/アダプタ/ジオメトリ結果を作る。 */
 async function fetchAndExtract(
@@ -180,7 +180,7 @@ async function fetchAndExtract(
   const baseOptions = { onProgress, checkRobots, fullReadMaxBytes };
   const fetchResult = await fetchPage(url, conditionalHeaders ? { ...baseOptions, headers: conditionalHeaders } : baseOptions);
   if ("notModified" in fetchResult) {
-    return { status: "not_modified" };
+    return { status: "not_modified", finalUrl: fetchResult.finalUrl };
   }
   // 機能B: HTML/PDF以外のコンテンツはハンドオフ応答(メタデータ+プレビュー+curl誘導)の対象。
   // Markdown抽出・品質判定・キャッシュ保存は行わない。
@@ -291,6 +291,16 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
  * ため、outline→sectionの推奨フロー等でキャッシュヒットするたびに待機・robots再判定という
  * 自己ペナルティが発生していた不具合の修正。selector指定時は必ずfetchするため常にguardする。
  */
+/**
+ * 同一URLへの取得中リクエスト。politenessの直列キューは取得の「開始間隔」を空けるだけで
+ * 取得自体は並行するため、同じURLへの同時呼び出しが先方へ2回出ていた。あわせて、
+ * 先に始まった取得が後から完了して新しいキャッシュを古い内容で上書きする競合も塞ぐ。
+ *
+ * selector指定時はキャッシュを使わず結果もselector毎に変わるため対象外。
+ * 相乗りした側には進捗通知が届かない(通知は最初の呼び出しのonProgressにのみ流れる)。
+ */
+const inFlightPages = new Map<string, Promise<ResolvePageResult>>();
+
 async function resolvePage(
   url: string,
   selector: string | undefined,
@@ -326,15 +336,28 @@ async function resolvePage(
     return pageFromCacheEntry(url, cached, "fresh");
   }
 
+  const inFlight = inFlightPages.get(url);
+  if (inFlight) return inFlight;
+  const pending = fetchAndResolvePage(url, cached, onProgress).finally(() => inFlightPages.delete(url));
+  inFlightPages.set(url, pending);
+  return pending;
+}
+
+/** resolvePageのうち、実際にサーバーへ取りにいく部分(同一URLでは1本にまとめられる)。 */
+async function fetchAndResolvePage(
+  url: string,
+  cached: ReturnType<PageCache["get"]>,
+  onProgress?: ((message: string) => void) | undefined,
+): Promise<ResolvePageResult> {
   // 条件付きGET(304)も含め実際にサーバーへ通信するため、ここでguardする
-  // (キャッシュfresh応答で早期returnした場合はguardしない=上のコメント参照)。
+  // (キャッシュfresh応答で早期returnした場合はguardしない=呼び出し元のコメント参照)。
   await politeness.guard(url, onProgress);
 
   const conditionalHeaders: Record<string, string> = {};
   if (cached?.etag) conditionalHeaders["If-None-Match"] = cached.etag;
   if (cached?.lastModified) conditionalHeaders["If-Modified-Since"] = cached.lastModified;
 
-  const result = await fetchAndExtract(
+  let result = await fetchAndExtract(
     url,
     undefined,
     Object.keys(conditionalHeaders).length > 0 ? conditionalHeaders : undefined,
@@ -343,8 +366,17 @@ async function resolvePage(
 
   if (result.status === "not_modified") {
     if (!cached) throw new UnexpectedNotModifiedError(url);
-    cache.touch(url);
-    return pageFromCacheEntry(url, cached, "revalidated");
+    // ETag/Last-Modifiedはリソース間で一意である必要がないため、リダイレクト先が
+    // 別のURLへ変わっていても304が返りうる。その304は手元のキャッシュとは別の表現に対する
+    // 応答なので、そのまま返すと古い本文を新しいURLの内容として渡してしまう。
+    const cachedFinalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
+    if (result.finalUrl === cachedFinalUrl) {
+      cache.touch(url);
+      return pageFromCacheEntry(url, cached, "revalidated");
+    }
+    await politeness.guard(url, onProgress);
+    result = await fetchAndExtract(url, undefined, undefined, onProgress);
+    if (result.status === "not_modified") throw new UnexpectedNotModifiedError(url);
   }
 
   if (result.status === "handoff") {
@@ -503,6 +535,13 @@ interface PrefetchedPdf {
   lastModified: string | null;
 }
 
+/**
+ * 取得中のPDFリクエスト。resolvePageと同じ理由でまとめる。
+ * 応答内容がpage/max_tokensで変わるため、キーにはその2つも含める
+ * (条件が違う同時呼び出しは従来通り別々に取得する)。
+ */
+const inFlightPdfs = new Map<string, Promise<Array<TextBlock | ImageBlock>>>();
+
 /** PDFはキャッシュ層(§3-3等)を流用しつつ独立した経路で扱う。テキスト層があればMarkdown、無ければ画像タイル。 */
 async function handlePdfFetch(
   url: string,
@@ -514,6 +553,22 @@ async function handlePdfFetch(
   if (prefetched) {
     return buildPdfResponse(url, prefetched, page, maxTokens, onProgress);
   }
+
+  const key = `${url}\u0000${page}\u0000${maxTokens}`;
+  const inFlight = inFlightPdfs.get(key);
+  if (inFlight) return inFlight;
+  const pending = fetchPdf(url, page, maxTokens, onProgress).finally(() => inFlightPdfs.delete(key));
+  inFlightPdfs.set(key, pending);
+  return pending;
+}
+
+/** handlePdfFetchのうち、実際にサーバーへ取りにいく部分(同一条件では1本にまとめられる)。 */
+async function fetchPdf(
+  url: string,
+  page: number,
+  maxTokens: number,
+  onProgress?: ((message: string) => void) | undefined,
+): Promise<Array<TextBlock | ImageBlock>> {
 
   const cached = cache.get(url);
   if (cached && cache.isFresh(cached)) {
@@ -532,18 +587,27 @@ async function handlePdfFetch(
   if (cached?.etag) conditionalHeaders["If-None-Match"] = cached.etag;
   if (cached?.lastModified) conditionalHeaders["If-Modified-Since"] = cached.lastModified;
 
-  const binary = await httpGetBinary(url, {
+  const checkRobots = (targetUrl: string) => politeness.checkRobotsAllowed(targetUrl);
+  let binary = await httpGetBinary(url, {
     maxBytes: DEFAULT_PDF_MAX_BYTES,
-    checkRobots: (targetUrl) => politeness.checkRobotsAllowed(targetUrl),
+    checkRobots,
     ...(Object.keys(conditionalHeaders).length > 0 ? { headers: conditionalHeaders } : {}),
   });
 
   if (binary.status === 304) {
     if (!cached) throw new UnexpectedNotModifiedError(url);
-    cache.touch(url);
-    // PDF応答フォーマットのcacheStatus型は"fresh"|"miss"のみのため、304再検証も
-    // "fresh"として表示する(HTML応答の"revalidated"相当だが、既存フォーマットは変更しない)。
-    return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
+    // HTML経路と同じ理由: リダイレクト先が変わっていても304は返りうるため、
+    // 着地先が一致するときだけキャッシュ済みの本文を使う(resolvePageのコメント参照)。
+    const cachedFinalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
+    if (binary.finalUrl === cachedFinalUrl) {
+      cache.touch(url);
+      // PDF応答フォーマットのcacheStatus型は"fresh"|"miss"のみのため、304再検証も
+      // "fresh"として表示する(HTML応答の"revalidated"相当だが、既存フォーマットは変更しない)。
+      return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
+    }
+    await politeness.guard(url, onProgress);
+    binary = await httpGetBinary(url, { maxBytes: DEFAULT_PDF_MAX_BYTES, checkRobots });
+    if (binary.status === 304) throw new UnexpectedNotModifiedError(url);
   }
 
   return buildPdfResponse(
@@ -573,10 +637,20 @@ async function buildPdfResponse(
       etag: source.etag,
       lastModified: source.lastModified,
       markdown,
-      metadata: { title: textResult.title, finalUrl: source.finalUrl, pdfPageCount: textResult.pageCount },
+      metadata: {
+        title: textResult.title,
+        finalUrl: source.finalUrl,
+        pdfPageCount: textResult.pageCount,
+        pdfExtractedPageCount: textResult.extractedPageCount,
+      },
     });
     const paginated = paginateMarkdown(markdown, maxTokens, page);
-    return [{ type: "text", text: formatPdfTextResponse(textResult.title, source.finalUrl, "miss", textResult.pageCount, paginated) }];
+    return [
+      {
+        type: "text",
+        text: formatPdfTextResponse(textResult.title, source.finalUrl, "miss", textResult.pageCount, paginated, textResult.extractedPageCount),
+      },
+    ];
   }
 
   // テキスト層が実質無い(スキャンPDF): 先頭ページから画像タイルとして返す(キャッシュ非対象)
