@@ -12,7 +12,7 @@ const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-server-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
 const { cache } = await import("../src/core.js");
-const { formatHandoffResponse, formatPdfResponseFromCache, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/formatting.js");
+const { formatHandoffResponse, formatPdfImageResponse, formatPdfResponseFromCache, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/formatting.js");
 type HandoffResultLike = Parameters<typeof formatHandoffResponse>[0];
 
 afterAll(() => {
@@ -187,5 +187,21 @@ describe("formatPdfResponseFromCache(ページ数上限で打ち切ったPDFの�
 
     expect(text).toContain("pdf_pages: 3");
     expect(text).not.toContain("pdf_pages_extracted");
+  });
+});
+
+describe("formatPdfImageResponse(テキスト層の無いPDFの申告)", () => {
+  it("全ページを判定できている場合はPDF全体について述べる", () => {
+    const text = formatPdfImageResponse("スキャン資料", "https://example.com/scan.pdf", 12, 12, 10);
+
+    expect(text).toContain("reason: PDFにテキスト層がありません(スキャンPDFの可能性)。全12ページ中先頭10ページを画像化");
+  });
+
+  it("ページ数上限で打ち切っている場合は判定範囲を明示する", () => {
+    // 先頭がスキャンで後半にテキスト層があるPDFがあるため、全体について言い切ると誤申告になる
+    const text = formatPdfImageResponse("大部の資料", "https://example.com/huge.pdf", 5000, 3000, 10);
+
+    expect(text).toContain("先頭3000ページにテキスト層がありません(ページ数上限のため全体は判定していません)");
+    expect(text).not.toContain("PDFにテキスト層がありません");
   });
 });

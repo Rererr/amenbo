@@ -28,6 +28,7 @@ import {
   formatHandoffResponse,
   formatMarkdownResponse,
   formatOutlineResponse,
+  formatPdfImageResponse,
   formatPdfResponseFromCache,
   formatPdfTextResponse,
   formatUnchangedResponse,
@@ -608,23 +609,11 @@ async function handlePdfFetch(
     ];
   }
 
-  // 判定に使ったページ数がPDF全体より少ない場合、「テキスト層が無い」と言い切ると誤りうる
-  // (先頭がスキャンで後半にテキスト層があるPDF)。何を根拠に判定したかをそのまま出す。
-  const judged =
-    document.extractedPageCount < document.pageCount
-      ? `先頭${document.extractedPageCount}ページにテキスト層がありません(ページ数上限のため全体は判定していません)`
-      : `PDFにテキスト層がありません(スキャンPDFの可能性)`;
-  const header = [
-    `title: ${document.title ?? "(なし)"}`,
-    `url: ${document.finalUrl}`,
-    `mode_used: screenshot`,
-    `cache: miss`,
-    `reason: ${judged}。全${document.pageCount}ページ中先頭${document.images.length}ページを画像化`,
-    `tiles: ${document.images.length}`,
-    `fetch_tier: pdf`,
-  ].join("\n");
   return [
-    { type: "text", text: header },
+    {
+      type: "text",
+      text: formatPdfImageResponse(document.title, document.finalUrl, document.pageCount, document.extractedPageCount, document.images.length),
+    },
     ...document.images.map((image) => ({ type: "image" as const, data: image.png.toString("base64"), mimeType: "image/png" })),
   ];
 }

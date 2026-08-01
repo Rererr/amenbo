@@ -251,6 +251,35 @@ export function formatPdfTextResponse(
   return `${header}\n\n${paginated.content}`;
 }
 
+/**
+ * テキスト層の無いPDF(スキャンPDF)の画像応答ヘッダを組み立てる。
+ *
+ * ページ数上限で打ち切っている場合、テキスト層の有無は先頭ページからしか判定していない。
+ * 「PDFにテキスト層がありません」と全体について言い切ると、先頭がスキャンで後半に
+ * テキスト層があるPDFで誤った申告になるため、何を根拠に判定したかをそのまま出す。
+ */
+export function formatPdfImageResponse(
+  title: string | null,
+  finalUrl: string,
+  pdfPageCount: number,
+  extractedPageCount: number,
+  tileCount: number,
+): string {
+  const judged =
+    extractedPageCount < pdfPageCount
+      ? `先頭${extractedPageCount}ページにテキスト層がありません(ページ数上限のため全体は判定していません)`
+      : "PDFにテキスト層がありません(スキャンPDFの可能性)";
+  return [
+    `title: ${title ?? "(なし)"}`,
+    `url: ${finalUrl}`,
+    `mode_used: screenshot`,
+    `cache: miss`,
+    `reason: ${judged}。全${pdfPageCount}ページ中先頭${tileCount}ページを画像化`,
+    `tiles: ${tileCount}`,
+    `fetch_tier: pdf`,
+  ].join("\n");
+}
+
 /** キャッシュ済みPDFエントリからテキスト応答を組み立てる(fresh応答/304再検証後の応答で共用)。 */
 export function formatPdfResponseFromCache(url: string, cached: CacheEntry, maxTokens: number, page: number): string {
   const paginated = paginateMarkdown(cached.markdown, maxTokens, page);
