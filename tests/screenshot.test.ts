@@ -130,4 +130,18 @@ describe("captureTiledScreenshot(レビュー指摘対応: fullPageフラグの�
 
     expect(screenshotMock).toHaveBeenCalledWith({ type: "png", fullPage: true });
   });
+
+  it("上限枚数を超える長さのページは、その高さまでしかレンダリングさせない", async () => {
+    // 出力タイルだけを10枚に切り詰めていた頃は、無限スクロールのページで
+    // 捨てるだけの数万px分をChromiumに描画させ、巨大なPNGをメモリへ展開していた。
+    const { page, screenshotMock } = createFakePage(800, 50_000);
+    openPageAndNavigateMock.mockResolvedValue({ context: { close: async () => {} }, page, response: null });
+
+    const result = await captureTiledScreenshot("https://example.com/", { fullPage: true });
+
+    expect(screenshotMock).toHaveBeenCalledWith({ type: "png", fullPage: true, clip: { x: 0, y: 0, width: 800, height: 10 * 1080 } });
+    expect(result.tiles).toHaveLength(10);
+    expect(result.truncated).toBe(true); // ページ全高に対する切り捨ては従来通り申告する
+    expect(result.pageHeight).toBe(50_000);
+  });
 });

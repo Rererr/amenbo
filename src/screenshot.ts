@@ -22,6 +22,8 @@ export const DEFAULT_TILE_WIDTH = 1280;
 export const DEFAULT_TILE_HEIGHT = 1080;
 /** 無限スクロール等で異常に長いページの撮影を打ち切る上限枚数(トークン予算保護)。 */
 const MAX_TILES = 10;
+/** 上限枚数に対応する撮影高さ。これを超える分はレンダリングもしない。 */
+const MAX_CAPTURE_HEIGHT = MAX_TILES * DEFAULT_TILE_HEIGHT;
 
 /**
  * ページ寸法から、幅tileWidth・高さtileHeight毎のタイル矩形を計算する(純関数)。
@@ -59,6 +61,8 @@ export interface ScreenshotOptions {
   /** 解像度スケール(0.5〜1.0)。既定1.0。小さいほど画像サイズ(トークン)が減る。 */
   scale?: number;
   timeoutMs?: number;
+  /** 別オリジンへ遷移した場合のrobots.txt確認(HTTP層のcheckRobotsと同じ役割)。 */
+  checkRobots?: ((url: string) => Promise<void>) | undefined;
 }
 
 export interface ScreenshotTile {
@@ -96,11 +100,12 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
   // C1: SSRF/スキーム検証(guardPublicAddress)+リダイレクト再検証込みのナビゲーション。
   // 改善キュー対応: 同梱ChromiumがERR_HTTP2_PROTOCOL_ERROR系で失敗した場合、システムに
   // Chromeがあれば1回だけそちらへフォールバックする(openPageAndNavigate参照)。
-  const { context, page } = await openPageAndNavigate(url, timeoutMs, {
-    userAgent: USER_AGENT,
-    viewport: { width, height: DEFAULT_TILE_HEIGHT },
-    deviceScaleFactor: scale,
-  });
+  const { context, page } = await openPageAndNavigate(
+    url,
+    timeoutMs,
+    { userAgent: USER_AGENT, viewport: { width, height: DEFAULT_TILE_HEIGHT }, deviceScaleFactor: scale },
+    { checkRobots: options.checkRobots },
+  );
 
   try {
     // J8: 撮影前にCookie同意バナー/アプリ誘導オーバーレイを隠す(視覚的な妨げを除く)
@@ -113,9 +118,14 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
       height: Math.ceil(document.documentElement.scrollHeight),
     }));
 
-    const captureHeight = fullPage ? dimensions.height : Math.min(dimensions.height, DEFAULT_TILE_HEIGHT);
+    // 撮影自体もMAX_TILES相当の高さで打ち切る。以前は出力タイルだけを10枚に切り詰めており、
+    // 無限スクロールのページでは捨てるだけの数万px分をChromiumにレンダリングさせて
+    // 巨大なPNGをメモリへ展開していた(切り捨て枚数の判定はページ全高で行うので表示は変わらない)。
+    const captureHeight = fullPage ? Math.min(dimensions.height, MAX_CAPTURE_HEIGHT) : Math.min(dimensions.height, DEFAULT_TILE_HEIGHT);
     const geometries = computeTiles(dimensions.width, captureHeight, width, DEFAULT_TILE_HEIGHT);
-    const truncated = isTileCaptureTruncated(captureHeight, geometries.length);
+    // 切り捨て判定はページ全高で行う(fullPage:falseは利用者が明示した1画面分なので、
+    // 上限による切り捨てとは区別してこれまで通りcaptureHeightで判定する)。
+    const truncated = isTileCaptureTruncated(fullPage ? dimensions.height : captureHeight, geometries.length);
 
     // N2: タイル毎にfullPageスクリーンショットを撮り直すのではなく、1回だけ撮影して
     // @napi-rs/canvasでタイル領域をクロップする(deviceScaleFactor分、座標をscale倍する)。
@@ -127,7 +137,13 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
     // fullPage:false時はビューポート(viewport height=DEFAULT_TILE_HEIGHTで撮影済み)のみを
     // 実際に撮影する。captureHeight/geometries/crop座標は既にfullPageの値で分岐済みのため、
     // 1タイル(ビューポート分)のみでも整合する。
-    const capturedPng = await page.screenshot({ type: "png", fullPage });
+    // clipはfullPageと併用する。clip単独だと領域がビューポート内へ黙って切り詰められ、
+    // 長いページが1画面分しか撮れなくなる(実機Chromiumで確認: clip単独は1280x1080、
+    // fullPage+clipは指定通り1280x10800)。
+    const capturedPng =
+      fullPage && dimensions.height > captureHeight
+        ? await page.screenshot({ type: "png", fullPage: true, clip: { x: 0, y: 0, width: dimensions.width, height: captureHeight } })
+        : await page.screenshot({ type: "png", fullPage });
     const image = await loadImage(capturedPng);
 
     const tiles: ScreenshotTile[] = geometries.map((geometry) => {
