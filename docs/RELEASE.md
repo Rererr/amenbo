@@ -42,6 +42,7 @@ v0.5.1 では GitHub / Zenodo のみ公開し、npm と MCP Registry は 0.5.0 �
       落ちてから気づくとタグを打ち直すことになるため先に手元で通す。実サイト相手なので
       push 毎には走っていない（push 毎に走るのはローカルのフィクスチャに対する統合テスト）
 - [ ] `npm pack --dry-run` で tarball の中身と版数を確認（`files: ["dist"]` のため dist のみ）
+      — `prepack` が走るため dist は publish 時に必ず再ビルドされる（古い dist を publish する事故は塞いである）
 - [ ] **リリースに含めたい変更が全てタグ対象コミットに入っているか確認**
       — v0.5.1 では README への DOI バッジ追加がタグの後に入り、npm の README と
       Zenodo アーカイブの README が食い違った（実害は無かったが、Zenodo は発行済み DOI の
