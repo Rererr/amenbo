@@ -60,9 +60,19 @@ describe("isPrivateOrReservedIp(SSRF対策)", () => {
   it("特殊用途として予約されたIPv4/IPv6範囲を拒否する", () => {
     expect(isPrivateOrReservedIp("192.88.99.1")).toBe(true); // 6to4リレーエニーキャスト
     expect(isPrivateOrReservedIp("2001:db8::1")).toBe(true); // ドキュメント用
-    expect(isPrivateOrReservedIp("2001::1")).toBe(true); // IETFプロトコル割当(Teredo等)
+    expect(isPrivateOrReservedIp("2001::1")).toBe(true); // Teredo
+    expect(isPrivateOrReservedIp("2001:2::1")).toBe(true); // ベンチマーク
+    expect(isPrivateOrReservedIp("2001:10::1")).toBe(true); // ORCHID(廃止済み)
     expect(isPrivateOrReservedIp("100::1")).toBe(true); // Discard-Only
+    expect(isPrivateOrReservedIp("100:0:0:1::1")).toBe(true); // Dummy IPv6 Prefix
     expect(isPrivateOrReservedIp("64:ff9b:1::7f00:1")).toBe(true); // NAT64 local-use
+  });
+
+  it("2001::/23内でも到達性のあるエニーキャストは拒否しない(過剰遮断の防止)", () => {
+    expect(isPrivateOrReservedIp("2001:1::1")).toBe(false); // PCPエニーキャスト
+    expect(isPrivateOrReservedIp("2001:3::1")).toBe(false); // AMT
+    expect(isPrivateOrReservedIp("2001:4:112::1")).toBe(false); // AS112-v6
+    expect(isPrivateOrReservedIp("2001:20::1")).toBe(false); // ORCHIDv2
   });
 });
 
