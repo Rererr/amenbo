@@ -12,7 +12,7 @@ const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-server-test-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
 const { cache } = await import("../src/core.js");
-const { formatHandoffResponse, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/formatting.js");
+const { formatHandoffResponse, formatPdfResponseFromCache, dataSourcesSection, guessFilename, shellQuoteSingle, buildScreenshotContent } = await import("../src/formatting.js");
 type HandoffResultLike = Parameters<typeof formatHandoffResponse>[0];
 
 afterAll(() => {
@@ -149,5 +149,43 @@ describe("設計ドキュメント§5回帰テスト: screenshot経路ではdata
     for (const block of textBlocks) {
       expect(block.text).not.toContain("data_sources:");
     }
+  });
+});
+
+describe("formatPdfResponseFromCache(ページ数上限で打ち切ったPDFの申告)", () => {
+  function cachedPdf(metadata: Record<string, unknown>) {
+    return {
+      url: "https://example.com/huge.pdf",
+      etag: null,
+      lastModified: null,
+      markdown: "## ページ 1\n\n本文",
+      metadata,
+      fetchedAt: 0,
+    };
+  }
+
+  it("打ち切っている場合はキャッシュから返す応答でも抽出ページ数を出す", () => {
+    const text = formatPdfResponseFromCache(
+      "https://example.com/huge.pdf",
+      cachedPdf({ title: "大部の資料", finalUrl: "https://example.com/huge.pdf", pdfPageCount: 5000, pdfExtractedPageCount: 3000 }),
+      8000,
+      1,
+    );
+
+    expect(text).toContain("pdf_pages: 5000");
+    // 申告が落ちると、利用者は全ページ分のテキストが手元にあると誤解する
+    expect(text).toContain("pdf_pages_extracted: 3000");
+  });
+
+  it("打ち切っていない場合は余計な行を出さない", () => {
+    const text = formatPdfResponseFromCache(
+      "https://example.com/small.pdf",
+      cachedPdf({ title: "資料", finalUrl: "https://example.com/small.pdf", pdfPageCount: 3, pdfExtractedPageCount: 3 }),
+      8000,
+      1,
+    );
+
+    expect(text).toContain("pdf_pages: 3");
+    expect(text).not.toContain("pdf_pages_extracted");
   });
 });

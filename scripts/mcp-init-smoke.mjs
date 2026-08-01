@@ -13,7 +13,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SERVER_PATH = join(rootDir, "dist", "server.js");
+// publishしたtarballを展開した先など、リポジトリ外のdistへ向けられるようにする
+// (release-check.ymlがインストール済みパッケージに対してこのスモークを流す)。
+const SERVER_PATH = process.env.AMENBO_SMOKE_SERVER ?? join(rootDir, "dist", "server.js");
 const INIT_TIMEOUT_MS = 15_000;
 
 function mcpSession(cmd, args, env) {

@@ -12,10 +12,16 @@ import type { AddressInfo } from "node:net";
  */
 
 const PDF_BYTES = readFileSync(new URL("../fixtures/sample-text.pdf", import.meta.url));
+const MULTIPAGE_PDF_BYTES = readFileSync(new URL("../fixtures/sample-multipage.pdf", import.meta.url));
+// ハンドオフのプレビュー上限(256KB)を超える大きさが要る。これ未満だとプレビュー読みでも
+// 全体が入ってしまい、「判明時点で読み切っているか」を取得回数で判定できない。
+const LARGE_PDF_BYTES = readFileSync(new URL("../fixtures/sample-large.pdf", import.meta.url));
 
 const ETAG = '"fixture-v1"';
 /** /target-a と /target-b が共有するETag(リソース間でETagが一意でない状況の再現用)。 */
 const SHARED_ETAG = '"shared-v1"';
+/** PDF版の共有ETag(着地先が変わっても304が返る状況の再現用)。 */
+const SHARED_PDF_ETAG = '"shared-pdf-v1"';
 const LAST_MODIFIED = "Wed, 03 Jul 2024 18:34:01 GMT";
 
 const EN_ARTICLE = `<!DOCTYPE html>
@@ -116,14 +122,17 @@ export interface FixtureServer {
   lastIfNoneMatch: string | undefined;
   /** /moving のリダイレクト先パス(テストから差し替えて着地先の変化を模す)。 */
   redirectTarget: string;
+  /** /pdf-moving のリダイレクト先パス(PDF経路で同じ検証をするため)。 */
+  pdfRedirectTarget: string;
   close(): Promise<void>;
 }
 
 export async function startFixtureServer(): Promise<FixtureServer> {
-  const state: Pick<FixtureServer, "hits" | "lastIfNoneMatch" | "redirectTarget"> = {
+  const state: Pick<FixtureServer, "hits" | "lastIfNoneMatch" | "redirectTarget" | "pdfRedirectTarget"> = {
     hits: new Map(),
     lastIfNoneMatch: undefined,
     redirectTarget: "/target-a",
+    pdfRedirectTarget: "/pdf-a",
   };
 
   const server: Server = createServer((req, res) => {
@@ -165,6 +174,25 @@ export async function startFixtureServer(): Promise<FixtureServer> {
           return;
         }
         send(200, "text/html; charset=utf-8", ETAG_HTML, headers);
+        return;
+      }
+      case "/download":
+        // URL拡張子にPDFが現れない配布エンドポイント(官公庁の /download?id=123 型)。
+        // content-typeで判明した時点で全体を読み切っているかを、取得回数で判定する。
+        send(200, "application/pdf", LARGE_PDF_BYTES);
+        return;
+      case "/pdf-moving":
+        send(302, "text/plain; charset=utf-8", "", { Location: `${origin}${state.pdfRedirectTarget}` });
+        return;
+      case "/pdf-a":
+      case "/pdf-b": {
+        state.lastIfNoneMatch = req.headers["if-none-match"];
+        const headers = { ETag: SHARED_PDF_ETAG };
+        if (req.headers["if-none-match"] === SHARED_PDF_ETAG) {
+          send(304, "application/pdf", "", headers);
+          return;
+        }
+        send(200, "application/pdf", path === "/pdf-a" ? PDF_BYTES : MULTIPAGE_PDF_BYTES, headers);
         return;
       }
       case "/concurrent.html":
@@ -213,6 +241,12 @@ export async function startFixtureServer(): Promise<FixtureServer> {
     },
     set redirectTarget(target: string) {
       state.redirectTarget = target;
+    },
+    get pdfRedirectTarget() {
+      return state.pdfRedirectTarget;
+    },
+    set pdfRedirectTarget(target: string) {
+      state.pdfRedirectTarget = target;
     },
     close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
   };

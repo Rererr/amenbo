@@ -53,6 +53,32 @@ describe("HTTP経由のPDF取得", () => {
   }, 30_000);
 });
 
+describe("URL拡張子で分からないPDFの取得", () => {
+  it("content-typeで判明した時点で読み切り、取得は1回で済む", async () => {
+    const text = await fetchText(`${server.origin}/download`);
+
+    expect(text).toContain("fetch_tier: pdf");
+    expect(text).toContain("pdf_pages: 1000"); // 打ち切られていれば総ページ数が合わない
+    // プレビュー(256KB打ち切り)で返すと、PDF経路が同じURLをもう一度全体取得することになる
+    expect(server.hits.get("/download")).toBe(1);
+  }, 30_000);
+
+  it("リダイレクト先が変わっていたら、304でもキャッシュ済みのPDFを返さない", async () => {
+    const url = `${server.origin}/pdf-moving`;
+
+    server.pdfRedirectTarget = "/pdf-a";
+    expect(await fetchText(url)).toContain("統計");
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    server.pdfRedirectTarget = "/pdf-b";
+    const second = await fetchText(url);
+
+    // HTML経路と同じ理由(ETagはリソース間で一意である必要がない)
+    expect(second).toContain("pdf_pages: 3");
+    expect(second).not.toContain("統計");
+  }, 30_000);
+});
+
 describe("英語ページの取得", () => {
   it("英語の記事から表がMarkdown表として取れる", async () => {
     const text = await fetchText(`${server.origin}/en/table.html`);

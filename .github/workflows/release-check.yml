@@ -37,3 +37,11 @@ jobs:
           npm install /tmp/amenbo-*.tgz
           npx amenbo --version
           npx amenbo --help
+      # CLIだけでなくMCPサーバー本体(dist/server.js)も、インストール済みパッケージのものを起動する。
+      # スモーク自体はリポジトリのスクリプトを使い、対象のserver.jsだけ差し替える。
+      - name: インストール済みパッケージのMCPサーバーで両eraのスモークを流す
+        env:
+          AMENBO_SMOKE_SERVER: /tmp/pkgtest/node_modules/amenbo/dist/server.js
+        run: |
+          node scripts/mcp-init-smoke.mjs
+          node scripts/mcp-modern-smoke.mjs
