@@ -167,13 +167,17 @@ export class PolitenessManager {
         onProgress?.("アクセス間隔を確保するため待機しています…");
         await this.sleep(intervalMs - elapsed);
       }
-      const requestAt = this.now();
-      this.lastRequestAt.set(host, requestAt);
-      this.store?.setLastRequestAt(host, requestAt);
+      this.noteRequest(host, this.now());
     } finally {
       release();
       entry.settled = true;
     }
+  }
+
+  /** ホストへ1リクエスト発行したことを記録する(インメモリ + プロセス間共有ストア)。 */
+  private noteRequest(host: string, at: number): void {
+    this.lastRequestAt.set(host, at);
+    this.store?.setLastRequestAt(host, at);
   }
 
   /**
@@ -267,6 +271,11 @@ export class PolitenessManager {
     const fetchedAt = this.now();
     this.robotsCache.set(origin, { robots, fetchedAt });
     this.robotsStore?.set(origin, body, fetchedAt);
+    // robots.txtの取得も先方への1リクエストなので、最終リクエスト時刻に数える。
+    // ここを記録しないと、新規ホストの初回だけ「robots.txt取得 → 即座に本文取得」と
+    // 連続2リクエストになり、掲げている最小間隔が実際には守られていなかった。
+    // 待たずに記録するだけなので、遅くなるのはこの直後の本文取得1回分に限られる。
+    this.noteRequest(new URL(robotsUrl).host, fetchedAt);
     return robots;
   }
 }

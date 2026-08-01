@@ -48,10 +48,23 @@ describe("PolitenessManager - waitTurn(ドメイン毎の直列キュー+最小�
     const sleepSpy = vi.fn(clock.sleep);
     const pm = new PolitenessManager({ now: clock.now, sleep: sleepSpy, minIntervalMs: 1000 });
 
+    // 初回はrobots.txt取得(=1リクエスト)の分だけ待機が入るため、そこから先の間隔だけを見る
     await pm.waitTurn("http://example.com/a");
-    expect(sleepSpy).not.toHaveBeenCalled();
+    sleepSpy.mockClear();
 
     await pm.waitTurn("http://example.com/b");
+    expect(sleepSpy).toHaveBeenCalledWith(1000);
+  });
+
+  it("robots.txtの取得も1リクエストとして数え、直後の取得は最小間隔だけ待つ", async () => {
+    mockRobotsResponse("");
+    const clock = createClock();
+    const sleepSpy = vi.fn(clock.sleep);
+    const pm = new PolitenessManager({ now: clock.now, sleep: sleepSpy, minIntervalMs: 1000 });
+
+    await pm.guard("http://example.com/a");
+
+    expect(httpGetMock).toHaveBeenCalledWith("http://example.com/robots.txt", expect.anything());
     expect(sleepSpy).toHaveBeenCalledWith(1000);
   });
 
@@ -75,6 +88,11 @@ describe("PolitenessManager - waitTurn(ドメイン毎の直列キュー+最小�
     const clock = createClock();
     const sleepSpy = vi.fn(clock.sleep);
     const pm = new PolitenessManager({ now: clock.now, sleep: sleepSpy, minIntervalMs: 1000 });
+
+    // robots.txt取得も1リクエストとして数えるため、先に済ませて間隔を空けてから比較する
+    await Promise.all([pm.getSitemaps("http://a.example.com/"), pm.getSitemaps("http://b.example.com/")]);
+    clock.advance(1000);
+    sleepSpy.mockClear();
 
     await Promise.all([pm.waitTurn("http://a.example.com/"), pm.waitTurn("http://b.example.com/")]);
 
@@ -101,8 +119,11 @@ describe("PolitenessManager - waitTurn/guard onProgress(MCP progress notificatio
     const pm = new PolitenessManager({ now: clock.now, sleep: clock.sleep, minIntervalMs: 1000 });
     const onProgress = vi.fn();
 
+    await pm.getSitemaps("http://example.com/a"); // robots.txt取得(=1リクエスト)を先に済ませる
+    clock.advance(1000);
+
     await pm.waitTurn("http://example.com/a", onProgress);
-    expect(onProgress).not.toHaveBeenCalled(); // 初回は待機0
+    expect(onProgress).not.toHaveBeenCalled(); // 間隔が空いているので待機0
 
     await pm.waitTurn("http://example.com/b", onProgress);
     expect(onProgress).toHaveBeenCalledTimes(1);
@@ -123,6 +144,9 @@ describe("PolitenessManager - waitTurn/guard onProgress(MCP progress notificatio
     const clock = createClock();
     const pm = new PolitenessManager({ now: clock.now, sleep: clock.sleep, minIntervalMs: 1000 });
     const onProgress = vi.fn();
+
+    await pm.getSitemaps("http://example.com/a"); // robots.txt取得(=1リクエスト)を先に済ませる
+    clock.advance(1000);
 
     await pm.guard("http://example.com/a", onProgress);
     await pm.guard("http://example.com/b", onProgress);
@@ -279,9 +303,13 @@ describe("PolitenessManager - store注入時のプロセス間レート制御共
     const clock = createClock();
     const sleepSpy = vi.fn(clock.sleep);
     const store = createFakeStore();
-    // 「別プロセスが300ms前にこのホストへアクセス済み」という状態を模す
-    store.data.set("example.com", -300);
     const pm = new PolitenessManager({ now: clock.now, sleep: sleepSpy, minIntervalMs: 1000, store });
+
+    await pm.getSitemaps("http://example.com/a"); // robots.txt取得(=1リクエスト)を先に済ませる
+    clock.advance(1000);
+    // 「別プロセスが300ms前にこのホストへアクセス済み」という状態を模す
+    store.data.set("example.com", clock.now() - 300);
+    sleepSpy.mockClear();
 
     await pm.waitTurn("http://example.com/a");
 
@@ -298,7 +326,8 @@ describe("PolitenessManager - store注入時のプロセス間レート制御共
 
     await pm.waitTurn("http://example.com/a");
 
-    expect(store.data.get("example.com")).toBe(0);
+    // robots.txt取得(now=0)と、その最小間隔後の本文取得(now=1000)の両方が記録される
+    expect(store.data.get("example.com")).toBe(1000);
   });
 
   it("store未指定時は従来通りインメモリのみで動作する(完全後方互換)", async () => {
@@ -308,7 +337,7 @@ describe("PolitenessManager - store注入時のプロセス間レート制御共
     const pm = new PolitenessManager({ now: clock.now, sleep: sleepSpy, minIntervalMs: 1000 });
 
     await pm.waitTurn("http://example.com/a");
-    expect(sleepSpy).not.toHaveBeenCalled();
+    sleepSpy.mockClear(); // 初回のrobots.txt取得分の待機を除いて比較する
     await pm.waitTurn("http://example.com/b");
     expect(sleepSpy).toHaveBeenCalledWith(1000);
   });
