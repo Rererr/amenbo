@@ -61,7 +61,7 @@ const USAGE_PROMPT_TEXT = `## Use amenbo for web fetching
   is needed, first check headings and per-section token counts with \`mode: "outline"\`,
   then fetch only the needed sections via \`section\`
 - Getting \`unchanged\` / \`diff\` when refetching the same URL is normal (no change / changed
-  sections only). Use \`force_full: true\` only when the full text is required
+  sections only). Use \`force_full: true\` only when you need the whole content again instead of a diff
 - When looking for pages within a site, don't guess URLs — enumerate them with \`links\`
   (narrow down with \`filter\`)
 - In environments with a shell, for long pages you only want to keyword-search or for bulk
@@ -107,7 +107,7 @@ export function createServer(): McpServer {
         section: z.string().optional().describe("Section ID obtained from outline mode; returns only that section's Markdown"),
         page: z.number().int().positive().optional().describe("Page number (default 1)"),
         max_tokens: z.number().int().positive().optional().describe("Approximate token budget per page (default 8000)"),
-        force_full: z.boolean().optional().describe("Default false. If true, disables diff responses (unchanged/diff) and boilerplate-block removal, always returning the full content"),
+        force_full: z.boolean().optional().describe("Default false. If true, disables diff responses (unchanged/diff) and boilerplate-block removal (pagination by max_tokens still applies)"),
       }),
       annotations: {
         readOnlyHint: true,

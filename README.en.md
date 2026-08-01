@@ -20,7 +20,7 @@ Most general-purpose scraping tools assume the English-speaking web. On Japanese
 - **Lost headings**: on pages that wrap headings with edit-link containers (wiki-style sites), content extraction can strip the entire heading structure; amenbo detects headings whose section content survived and restores them in place (keeping outline / section progressive disclosure reliable)
 - **Major Japanese sites**: dedicated adapters for Qiita / Zenn / note / Hatena Blog / Yahoo! News / PR TIMES
 
-For a measured comparison against similar tools (official fetch MCP / Jina Reader / Playwright MCP / PixelRAG pixelshot), see the article "[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)" (Japanese). The benchmark harness and raw logs are in [`bench/`](./bench/).
+For a measured comparison against similar tools (official fetch MCP / Jina Reader / Playwright MCP / PixelRAG pixelshot), see the article "[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)" (Japanese). The benchmark harness and raw logs are in [`bench/`](https://github.com/Rererr/amenbo/blob/main/bench/).
 
 ## How it saves tokens
 
@@ -33,7 +33,7 @@ For a measured comparison against similar tools (official fetch MCP / Jina Reade
 ## Low impact on target sites
 
 - **Two-tier fetching**: plain HTTP GET first; only pages that need JS rendering escalate to headless Chromium, so most fetches never launch a browser
-- **Polite crawling**: respects robots.txt and Crawl-Delay; serialized access per domain at 1 req/sec by default. Link discovery prefers sitemap / RSS instead of crawling pages
+- **Polite crawling**: respects robots.txt and Crawl-Delay; serialized access per domain at 1 req/sec by default (fetching robots.txt itself counts as one of those requests). Link discovery prefers sitemap / RSS instead of crawling pages
 - **Honest User-Agent**: identifies itself as a bot. **No anti-bot circumvention is implemented**
 - **Caching**: revalidates with ETag / If-Modified-Since to avoid needless refetches
 
@@ -105,7 +105,7 @@ Tool definitions alone don't convey usage conventions like "fetch with progressi
   is needed, first check headings and per-section token counts with `mode: "outline"`,
   then fetch only the needed sections via `section`
 - Getting `unchanged` / `diff` when refetching the same URL is normal (no change / changed
-  sections only). Use `force_full: true` only when the full text is required
+  sections only). Use `force_full: true` only when you need the whole content again instead of a diff
 - When looking for pages within a site, don't guess URLs — enumerate them with `links`
   (narrow down with `filter`)
 - In environments with a shell, for long pages you only want to keyword-search or for bulk
@@ -165,7 +165,7 @@ Cache, diff responses (`unchanged`/`diff`), and rate-control state (robots.txt /
 | `section` | Section ID obtained from outline; returns only that section's Markdown (if the section has ancestor headings, the response includes `section_path`, a breadcrumb joined by ` › `) |
 | `page` | Page number (default 1) |
 | `max_tokens` | Approximate token cap per page (default 8000) |
-| `force_full` | true disables diff responses and boilerplate removal, always returning the full text |
+| `force_full` | true disables diff responses and boilerplate removal (pagination by `max_tokens` still applies) |
 
 ### `links` — enumerate links
 | Parameter | Description |
@@ -213,7 +213,7 @@ npm run build       # build into dist/
 
 If you reference this software in an article or in research, please cite the Zenodo DOI. The `10.5281/zenodo.21553636` shown in the badge above is the **Concept DOI**, shared by all versions and always resolving to the latest one. To cite a specific version, take that version's own DOI from the [Zenodo record](https://zenodo.org/records/21553637).
 
-Machine-readable citation metadata lives in [CITATION.cff](./CITATION.cff) (GitHub's "Cite this repository" generates BibTeX / APA from it).
+Machine-readable citation metadata lives in [CITATION.cff](https://github.com/Rererr/amenbo/blob/main/CITATION.cff) (GitHub's "Cite this repository" generates BibTeX / APA from it).
 
 ## License
 

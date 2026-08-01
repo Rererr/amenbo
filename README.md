@@ -20,7 +20,7 @@ amenbo(アメンボ / water strider)は、Claude Code や Codex のようなコ�
 - **見出しの消失**：見出しが編集リンク付きラッパーに包まれたページ(Wiki系など)では本文抽出時に見出し構造が丸ごと失われることがあり、本文が残っている節の見出しを検出して元の位置へ復元します(outline / section の段階開示が安定)
 - **国内主要サイト**：Qiita / Zenn / note / はてなブログ / Yahoo!ニュース / PR TIMES に専用アダプタ
 
-類似ツール(公式 fetch MCP / Jina Reader / Playwright MCP / PixelRAG pixelshot)との実測比較は、記事「[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)」を参照してください。ハーネスと生ログは [`bench/`](./bench/) にあります。
+類似ツール(公式 fetch MCP / Jina Reader / Playwright MCP / PixelRAG pixelshot)との実測比較は、記事「[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)」を参照してください。ハーネスと生ログは [`bench/`](https://github.com/Rererr/amenbo/blob/main/bench/) にあります。
 
 ## トークンを節約する仕組み
 
@@ -33,7 +33,7 @@ amenbo(アメンボ / water strider)は、Claude Code や Codex のようなコ�
 ## 収集先への低負荷
 
 - **二段フェッチ**：まず素の HTTP GET。JS 描画が必要なページだけ headless Chromium に昇格するので、大半の取得でブラウザを起動しません
-- **礼儀正しいクローラ**：robots.txt と Crawl-Delay を尊重、同一ドメインへは直列 + 既定 1 req/秒。リンク列挙は sitemap / RSS を優先しページを舐めません
+- **礼儀正しいクローラ**：robots.txt と Crawl-Delay を尊重、同一ドメインへは直列 + 既定 1 req/秒（robots.txt の取得もこの1リクエストとして数えます）。リンク列挙は sitemap / RSS を優先しページを舐めません
 - **正直な User-Agent**：ボットであることを明示します。**anti-bot 回避は実装しません**
 - **キャッシュ**：ETag / If-Modified-Since で再検証し、無駄な再取得を避けます
 
@@ -104,7 +104,7 @@ stdio 経由で MCP の 2026-07-28(ステートレスコア)と 2025 系の両�
 - ページ取得は `fetch`(mode 既定 `auto`)。長そうなページや一部しか要らないページは、
   まず `mode: "outline"` で見出しと各節のトークン量を確認し、必要な節だけ `section` 指定で取得する
 - 同じ URL の再取得で `unchanged` / `diff` が返るのは正常(変更なし / 変更節のみ)。
-  全文が必要なときだけ `force_full: true` を使う
+  差分ではなく内容全体をもう一度受け取りたいときだけ `force_full: true` を使う
 - サイト内のページを探すときは URL を推測せず `links`(`filter` で絞り込み)で列挙する
 - シェルが使える環境で、キーワードで探したいだけの長いページや複数ページの一括収集は、
   CLI で `amenbo fetch <url> > page.md` に落として grep / 部分読みする(本文をコンテキストに入れない)。
@@ -160,7 +160,7 @@ amenbo screenshot https://example.com/ --viewport-only --scale 0.5 --out-dir ./s
 | `section` | outline で得た section ID。その節の Markdown のみ返す(祖先見出しがあれば応答に `section_path`(` › ` 区切りのパンくず)を付与) |
 | `page` | ページ番号(既定 1) |
 | `max_tokens` | 1 ページの概算トークン上限(既定 8000) |
-| `force_full` | true で差分応答・定型ブロック除去を無効化し常に全文を返す |
+| `force_full` | true で差分応答・定型ブロック除去を無効化する(`max_tokens` によるページ分割は従来通り働く) |
 
 ### `links` でリンクを列挙
 | パラメータ | 説明 |
@@ -208,7 +208,7 @@ npm run build       # dist/ へビルド
 
 記事や研究で参照する場合は Zenodo の DOI を使ってください。上のバッジの `10.5281/zenodo.21553636` は**全バージョン共通の Concept DOI** で、常に最新版へ解決されます。特定の版を指す場合は、その版の DOI を [Zenodo のレコード](https://zenodo.org/records/21553637)から取得してください。
 
-機械可読な引用情報は [CITATION.cff](./CITATION.cff) にあります(GitHub の "Cite this repository" から BibTeX / APA を生成できます)。
+機械可読な引用情報は [CITATION.cff](https://github.com/Rererr/amenbo/blob/main/CITATION.cff) にあります(GitHub の "Cite this repository" から BibTeX / APA を生成できます)。
 
 ## ライセンス
 
