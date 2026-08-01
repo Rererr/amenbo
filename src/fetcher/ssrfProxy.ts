@@ -25,7 +25,11 @@ export interface ResolvedTarget {
 }
 
 /** ホスト名(またはIPリテラル)を解決し、公開アドレスを1つ返す。全て予約/解決不能ならnull(=接続拒否)。 */
-export async function resolveSafeAddress(host: string): Promise<ResolvedTarget | null> {
+export async function resolveSafeAddress(hostOrLiteral: string): Promise<ResolvedTarget | null> {
+  // 平文HTTP経路の呼び出し元はURL.hostnameを渡すため、IPv6リテラルは "[::1]" のように
+  // 角括弧付きで来る。CONNECT経路(splitHostPort)は括弧を外して渡すので、ここで揃えないと
+  // 同じアドレスがHTTPSでは通りHTTPでは名前解決失敗で403になる非対称が生まれる。
+  const host = hostOrLiteral.replace(/^\[|\]$/g, "");
   const literalVersion = isIP(host);
   if (literalVersion) {
     return isPrivateOrReservedIp(host) ? null : { address: host, family: literalVersion };

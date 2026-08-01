@@ -85,6 +85,13 @@ describe("resolveSafeAddress", () => {
     expect(await resolveSafeAddress("10.0.0.1")).toBeNull();
     expect(await resolveSafeAddress("::1")).toBeNull();
   });
+
+  it("角括弧付きのIPv6リテラルも括弧なしと同じ判定になる", async () => {
+    // 平文HTTP経路はURL.hostname("[::1]"形式)を渡すため、括弧を外さないと
+    // 公開IPv6が名前解決失敗として一律拒否される(CONNECT経路とだけ挙動がずれる)。
+    expect(await resolveSafeAddress("[2606:4700:4700::1111]")).toEqual({ address: "2606:4700:4700::1111", family: 6 });
+    expect(await resolveSafeAddress("[::1]")).toBeNull();
+  });
 });
 
 describe("SsrfProxy: CONNECT(HTTPS)", () => {

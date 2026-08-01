@@ -44,6 +44,26 @@ describe("isPrivateOrReservedIp(SSRF対策)", () => {
     expect(isPrivateOrReservedIp("64:ff9b::a9fe:a9fe")).toBe(true); // 169.254.169.254
     expect(isPrivateOrReservedIp("64:ff9b::808:808")).toBe(false); // 8.8.8.8(公開)
   });
+
+  it("6to4(2002::/16)はprefix直後の32bitに埋め込まれたIPv4側で判定する", () => {
+    expect(isPrivateOrReservedIp("2002:7f00:1::")).toBe(true); // 127.0.0.1
+    expect(isPrivateOrReservedIp("2002:a9fe:a9fe::")).toBe(true); // 169.254.169.254
+    expect(isPrivateOrReservedIp("2002:808:808::")).toBe(false); // 8.8.8.8(公開)
+  });
+
+  it("IPv6マルチキャストを拒否する(IPv4の224.0.0.0/4と対称に扱う)", () => {
+    expect(isPrivateOrReservedIp("ff02::1")).toBe(true); // 全ノード
+    expect(isPrivateOrReservedIp("ff05::1:3")).toBe(true); // サイトローカルDHCPサーバ
+    expect(isPrivateOrReservedIp("224.0.0.1")).toBe(true); // IPv4側(既存の対称なルール)
+  });
+
+  it("特殊用途として予約されたIPv4/IPv6範囲を拒否する", () => {
+    expect(isPrivateOrReservedIp("192.88.99.1")).toBe(true); // 6to4リレーエニーキャスト
+    expect(isPrivateOrReservedIp("2001:db8::1")).toBe(true); // ドキュメント用
+    expect(isPrivateOrReservedIp("2001::1")).toBe(true); // IETFプロトコル割当(Teredo等)
+    expect(isPrivateOrReservedIp("100::1")).toBe(true); // Discard-Only
+    expect(isPrivateOrReservedIp("64:ff9b:1::7f00:1")).toBe(true); // NAT64 local-use
+  });
 });
 
 describe("guardPublicAddress(C1: browser.ts/screenshot.tsが共通利用するスキーム+アドレス検証)", () => {

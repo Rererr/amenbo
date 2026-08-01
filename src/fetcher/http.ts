@@ -49,6 +49,7 @@ const IPV4_RESERVED_RANGES: Array<[string, number]> = [
   ["172.16.0.0", 12], // プライベート
   ["192.0.0.0", 24], // IETFプロトコル割当
   ["192.0.2.0", 24], // TEST-NET-1
+  ["192.88.99.0", 24], // 6to4リレーエニーキャスト(廃止済み)
   ["192.168.0.0", 16], // プライベート
   ["198.18.0.0", 15], // ベンチマーク
   ["198.51.100.0", 24], // TEST-NET-2
@@ -104,16 +105,41 @@ function isInIpv6Range(n: bigint, baseHex: string, prefixBits: number): boolean 
   return n >> shift === base >> shift;
 }
 
+const IPV6_RESERVED_RANGES: Array<[string, number]> = [
+  ["fc00::", 7], // ユニークローカル
+  ["fe80::", 10], // リンクローカル
+  ["ff00::", 8], // マルチキャスト(IPv4の224.0.0.0/4と対称)
+  ["100::", 64], // Discard-Only
+  ["2001::", 23], // IETFプロトコル割当(Teredo等)
+  ["2001:db8::", 32], // ドキュメント用
+  ["64:ff9b:1::", 48], // NAT64 local-use
+];
+
+/**
+ * IPv4を埋め込むIPv6表記と、埋め込み位置(右シフト量)。埋め込みIPv4側が予約アドレスなら遮断する。
+ * 例: `::127.0.0.1` / `64:ff9b::7f00:1` / `2002:7f00:1::` がloopbackへ到達しうる経路を塞ぐ。
+ */
+const IPV6_EMBEDDED_IPV4_RANGES: Array<[string, number, bigint]> = [
+  ["::ffff:0:0", 96, 0n], // IPv4-mapped
+  ["::", 96, 0n], // IPv4-compatible(廃止済み)
+  ["64:ff9b::", 96, 0n], // NAT64 well-known prefix
+  ["2002::", 16, 80n], // 6to4(IPv4はprefix直後の32bit)
+];
+
 function isPrivateIpv6(ip: string): boolean {
   const n = ipv6ToBigInt(ip);
   if (n === 0n || n === 1n) return true; // :: (未指定) / ::1 (ループバック)
-  if (isInIpv6Range(n, "fc00::", 7)) return true; // ユニークローカル
-  if (isInIpv6Range(n, "fe80::", 10)) return true; // リンクローカル
-  // 下位32bitにIPv4を埋め込む各表記(IPv4-mapped ::ffff:0:0/96、deprecatedなIPv4-compatible ::/96、
-  // NAT64の well-known prefix 64:ff9b::/96)は、埋め込みIPv4側が予約アドレスなら遮断する。
-  // 例: `::127.0.0.1` や `64:ff9b::7f00:1` がloopback/内部へ到達しうる経路を塞ぐ(::/::1は上で処理済み)。
-  if (isInIpv6Range(n, "::ffff:0:0", 96) || isInIpv6Range(n, "::", 96) || isInIpv6Range(n, "64:ff9b::", 96)) {
-    const v4 = [Number((n >> 24n) & 0xffn), Number((n >> 16n) & 0xffn), Number((n >> 8n) & 0xffn), Number(n & 0xffn)].join(".");
+  if (IPV6_RESERVED_RANGES.some(([base, prefix]) => isInIpv6Range(n, base, prefix))) return true;
+
+  for (const [base, prefix, shift] of IPV6_EMBEDDED_IPV4_RANGES) {
+    if (!isInIpv6Range(n, base, prefix)) continue;
+    const embedded = (n >> shift) & 0xffffffffn;
+    const v4 = [
+      Number((embedded >> 24n) & 0xffn),
+      Number((embedded >> 16n) & 0xffn),
+      Number((embedded >> 8n) & 0xffn),
+      Number(embedded & 0xffn),
+    ].join(".");
     return isPrivateIpv4(v4);
   }
   return false;
@@ -171,6 +197,12 @@ let blockAddress: (address: string) => boolean = isPrivateOrReservedIp;
 
 /** テスト専用。nullで本番の判定へ戻す(テストのafterEachで必ず戻すこと)。 */
 export function setAddressPolicyForTests(policy: ((address: string) => boolean) | null): void {
+  // distにも含まれる関数なので、テストランナー外では動かないようにしておく。
+  // これはセキュリティ境界ではない(呼べる時点で同一プロセス内でコードを実行できている)。
+  // 誤って本番経路から呼ばれたときに黙ってSSRF保護が外れる状態を避けるための歯止め。
+  if (process.env.VITEST === undefined && process.env.NODE_ENV !== "test") {
+    throw new Error("setAddressPolicyForTestsはテスト実行時のみ利用できます");
+  }
   blockAddress = policy ?? isPrivateOrReservedIp;
 }
 
@@ -348,11 +380,29 @@ export function resolveDefaultMaxBodyBytes(): number {
 }
 
 /**
+ * ボディ読み取り中に投げられたエラーを型付きエラーへ分類する。
+ *
+ * タイムアウトはヘッダ受信前に起きるとは限らない。ヘッダだけ返して本文を送り続けない
+ * (あるいは極端に遅い)サーバーでは、AbortはguardedFetchのfetch()ではなくボディ読み取り中に
+ * 届くため、signal.abortedを見ないと接続断と同じNetworkErrorに落ちてしまう。
+ */
+function classifyBodyReadError(error: unknown, url: string, timeout: TimeoutContext): AmenboError {
+  if (error instanceof AmenboError) return error;
+  if (timeout.signal.aborted) return new FetchTimeoutError(url, timeout.timeoutMs);
+  return NetworkError.fromCause(url, error);
+}
+
+interface TimeoutContext {
+  signal: AbortSignal;
+  timeoutMs: number;
+}
+
+/**
  * レスポンスボディをmaxBytes上限付きで読み切る。
  * Content-Lengthヘッダでの事前チェックに加え、ヘッダ詐称・chunked転送対策として
  * ストリーミング中の実受信バイト数も逐次チェックする(超過時点で読み取りを打ち切る)。
  */
-async function readBodyWithLimit(response: Response, url: string, maxBytes: number): Promise<Uint8Array> {
+async function readBodyWithLimit(response: Response, url: string, maxBytes: number, timeout: TimeoutContext): Promise<Uint8Array> {
   const declaredLength = response.headers.get("content-length");
   if (declaredLength && Number(declaredLength) > maxBytes) {
     throw new PayloadTooLargeError(url, Number(declaredLength), maxBytes);
@@ -393,8 +443,7 @@ async function readBodyWithLimit(response: Response, url: string, maxBytes: numb
     }
     return result;
   } catch (error) {
-    if (error instanceof AmenboError) throw error;
-    throw NetworkError.fromCause(url, error);
+    throw classifyBodyReadError(error, url, timeout);
   }
 }
 
@@ -416,6 +465,15 @@ export interface HttpGetOptions {
    * robots.txt自体の取得(politeness.ts内のhttpGet呼び出し)には渡さないこと(無限再帰回避)。
    */
   checkRobots?: (url: string) => Promise<void>;
+  /**
+   * 非HTML応答を、ハンドオフ用のプレビュー(既定256KB打ち切り)ではなく全体読み込みにする判定。
+   * 戻り値はそのコンテンツでの上限バイト数(nullならプレビュー読み)。
+   *
+   * PDFのように「ハンドオフではなく専用経路で全体を処理する」コンテンツのためにある。
+   * これが無いと、URL拡張子に現れないPDF(`/download?id=123`型)はプレビュー256KBを読んだ後、
+   * 専用経路が同じURLをもう一度全体取得することになり、先方へ2回取りにいってしまう。
+   */
+  fullReadMaxBytes?: (contentType: string | null, finalUrl: string) => number | null;
 }
 
 export interface HttpGetResult {
@@ -515,7 +573,10 @@ export async function httpGet(url: string, options: HttpGetOptions = {}): Promis
       throw new HttpStatusError(finalUrl, response.status, response.statusText);
     }
 
-    const buffer = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes());
+    const buffer = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes(), {
+      signal: controller.signal,
+      timeoutMs,
+    });
     const decoded = decodeHtmlBytes(buffer, response.headers.get("content-type"));
     return {
       finalUrl,
@@ -560,7 +621,10 @@ export async function httpGetBinary(url: string, options: HttpGetBinaryOptions =
       throw new HttpStatusError(finalUrl, response.status, response.statusText);
     }
 
-    const bytes = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes());
+    const bytes = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes(), {
+      signal: controller.signal,
+      timeoutMs,
+    });
 
     return { finalUrl, status: response.status, headers: response.headers, bytes, contentType: response.headers.get("content-type") };
   } finally {
@@ -582,7 +646,12 @@ const HANDOFF_PREVIEW_BYTES = 256 * 1024; // 256KB
  * readBodyWithLimitと異なり上限超過をエラーにせず「truncated」として扱う
  * (機能B: 非HTMLコンテンツのプレビュー用。ボディ全体は取得せず必要な分だけ読んで切断する)。
  */
-async function readBodyPreview(response: Response, url: string, maxBytes: number): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+async function readBodyPreview(
+  response: Response,
+  url: string,
+  maxBytes: number,
+  timeout: TimeoutContext,
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
   // 機能A(実機検証での追加修正): 読み取り中の接続断等をNetworkErrorへ分類する(readBodyWithLimitと同様)。
   try {
     if (!response.body) {
@@ -618,8 +687,7 @@ async function readBodyPreview(response: Response, url: string, maxBytes: number
     }
     return { bytes: result, truncated };
   } catch (error) {
-    if (error instanceof AmenboError) throw error;
-    throw NetworkError.fromCause(url, error);
+    throw classifyBodyReadError(error, url, timeout);
   }
 }
 
@@ -660,16 +728,24 @@ export async function httpGetRouted(url: string, options: HttpGetOptions = {}): 
       throw new HttpStatusError(finalUrl, response.status, response.statusText);
     }
 
+    const timeout = { signal: controller.signal, timeoutMs };
     const contentType = response.headers.get("content-type");
     if (!contentType || HTML_CONTENT_TYPE_RE.test(contentType)) {
-      const buffer = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes());
+      const buffer = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes(), timeout);
       const decoded = decodeHtmlBytes(buffer, contentType);
       return { kind: "html", status: response.status, finalUrl, headers: response.headers, html: decoded.text, encoding: decoded.encoding };
     }
 
     const declaredLengthHeader = response.headers.get("content-length");
     const declaredSize = declaredLengthHeader && Number.isFinite(Number(declaredLengthHeader)) ? Number(declaredLengthHeader) : null;
-    const { bytes, truncated } = await readBodyPreview(response, finalUrl, HANDOFF_PREVIEW_BYTES);
+
+    const fullReadLimit = options.fullReadMaxBytes?.(contentType, finalUrl) ?? null;
+    if (fullReadLimit !== null) {
+      const bytes = await readBodyWithLimit(response, finalUrl, fullReadLimit, timeout);
+      return { kind: "handoff", status: response.status, finalUrl, headers: response.headers, contentType, bytes, declaredSize, truncated: false };
+    }
+
+    const { bytes, truncated } = await readBodyPreview(response, finalUrl, HANDOFF_PREVIEW_BYTES, timeout);
     return { kind: "handoff", status: response.status, finalUrl, headers: response.headers, contentType, bytes, declaredSize, truncated };
   } finally {
     clearTimeout(timer);
