@@ -13,3 +13,27 @@ jobs:
         with:
           node-version: "24"
       - run: node scripts/check-version-sync.mjs --tag "$GITHUB_REF"
+
+  # publishする物そのもの(tarball)をリポジトリ外から入れて動かす。prepackはビルド漏れを
+  # 防ぐだけで、files/binの指定漏れや実行時のパス解決失敗はpackした物を実行しないと出ない。
+  # 最低サポート版のNodeで行うのは、engines宣言を実機で担保する場所がここしか無いため。
+  # ここで見るのはCLIの起動までで、実取得はe2e.yml(同じタグpushで走る)が担当する。
+  package-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - run: npm ci
+      - run: npm pack --pack-destination /tmp
+      - name: tarballをリポジトリ外へインストールして実行する
+        working-directory: /tmp
+        run: |
+          set -eu
+          mkdir -p pkgtest && cd pkgtest
+          npm init -y > /dev/null
+          npm install /tmp/amenbo-*.tgz
+          npx amenbo --version
+          npx amenbo --help
