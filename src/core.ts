@@ -17,7 +17,7 @@ import { AmenboError, SectionNotFoundError } from "./errors.js";
 import { detectDataSources } from "./extract/dataSources.js";
 import { extractMarkdown, type ExtractionMethod } from "./extract/markdown.js";
 import { buildOutline, findSection, formatBreadcrumb } from "./extract/outline.js";
-import { DEFAULT_PDF_MAX_BYTES, extractPdfText, looksLikePdf, markdownFromPdfText, renderPdfPages } from "./extract/pdf.js";
+import { DEFAULT_PDF_MAX_BYTES, extractPdfText, looksLikePdf, markdownFromPdfText, renderPdfPages, type PdfPageImage } from "./extract/pdf.js";
 import { evaluateQuality } from "./extract/qualityScore.js";
 import { closeBrowser } from "./fetcher/browser.js";
 import { fetchPage, type FetchTier, type HandoffResult } from "./fetcher/index.js";
@@ -292,14 +292,36 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
  * 自己ペナルティが発生していた不具合の修正。selector指定時は必ずfetchするため常にguardする。
  */
 /**
- * 同一URLへの取得中リクエスト。politenessの直列キューは取得の「開始間隔」を空けるだけで
+ * 同じキーの処理を1本にまとめる。politenessの直列キューは取得の「開始間隔」を空けるだけで
  * 取得自体は並行するため、同じURLへの同時呼び出しが先方へ2回出ていた。あわせて、
  * 先に始まった取得が後から完了して新しいキャッシュを古い内容で上書きする競合も塞ぐ。
  *
- * selector指定時はキャッシュを使わず結果もselector毎に変わるため対象外。
- * 相乗りした側には進捗通知が届かない(通知は最初の呼び出しのonProgressにのみ流れる)。
+ * 進捗通知は相乗りした呼び出しにも配る。まとめた先頭の呼び出しにprogressTokenが無く、
+ * 後から相乗りした呼び出しにだけある場合でも、通知が届かなくならないようにするため。
  */
-const inFlightPages = new Map<string, Promise<ResolvePageResult>>();
+class SharedOperations<T> {
+  private readonly running = new Map<string, { promise: Promise<T>; listeners: Set<(message: string) => void> }>();
+
+  run(key: string, onProgress: ((message: string) => void) | undefined, operation: (notify: (message: string) => void) => Promise<T>): Promise<T> {
+    const existing = this.running.get(key);
+    if (existing) {
+      if (onProgress) existing.listeners.add(onProgress);
+      return existing.promise;
+    }
+
+    const listeners = new Set<(message: string) => void>();
+    if (onProgress) listeners.add(onProgress);
+    const notify = (message: string): void => {
+      for (const listener of listeners) listener(message);
+    };
+    const promise = operation(notify).finally(() => this.running.delete(key));
+    this.running.set(key, { promise, listeners });
+    return promise;
+  }
+}
+
+/** selector指定時はキャッシュを使わず結果もselector毎に変わるため、まとめる対象にしない。 */
+const pageOperations = new SharedOperations<ResolvePageResult>();
 
 async function resolvePage(
   url: string,
@@ -336,11 +358,7 @@ async function resolvePage(
     return pageFromCacheEntry(url, cached, "fresh");
   }
 
-  const inFlight = inFlightPages.get(url);
-  if (inFlight) return inFlight;
-  const pending = fetchAndResolvePage(url, cached, onProgress).finally(() => inFlightPages.delete(url));
-  inFlightPages.set(url, pending);
-  return pending;
+  return pageOperations.run(url, onProgress, (notify) => fetchAndResolvePage(url, cached, notify));
 }
 
 /** resolvePageのうち、実際にサーバーへ取りにいく部分(同一URLでは1本にまとめられる)。 */
@@ -535,12 +553,18 @@ interface PrefetchedPdf {
   lastModified: string | null;
 }
 
+/** 取得・解析まで済んだPDF(応答の整形はpage/max_tokens毎に呼び出し側で行う)。 */
+type PdfDocument =
+  | { kind: "cached" }
+  | { kind: "text"; title: string | null; finalUrl: string; markdown: string; pageCount: number; extractedPageCount: number }
+  | { kind: "images"; title: string | null; finalUrl: string; pageCount: number; images: PdfPageImage[] };
+
 /**
- * 取得中のPDFリクエスト。resolvePageと同じ理由でまとめる。
- * 応答内容がpage/max_tokensで変わるため、キーにはその2つも含める
- * (条件が違う同時呼び出しは従来通り別々に取得する)。
+ * 取得中のPDF。キーはURLのみにする。page/max_tokensは応答整形の差でしかなく、
+ * そこまでキーに含めると同じPDFを条件違いで別々に取得・解析し、同じキャッシュ行を
+ * 競合して更新することになるため。
  */
-const inFlightPdfs = new Map<string, Promise<Array<TextBlock | ImageBlock>>>();
+const pdfOperations = new SharedOperations<PdfDocument>();
 
 /** PDFはキャッシュ層(§3-3等)を流用しつつ独立した経路で扱う。テキスト層があればMarkdown、無ければ画像タイル。 */
 async function handlePdfFetch(
@@ -550,34 +574,57 @@ async function handlePdfFetch(
   onProgress?: ((message: string) => void) | undefined,
   prefetched?: PrefetchedPdf,
 ): Promise<Array<TextBlock | ImageBlock>> {
-  if (prefetched) {
-    return buildPdfResponse(url, prefetched, page, maxTokens, onProgress);
+  if (!prefetched) {
+    const cached = cache.get(url);
+    if (cached && cache.isFresh(cached)) {
+      return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
+    }
   }
 
-  const key = `${url}\u0000${page}\u0000${maxTokens}`;
-  const inFlight = inFlightPdfs.get(key);
-  if (inFlight) return inFlight;
-  const pending = fetchPdf(url, page, maxTokens, onProgress).finally(() => inFlightPdfs.delete(key));
-  inFlightPdfs.set(key, pending);
-  return pending;
-}
+  const document = await pdfOperations.run(url, onProgress, (notify) => loadPdfDocument(url, notify, prefetched));
 
-/** handlePdfFetchのうち、実際にサーバーへ取りにいく部分(同一条件では1本にまとめられる)。 */
-async function fetchPdf(
-  url: string,
-  page: number,
-  maxTokens: number,
-  onProgress?: ((message: string) => void) | undefined,
-): Promise<Array<TextBlock | ImageBlock>> {
-
-  const cached = cache.get(url);
-  if (cached && cache.isFresh(cached)) {
+  if (document.kind === "cached") {
+    const cached = cache.get(url);
+    if (!cached) throw new UnexpectedNotModifiedError(url);
+    // PDF応答フォーマットのcacheStatus型は"fresh"|"miss"のみのため、304再検証も
+    // "fresh"として表示する(HTML応答の"revalidated"相当だが、既存フォーマットは変更しない)。
     return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
   }
 
+  if (document.kind === "text") {
+    const paginated = paginateMarkdown(document.markdown, maxTokens, page);
+    return [
+      {
+        type: "text",
+        text: formatPdfTextResponse(document.title, document.finalUrl, "miss", document.pageCount, paginated, document.extractedPageCount),
+      },
+    ];
+  }
+
+  const header = [
+    `title: ${document.title ?? "(なし)"}`,
+    `url: ${document.finalUrl}`,
+    `mode_used: screenshot`,
+    `cache: miss`,
+    `reason: PDFにテキスト層がありません(スキャンPDFの可能性。全${document.pageCount}ページ中先頭${document.images.length}ページを画像化)`,
+    `tiles: ${document.images.length}`,
+    `fetch_tier: pdf`,
+  ].join("\n");
+  return [
+    { type: "text", text: header },
+    ...document.images.map((image) => ({ type: "image" as const, data: image.png.toString("base64"), mimeType: "image/png" })),
+  ];
+}
+
+/** PDFの取得(必要なら)と解析。同一URLではこれが1本にまとめられる。 */
+async function loadPdfDocument(url: string, notify: (message: string) => void, prefetched?: PrefetchedPdf): Promise<PdfDocument> {
+  if (prefetched) return parsePdfDocument(url, prefetched, notify);
+
+  const cached = cache.get(url);
+
   // レビュー指摘対応: キャッシュfresh応答時は実ネットワークアクセスが発生しないため
   // guardしない(resolvePageと同じ方針)。実際にPDFを取得しに行く直前でのみguardする。
-  await politeness.guard(url, onProgress);
+  await politeness.guard(url, notify);
 
   // 低負荷原則対応: TTL失効後もキャッシュ(etag/last-modified)があれば条件付きGETで再検証する。
   // HTML経路(resolvePage)は既にこの流儀で304時のフルDL+再パースを回避しているのに対し、
@@ -601,33 +648,23 @@ async function fetchPdf(
     const cachedFinalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
     if (binary.finalUrl === cachedFinalUrl) {
       cache.touch(url);
-      // PDF応答フォーマットのcacheStatus型は"fresh"|"miss"のみのため、304再検証も
-      // "fresh"として表示する(HTML応答の"revalidated"相当だが、既存フォーマットは変更しない)。
-      return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
+      return { kind: "cached" };
     }
-    await politeness.guard(url, onProgress);
+    await politeness.guard(url, notify);
     binary = await httpGetBinary(url, { maxBytes: DEFAULT_PDF_MAX_BYTES, checkRobots });
     if (binary.status === 304) throw new UnexpectedNotModifiedError(url);
   }
 
-  return buildPdfResponse(
+  return parsePdfDocument(
     url,
     { bytes: binary.bytes, finalUrl: binary.finalUrl, etag: binary.headers.get("etag"), lastModified: binary.headers.get("last-modified") },
-    page,
-    maxTokens,
-    onProgress,
+    notify,
   );
 }
 
-/** 取得済みPDFバイト列からMarkdown応答(テキスト層あり)または画像タイル応答を組み立てる。 */
-async function buildPdfResponse(
-  url: string,
-  source: PrefetchedPdf,
-  page: number,
-  maxTokens: number,
-  onProgress?: ((message: string) => void) | undefined,
-): Promise<Array<TextBlock | ImageBlock>> {
-  onProgress?.("PDFを解析しています…");
+/** 取得済みPDFバイト列を解析し、テキスト層があればキャッシュへ書き込む。 */
+async function parsePdfDocument(url: string, source: PrefetchedPdf, notify: (message: string) => void): Promise<PdfDocument> {
+  notify("PDFを解析しています…");
   const textResult = await extractPdfText(source.bytes);
 
   if (textResult.hasTextLayer) {
@@ -644,30 +681,19 @@ async function buildPdfResponse(
         pdfExtractedPageCount: textResult.extractedPageCount,
       },
     });
-    const paginated = paginateMarkdown(markdown, maxTokens, page);
-    return [
-      {
-        type: "text",
-        text: formatPdfTextResponse(textResult.title, source.finalUrl, "miss", textResult.pageCount, paginated, textResult.extractedPageCount),
-      },
-    ];
+    return {
+      kind: "text",
+      title: textResult.title,
+      finalUrl: source.finalUrl,
+      markdown,
+      pageCount: textResult.pageCount,
+      extractedPageCount: textResult.extractedPageCount,
+    };
   }
 
   // テキスト層が実質無い(スキャンPDF): 先頭ページから画像タイルとして返す(キャッシュ非対象)
   const images = await renderPdfPages(source.bytes);
-  const header = [
-    `title: ${textResult.title ?? "(なし)"}`,
-    `url: ${source.finalUrl}`,
-    `mode_used: screenshot`,
-    `cache: miss`,
-    `reason: PDFにテキスト層がありません(スキャンPDFの可能性。全${textResult.pageCount}ページ中先頭${images.length}ページを画像化)`,
-    `tiles: ${images.length}`,
-    `fetch_tier: pdf`,
-  ].join("\n");
-  return [
-    { type: "text", text: header },
-    ...images.map((image) => ({ type: "image" as const, data: image.png.toString("base64"), mimeType: "image/png" })),
-  ];
+  return { kind: "images", title: textResult.title, finalUrl: source.finalUrl, pageCount: textResult.pageCount, images };
 }
 
 // ---- fetchツール ----

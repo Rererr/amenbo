@@ -95,6 +95,9 @@ export async function extractPdfText(bytes: Uint8Array, options: ExtractPdfTextO
     const infoTitle = (metadata?.info as { Title?: string } | undefined)?.Title ?? "";
     const title = infoTitle.trim() || null;
 
+    // ページ数上限で打ち切った場合、テキスト層の有無は先頭extractedPageCountページから判断する。
+    // 先頭がスキャンで後半にテキスト層があるPDFは画像フォールバックへ倒れるが、
+    // 全ページを読むと処理時間が有界にならないため、この近似を受け入れる。
     const hasTextLayer = extractedPageCount > 0 && totalChars / extractedPageCount >= MIN_TEXT_CHARS_PER_PAGE;
 
     return { hasTextLayer, pages: hasTextLayer ? pages : [], pageCount, extractedPageCount, title };
