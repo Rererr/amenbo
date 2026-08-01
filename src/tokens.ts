@@ -1,21 +1,31 @@
 /**
- * J5: CJK対応トークン見積り。
+ * J5: 文字クラス別のトークン見積り。
  *
- * 文字クラス別係数(plan.md §2 J5):
- *   - ASCII等(半角英数記号): 1トークン ≒ 3.8文字
- *   - CJK(かな/カナ/漢字/全角記号等): 1文字 ≒ 0.9トークン
+ * 文字クラス別係数:
+ *   - ラテン文字系(半角英数記号・ラテン拡張): 1トークン ≒ 3.8文字
+ *   - 非ラテン文字(キリル/ギリシャ/ヘブライ/アラビア/デーヴァナーガリー/タイ等): 1文字 ≒ 0.5トークン
+ *   - CJK・ハングル(かな/カナ/漢字/全角記号/ハングル): 1文字 ≒ 0.9トークン
  *
- * 設計判断: plan.mdはASCII/CJKの二区分のみを定義しているため、絵文字・キリル文字等の
- * その他多バイト文字はASCII側の係数で近似する(Phase 1のスコープでは十分な精度と判断)。
+ * 係数はo200k_base(GPT-4o)での実測に、既存係数と同程度(約1.15倍)の安全側マージンを乗せた値。
+ * 実測(1文字あたりトークン数): 英4.78文字/token、日0.79、韓0.75、中0.80、露0.29、
+ * 아0.35、希0.38、印0.40、泰0.44、希伯来0.47。
+ *
+ * 当初はASCII/CJKの二区分のみで、ハングルを含む非ラテン文字を全てASCII係数で近似していたが、
+ * 韓国語で実トークン量の約1/3にしか見積もれず、max_tokens予算が大きく超過していた
+ * (言語による不公平は本ツールでは不具合として扱う)。
  */
 
-const ASCII_CHARS_PER_TOKEN = 3.8;
+const LATIN_CHARS_PER_TOKEN = 3.8;
 const CJK_TOKENS_PER_CHAR = 0.9;
+const NON_LATIN_TOKENS_PER_CHAR = 0.5;
+
+/** ラテン文字・ASCII記号の範囲(基本ラテン〜ラテン文字拡張B)。 */
+const LATIN_MAX_CODE_POINT = 0x024f;
 
 /**
- * コードポイントがCJK(日本語表記に使われる文字)かどうかを判定する。
- * ひらがな・カタカナ・漢字(統合漢字+拡張A)・CJK記号(全角スペースを除く)・
- * 全角英数/記号(半角スペースに相当する全角スペースを除く)・半角カタカナを対象とする。
+ * 1文字あたりのトークン消費が大きい表記のコードポイントか判定する。
+ * ひらがな・カタカナ・漢字(統合漢字+拡張A/B+互換)・CJK記号(全角スペースを除く)・
+ * 全角英数/記号・半角カタカナ・ハングル(音節+字母)を対象とする。
  */
 function isCjkCodePoint(cp: number): boolean {
   return (
@@ -24,33 +34,43 @@ function isCjkCodePoint(cp: number): boolean {
     (cp >= 0x3400 && cp <= 0x4dbf) || // CJK統合漢字拡張A
     (cp >= 0x4e00 && cp <= 0x9fff) || // CJK統合漢字
     (cp >= 0xf900 && cp <= 0xfaff) || // CJK互換漢字
+    (cp >= 0x20000 && cp <= 0x2fa1f) || // CJK統合漢字拡張B以降
     (cp >= 0x3001 && cp <= 0x303f) || // CJK記号(0x3000の全角スペースは除く)
-    (cp >= 0xff01 && cp <= 0xffef) // 全角英数/記号・半角カタカナ(0xFF00の全角スペースは除く)
+    (cp >= 0xff01 && cp <= 0xffef) || // 全角英数/記号・半角カタカナ(0xFF00の全角スペースは除く)
+    (cp >= 0xac00 && cp <= 0xd7a3) || // ハングル音節
+    (cp >= 0x1100 && cp <= 0x11ff) || // ハングル字母
+    (cp >= 0x3130 && cp <= 0x318f) // ハングル互換字母
   );
 }
 
-/** テキストのCJK文字数と非CJK文字数を数える。 */
-function countByClass(text: string): { cjk: number; other: number } {
-  let cjk = 0;
-  let other = 0;
-  for (const ch of text) {
-    const cp = ch.codePointAt(0);
-    if (cp === undefined) continue;
-    if (isCjkCodePoint(cp)) {
-      cjk++;
-    } else if (!/\s/u.test(ch)) {
-      // 空白は係数計算に含めない(トークンをほぼ消費しないため)
-      other++;
-    }
-  }
-  return { cjk, other };
+interface CharClassCounts {
+  cjk: number;
+  nonLatin: number;
+  latin: number;
 }
 
-/** テキストの概算トークン数を返す(CJK文字クラス別係数)。 */
+/** テキストを文字クラス別に数える(空白はトークンをほぼ消費しないため数えない)。 */
+function countByClass(text: string): CharClassCounts {
+  const counts: CharClassCounts = { cjk: 0, nonLatin: 0, latin: 0 };
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    if (cp === undefined || /\s/u.test(ch)) continue;
+    if (isCjkCodePoint(cp)) {
+      counts.cjk++;
+    } else if (cp > LATIN_MAX_CODE_POINT) {
+      counts.nonLatin++;
+    } else {
+      counts.latin++;
+    }
+  }
+  return counts;
+}
+
+/** テキストの概算トークン数を返す(文字クラス別係数)。 */
 export function estimateTokens(text: string): number {
   if (text.length === 0) return 0;
-  const { cjk, other } = countByClass(text);
-  const tokens = cjk * CJK_TOKENS_PER_CHAR + other / ASCII_CHARS_PER_TOKEN;
+  const { cjk, nonLatin, latin } = countByClass(text);
+  const tokens = cjk * CJK_TOKENS_PER_CHAR + nonLatin * NON_LATIN_TOKENS_PER_CHAR + latin / LATIN_CHARS_PER_TOKEN;
   return Math.ceil(tokens);
 }
 

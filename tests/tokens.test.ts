@@ -30,6 +30,26 @@ describe("estimateTokens", () => {
   it("空白文字はトークン計算に含めない", () => {
     expect(estimateTokens("   \n\t  ")).toBe(0);
   });
+
+  it("ハングルは日本語・中国語と同じ係数で見積もる", () => {
+    // 実測(o200k_base)では韓国語0.75/中国語0.80/日本語0.79 tokens/文字とほぼ同水準。
+    // ラテン文字係数で近似していた頃は実トークン量の約1/3にしかならなかった。
+    const ko = "한".repeat(10);
+    expect(estimateTokens(ko)).toBe(9);
+    expect(estimateTokens(ko)).toBe(estimateTokens("あ".repeat(10)));
+  });
+
+  it("キリル/アラビア/タイ等の非ラテン文字はラテン文字より高く見積もる", () => {
+    for (const text of ["Проверка текста", "مراجعة النص", "การตรวจสอบข้อความ", "Έλεγχος κειμένου"]) {
+      const latin = "a".repeat([...text].filter((c) => !/\s/u.test(c)).length);
+      expect(estimateTokens(text)).toBeGreaterThan(estimateTokens(latin));
+    }
+  });
+
+  it("ラテン文字拡張(アクセント付き)はラテン文字係数のまま扱う", () => {
+    // 実測でもフランス語は3.95文字/token と英語に近く、CJK側へ寄せると過大見積りになる。
+    expect(estimateTokens("é".repeat(38))).toBe(10);
+  });
 });
 
 describe("paginateMarkdown", () => {
