@@ -46,6 +46,16 @@ describe("estimateTokens", () => {
     }
   });
 
+  it("絵文字はラテン文字より大きく見積もる(実測1.3〜1.8 tokens/文字)", () => {
+    const emoji = "🎉🚀📦🔧💡";
+    expect(estimateTokens(emoji)).toBeGreaterThan(estimateTokens("abcde"));
+  });
+
+  it("Markdown表の記法(ASCII記号)は同じ数の英字より大きく見積もる", () => {
+    // `| --- |`のような記法は文字ほど圧縮されない。実測でここが最も過小に外れていた。
+    expect(estimateTokens("|---|---|---|")).toBeGreaterThan(estimateTokens("abcdefghijklm"));
+  });
+
   it("ラテン文字拡張(アクセント付き)はラテン文字係数のまま扱う", () => {
     // 実測でもフランス語は3.95文字/token と英語に近く、CJK側へ寄せると過大見積りになる。
     expect(estimateTokens("é".repeat(38))).toBe(10);
