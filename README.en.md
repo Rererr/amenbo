@@ -28,7 +28,7 @@ For a measured comparison against similar tools (official fetch MCP / Jina Reade
 - **CJK-aware content pruning**: removes nav / ads / footers using punctuation density, character-class ratios, and link density
 - **Diff responses**: when refetching a URL, returns `unchanged` if nothing changed, or only the changed sections
 - **Automatic Markdown/screenshot switching**: only pages with a low quality score become screenshots, avoiding the round trip of reading broken Markdown and refetching
-- **CJK token estimation**: Japanese text costs more tokens per character than English, so page-split budgets are computed with per-character-class coefficients
+- **Script-aware token estimation**: Japanese, Korean, Cyrillic, emoji and the like cost more tokens per character than English, so page-split budgets are computed with per-character-class coefficients calibrated against a real tokenizer
 
 ## Low impact on target sites
 
