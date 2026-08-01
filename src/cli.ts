@@ -338,7 +338,7 @@ export function writeBlocks(blocks: Array<TextBlock | ImageBlock>, url: string, 
   // 同じホストの別ページを同じ--out-dirへ撮ると、連番だけでは同名になり前回の画像を
   // 黙って上書きしてしまう。URLごとに短いハッシュを挟んで衝突を避ける
   // (同じURLの撮り直しは同じ名前になり、これまで通り上書きされる)。
-  const urlDigest = createHash("sha256").update(url).digest("hex").slice(0, 8);
+  const urlDigest = createHash("sha256").update(url).digest("hex").slice(0, 12);
   const savedPaths: string[] = [];
   let sequence = 0;
 

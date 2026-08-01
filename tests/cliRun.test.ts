@@ -294,7 +294,7 @@ describe("writeBlocks() - ImageBlockのファイル保存とパス生成", () =>
 
       const names = savedNames(dir);
       expect(names).toHaveLength(2);
-      expect(names[0]).toMatch(/^amenbo-blog\.example\.co\.jp-[0-9a-f]{8}-1\.png$/);
+      expect(names[0]).toMatch(/^amenbo-blog\.example\.co\.jp-[0-9a-f]{12}-1\.png$/);
       expect(readFileSync(join(dir, names[0]!))).toEqual(png1);
       expect(readFileSync(join(dir, names[1]!))).toEqual(png2);
     } finally {
@@ -338,7 +338,7 @@ describe("writeBlocks() - ImageBlockのファイル保存とパス生成", () =>
       const png = Buffer.from([9]);
       writeBlocks([{ type: "image", data: png.toString("base64"), mimeType: "image/png" }], "not a url", dir);
       const names = savedNames(dir);
-      expect(names[0]).toMatch(/^amenbo-page-[0-9a-f]{8}-1\.png$/);
+      expect(names[0]).toMatch(/^amenbo-page-[0-9a-f]{12}-1\.png$/);
       expect(readFileSync(join(dir, names[0]!))).toEqual(png);
     } finally {
       rmSync(dir, { recursive: true, force: true });
