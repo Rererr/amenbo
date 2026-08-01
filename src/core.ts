@@ -118,7 +118,14 @@ const DEFAULT_MAX_TOKENS = 8000;
 const DEFAULT_PAGE = 1;
 const DEFAULT_SCREENSHOT_SCALE = 1.0;
 
-/** そのURLがPDFとしてキャッシュ済みか(pdfPageCountはPDF経路だけが書くメタデータ)。 */
+/**
+ * そのURLがPDFとしてキャッシュ済みか(pdfPageCountはPDF経路だけが書くメタデータ)。
+ *
+ * 「解析中でまだキャッシュに現れていない間に届いた同一URLの要求が、HTML経路へ入って
+ * 取得をやり直す」という窓は無い。pdf.jsの解析はマクロタスクを一切譲らないため
+ * (1000ページのPDFの解析192msの間、5ms間隔のタイマーが0回発火)、後続要求が処理されるのは
+ * 解析が終わってキャッシュが書かれた後になる。
+ */
 function isCachedAsPdf(url: string): boolean {
   return typeof cache.get(url)?.metadata.pdfPageCount === "number";
 }
@@ -557,7 +564,7 @@ interface PrefetchedPdf {
 type PdfDocument =
   | { kind: "cached" }
   | { kind: "text"; title: string | null; finalUrl: string; markdown: string; pageCount: number; extractedPageCount: number }
-  | { kind: "images"; title: string | null; finalUrl: string; pageCount: number; images: PdfPageImage[] };
+  | { kind: "images"; title: string | null; finalUrl: string; pageCount: number; extractedPageCount: number; images: PdfPageImage[] };
 
 /**
  * 取得中のPDF。キーはURLのみにする。page/max_tokensは応答整形の差でしかなく、
@@ -601,12 +608,18 @@ async function handlePdfFetch(
     ];
   }
 
+  // 判定に使ったページ数がPDF全体より少ない場合、「テキスト層が無い」と言い切ると誤りうる
+  // (先頭がスキャンで後半にテキスト層があるPDF)。何を根拠に判定したかをそのまま出す。
+  const judged =
+    document.extractedPageCount < document.pageCount
+      ? `先頭${document.extractedPageCount}ページにテキスト層がありません(ページ数上限のため全体は判定していません)`
+      : `PDFにテキスト層がありません(スキャンPDFの可能性)`;
   const header = [
     `title: ${document.title ?? "(なし)"}`,
     `url: ${document.finalUrl}`,
     `mode_used: screenshot`,
     `cache: miss`,
-    `reason: PDFにテキスト層がありません(スキャンPDFの可能性。全${document.pageCount}ページ中先頭${document.images.length}ページを画像化)`,
+    `reason: ${judged}。全${document.pageCount}ページ中先頭${document.images.length}ページを画像化`,
     `tiles: ${document.images.length}`,
     `fetch_tier: pdf`,
   ].join("\n");
@@ -693,7 +706,14 @@ async function parsePdfDocument(url: string, source: PrefetchedPdf, notify: (mes
 
   // テキスト層が実質無い(スキャンPDF): 先頭ページから画像タイルとして返す(キャッシュ非対象)
   const images = await renderPdfPages(source.bytes);
-  return { kind: "images", title: textResult.title, finalUrl: source.finalUrl, pageCount: textResult.pageCount, images };
+  return {
+    kind: "images",
+    title: textResult.title,
+    finalUrl: source.finalUrl,
+    pageCount: textResult.pageCount,
+    extractedPageCount: textResult.extractedPageCount,
+    images,
+  };
 }
 
 // ---- fetchツール ----
