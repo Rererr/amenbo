@@ -177,11 +177,8 @@ export async function startFixtureServer(): Promise<FixtureServer> {
         return;
       }
       case "/download":
-      case "/download-2":
         // URL拡張子にPDFが現れない配布エンドポイント(官公庁の /download?id=123 型)。
         // content-typeで判明した時点で全体を読み切っているかを、取得回数で判定する。
-        // 2つ用意しているのは、キャッシュにPDFとして記録済みかどうかで経路が変わるため、
-        // 「まだ一度も取得していないURL」を要るテストが独立して使えるようにするため。
         send(200, "application/pdf", LARGE_PDF_BYTES);
         return;
       case "/pdf-moving":
