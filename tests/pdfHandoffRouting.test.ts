@@ -60,29 +60,47 @@ describe("拡張子なしPDF(content-typeのみで判明)のハンドオフ→PD
     guardSpy.mockRestore();
   });
 
-  it("URL拡張子で判定できないPDFはhandlePdfFetch経由でmarkdown応答(fetch_tier: pdf)になる", async () => {
+  it("URL拡張子で判定できないPDFはmarkdown応答(fetch_tier: pdf)になり、取得は1回で済む", async () => {
+    const url = "https://example.com/download?id=123";
     httpGetRoutedMock.mockResolvedValue({
       kind: "handoff",
       status: 200,
-      finalUrl: "https://example.com/download?id=123",
-      headers: new Headers(),
+      finalUrl: url,
+      headers: new Headers({ etag: '"pdf-v1"' }),
       contentType: "application/pdf",
-      bytes: new Uint8Array(0),
+      bytes: fixture("sample-text.pdf"),
       declaredSize: null,
       truncated: false,
     });
-    httpGetBinaryMock.mockResolvedValue({
-      finalUrl: "https://example.com/download?id=123",
-      status: 200,
-      headers: new Headers(),
-      bytes: fixture("sample-text.pdf"),
-      contentType: "application/pdf",
-    });
 
-    const content = await handleFetchTool({ url: "https://example.com/download?id=123" });
+    const content = await handleFetchTool({ url });
     const text = textOf(content);
     expect(text).toContain("mode_used: markdown");
     expect(text).toContain("fetch_tier: pdf");
+    // content-typeで判明した時点で本体を読み切っているため、PDF経路が取得し直さない
+    expect(httpGetBinaryMock).not.toHaveBeenCalled();
+  });
+
+  it("2回目以降もPDF応答のまま返る(HTMLページの応答形式に変わらない)", async () => {
+    const url = "https://example.com/download?id=456";
+    httpGetRoutedMock.mockResolvedValue({
+      kind: "handoff",
+      status: 200,
+      finalUrl: url,
+      headers: new Headers(),
+      contentType: "application/pdf",
+      bytes: fixture("sample-text.pdf"),
+      declaredSize: null,
+      truncated: false,
+    });
+
+    await handleFetchTool({ url });
+    httpGetRoutedMock.mockClear();
+    const text = textOf(await handleFetchTool({ url }));
+
+    expect(text).toContain("fetch_tier: pdf");
+    // キャッシュがPDFと記録しているため、HTML経路(httpGetRouted)へ行かない
+    expect(httpGetRoutedMock).not.toHaveBeenCalled();
   });
 
   it("PDF以外の非HTMLコンテンツ(application/zip)は従来通りhandoff応答のままになる(デグレ防止)", async () => {

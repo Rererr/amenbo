@@ -118,6 +118,11 @@ const DEFAULT_MAX_TOKENS = 8000;
 const DEFAULT_PAGE = 1;
 const DEFAULT_SCREENSHOT_SCALE = 1.0;
 
+/** そのURLがPDFとしてキャッシュ済みか(pdfPageCountはPDF経路だけが書くメタデータ)。 */
+function isCachedAsPdf(url: string): boolean {
+  return typeof cache.get(url)?.metadata.pdfPageCount === "number";
+}
+
 /** URLのhostnameを安全に取り出す(不正URLならnull)。Phase 4テンプレート学習のドメインキーに使う。 */
 function safeHostname(url: string): string | null {
   try {
@@ -167,7 +172,13 @@ async function fetchAndExtract(
   // 確認する(guardedFetch内で着地先オリジンが変わった場合のみ呼ばれる。同一オリジン内
   // リダイレクトや初回URLは呼び出し元のpoliteness.guardで確認済みのため二重チェックしない)。
   const checkRobots = (targetUrl: string) => politeness.checkRobotsAllowed(targetUrl);
-  const fetchResult = await fetchPage(url, conditionalHeaders ? { headers: conditionalHeaders, onProgress, checkRobots } : { onProgress, checkRobots });
+  // content-typeでしかPDFと分からないURLは、プレビュー読み(256KB)で返してもらうと
+  // 専用経路が同じURLをもう一度全体取得することになる。この段階で全体を読み切ってもらい、
+  // 取得を1回で済ませる(handleFetchToolのhandoff分岐がこのバイト列をそのまま使う)。
+  const fullReadMaxBytes = (contentType: string | null, finalUrl: string): number | null =>
+    looksLikePdf(finalUrl, contentType) ? DEFAULT_PDF_MAX_BYTES : null;
+  const baseOptions = { onProgress, checkRobots, fullReadMaxBytes };
+  const fetchResult = await fetchPage(url, conditionalHeaders ? { ...baseOptions, headers: conditionalHeaders } : baseOptions);
   if ("notModified" in fetchResult) {
     return { status: "not_modified" };
   }
@@ -452,7 +463,11 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
   // guardとは別枠。handleFetchTool冒頭の共通guardは撤去済み)。キャッシュfresh返却時は通らない。
   await politeness.guard(url, options.onProgress);
   options.onProgress?.("スクリーンショットを撮影しています…");
-  const captured = await captureTiledScreenshot(url, options);
+  const captured = await captureTiledScreenshot(url, {
+    ...options,
+    // ブラウザ層が別オリジンへリダイレクトした場合もrobots.txtを確認する(HTTP層と同じ扱い)。
+    checkRobots: (targetUrl: string) => politeness.checkRobotsAllowed(targetUrl),
+  });
   cache.setScreenshot({
     cacheKey,
     url: captured.finalUrl,
@@ -477,13 +492,29 @@ export type ImageBlock = { type: "image"; data: string; mimeType: string };
 
 // ---- PDF対応(URL判定で独立経路。mode/selector/section等は適用しない) ----
 
+/**
+ * content-type判定でPDFと分かったため、既に本体を取得済みの場合に渡す。
+ * これがある場合はネットワークへ行かない(同じURLを二度取りにいかないための経路)。
+ */
+interface PrefetchedPdf {
+  bytes: Uint8Array;
+  finalUrl: string;
+  etag: string | null;
+  lastModified: string | null;
+}
+
 /** PDFはキャッシュ層(§3-3等)を流用しつつ独立した経路で扱う。テキスト層があればMarkdown、無ければ画像タイル。 */
 async function handlePdfFetch(
   url: string,
   page: number,
   maxTokens: number,
   onProgress?: ((message: string) => void) | undefined,
+  prefetched?: PrefetchedPdf,
 ): Promise<Array<TextBlock | ImageBlock>> {
+  if (prefetched) {
+    return buildPdfResponse(url, prefetched, page, maxTokens, onProgress);
+  }
+
   const cached = cache.get(url);
   if (cached && cache.isFresh(cached)) {
     return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
@@ -515,27 +546,44 @@ async function handlePdfFetch(
     return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
   }
 
+  return buildPdfResponse(
+    url,
+    { bytes: binary.bytes, finalUrl: binary.finalUrl, etag: binary.headers.get("etag"), lastModified: binary.headers.get("last-modified") },
+    page,
+    maxTokens,
+    onProgress,
+  );
+}
+
+/** 取得済みPDFバイト列からMarkdown応答(テキスト層あり)または画像タイル応答を組み立てる。 */
+async function buildPdfResponse(
+  url: string,
+  source: PrefetchedPdf,
+  page: number,
+  maxTokens: number,
+  onProgress?: ((message: string) => void) | undefined,
+): Promise<Array<TextBlock | ImageBlock>> {
   onProgress?.("PDFを解析しています…");
-  const textResult = await extractPdfText(binary.bytes);
+  const textResult = await extractPdfText(source.bytes);
 
   if (textResult.hasTextLayer) {
     const markdown = markdownFromPdfText(textResult);
     cache.set({
       url,
-      etag: binary.headers.get("etag"),
-      lastModified: binary.headers.get("last-modified"),
+      etag: source.etag,
+      lastModified: source.lastModified,
       markdown,
-      metadata: { title: textResult.title, finalUrl: binary.finalUrl, pdfPageCount: textResult.pageCount },
+      metadata: { title: textResult.title, finalUrl: source.finalUrl, pdfPageCount: textResult.pageCount },
     });
     const paginated = paginateMarkdown(markdown, maxTokens, page);
-    return [{ type: "text", text: formatPdfTextResponse(textResult.title, binary.finalUrl, "miss", textResult.pageCount, paginated) }];
+    return [{ type: "text", text: formatPdfTextResponse(textResult.title, source.finalUrl, "miss", textResult.pageCount, paginated) }];
   }
 
   // テキスト層が実質無い(スキャンPDF): 先頭ページから画像タイルとして返す(キャッシュ非対象)
-  const images = await renderPdfPages(binary.bytes);
+  const images = await renderPdfPages(source.bytes);
   const header = [
     `title: ${textResult.title ?? "(なし)"}`,
-    `url: ${binary.finalUrl}`,
+    `url: ${source.finalUrl}`,
     `mode_used: screenshot`,
     `cache: miss`,
     `reason: PDFにテキスト層がありません(スキャンPDFの可能性。全${textResult.pageCount}ページ中先頭${images.length}ページを画像化)`,
@@ -578,7 +626,9 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
   // 個別に行う設計へ変更した(このファイル内の各所コメント参照)。
   assertHttpScheme(input.url);
 
-  if (looksLikePdf(input.url, null)) {
+  // URL拡張子に現れないPDF(`/download?id=123`型)は初回取得後にPDFとしてキャッシュされる。
+  // その記録も入口判定に使わないと、2回目以降だけHTMLページの応答形式で返ってしまう。
+  if (looksLikePdf(input.url, null) || isCachedAsPdf(input.url)) {
     return handlePdfFetch(input.url, page, maxTokens, input.onProgress);
   }
 
@@ -611,7 +661,13 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
   if ("kind" in resolvedOrHandoff) {
     const { handoff } = resolvedOrHandoff;
     if (looksLikePdf(handoff.finalUrl, handoff.contentType)) {
-      return handlePdfFetch(input.url, page, maxTokens, input.onProgress);
+      // fullReadMaxBytesで本体を読み切っているため、ここで取得し直さない。
+      return handlePdfFetch(input.url, page, maxTokens, input.onProgress, {
+        bytes: handoff.bytes,
+        finalUrl: handoff.finalUrl,
+        etag: handoff.etag,
+        lastModified: handoff.lastModified,
+      });
     }
     return [{ type: "text", text: formatHandoffResponse(handoff, maxTokens) }];
   }

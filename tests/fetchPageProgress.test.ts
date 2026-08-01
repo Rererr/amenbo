@@ -66,6 +66,38 @@ describe("fetchPage - onProgress(MCP progress notifications)", () => {
     expect(fetchWithBrowserMock).not.toHaveBeenCalled();
   });
 
+  it("forceBrowser指定時はHTTP取得を行わずブラウザだけで取得する", async () => {
+    fetchWithBrowserMock.mockResolvedValue({
+      finalUrl: "https://example.com/",
+      html: "<html><body>rendered</body></html>",
+      status: 200,
+      geometry: { textBlocks: [], visualElements: [], pageWidth: 0, pageHeight: 0 },
+    });
+
+    const onProgress = vi.fn();
+    const result = await fetchPage("https://example.com/", { forceBrowser: true, onProgress });
+
+    expect("tier" in result && result.tier).toBe("browser");
+    // 結果を捨てるだけのHTTP取得を先方へ送らない(低負荷の要点)
+    expect(httpGetRoutedMock).not.toHaveBeenCalled();
+    expect(onProgress).toHaveBeenCalledWith("ブラウザで取得しています…");
+  });
+
+  it("ブラウザ層にもrobots.txt確認コールバックを渡す(別オリジンへの遷移用)", async () => {
+    httpGetRoutedMock.mockResolvedValue(htmlRouted('<html><body><div id="root"></div></body></html>'));
+    fetchWithBrowserMock.mockResolvedValue({
+      finalUrl: "https://example.com/",
+      html: "<html><body>rendered</body></html>",
+      status: 200,
+      geometry: { textBlocks: [], visualElements: [], pageWidth: 0, pageHeight: 0 },
+    });
+    const checkRobots = vi.fn(async () => {});
+
+    await fetchPage("https://example.com/", { checkRobots });
+
+    expect(fetchWithBrowserMock).toHaveBeenCalledWith("https://example.com/", undefined, { checkRobots });
+  });
+
   it("onProgress未指定でも後方互換で動作する", async () => {
     httpGetRoutedMock.mockResolvedValue(htmlRouted('<html><body><div id="root"></div></body></html>'));
     fetchWithBrowserMock.mockResolvedValue({

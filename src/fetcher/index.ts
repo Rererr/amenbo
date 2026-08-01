@@ -39,12 +39,15 @@ export interface HandoffResult {
   finalUrl: string;
   status: number;
   contentType: string | null;
-  /** プレビュー用に読み取ったボディ(既定256KB上限。ファイル全体ではない)。 */
+  /** 読み取ったボディ。既定はプレビュー(256KB上限)だが、fullReadMaxBytes該当時は全体。 */
   bytes: Uint8Array;
   /** Content-Lengthヘッダ由来の宣言サイズ(無ければnull)。 */
   declaredSize: number | null;
   /** プレビュー上限で本文を打ち切った場合true(ファイル全体は取得していない)。 */
   truncated: boolean;
+  /** 全体取得した非HTMLをキャッシュする経路(PDF等)向けのバリデータ。 */
+  etag: string | null;
+  lastModified: string | null;
 }
 
 // ---- SPA判定ヒューリスティック ----
@@ -101,6 +104,26 @@ export interface FetchPageOptions extends HttpGetOptions {
 
 /** 二段フェッチ本体。条件付きGETでstatus 304が返った場合はNotModifiedResultを返す。 */
 export async function fetchPage(url: string, options: FetchPageOptions = {}): Promise<FetchResult | NotModifiedResult | HandoffResult> {
+  // forceBrowserは「HTTP取得の結果を使わない」指定なので、HTTP GETを先に走らせない。
+  // 以前は判定を取得の後に置いていたため、ブラウザで取り直す全ケースで結果を捨てるだけの
+  // HTTP取得が1回余計に先方へ飛んでいた(body-fallbackからの再エスカレーションでは、
+  // 元の取得と合わせて同じページを3回取りにいっていた)。
+  if (options.forceBrowser) {
+    options.onProgress?.("ブラウザで取得しています…");
+    const forced = await fetchWithBrowser(url, options.timeoutMs, { checkRobots: options.checkRobots });
+    return {
+      finalUrl: forced.finalUrl,
+      html: forced.html,
+      tier: "browser",
+      status: forced.status,
+      encoding: "UTF-8",
+      etag: null,
+      lastModified: null,
+      escalationReason: "forceBrowser指定",
+      geometry: forced.geometry,
+    };
+  }
+
   const routed = await httpGetRouted(url, options);
 
   if (routed.kind === "notModified") {
@@ -123,10 +146,12 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
       bytes: routed.bytes,
       declaredSize: routed.declaredSize,
       truncated: routed.truncated,
+      etag: routed.headers.get("etag"),
+      lastModified: routed.headers.get("last-modified"),
     };
   }
 
-  const spaSignals = options.forceBrowser ? { escalate: true, reason: "forceBrowser指定" } : detectSpaSignals(routed.html);
+  const spaSignals = detectSpaSignals(routed.html);
 
   if (!spaSignals.escalate) {
     return {
@@ -143,7 +168,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
   }
 
   options.onProgress?.("ブラウザで再取得しています…");
-  const browserResult = await fetchWithBrowser(routed.finalUrl, options.timeoutMs);
+  const browserResult = await fetchWithBrowser(routed.finalUrl, options.timeoutMs, { checkRobots: options.checkRobots });
   return {
     finalUrl: browserResult.finalUrl,
     html: browserResult.html,
