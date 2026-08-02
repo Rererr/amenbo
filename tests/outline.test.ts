@@ -83,6 +83,38 @@ describe("buildOutline", () => {
     expect(outline.sections[0]?.excerpt).toBe("説明図を参照。");
   });
 
+  it("URLにエスケープされた括弧(\\( \\))を含むリンクもexcerptを壊さない(Wikipedia Fileリンク等)", () => {
+    const markdown = [
+      "# 見出し",
+      "",
+      String.raw`[Tokyo](https://en.wikipedia.org/wiki/File:Tokyo_\(Chinese_characters\).svg)は東京を指す。`,
+    ].join("\n");
+    const outline = buildOutline(markdown);
+    expect(outline.sections[0]?.excerpt).toBe("Tokyoは東京を指す。");
+  });
+
+  it("画像リンクを内包するリンク[![alt](img)](url)(Wikipediaのサムネイル形式)もexcerptを壊さない", () => {
+    const markdown = [
+      "# 見出し",
+      "",
+      String.raw`[![](//x/thumb.png)](https://en.wikipedia.org/wiki/File:Tokyo_\(Chinese_characters\).svg)東京都は日本の首都である。`,
+    ].join("\n");
+    const outline = buildOutline(markdown);
+    expect(outline.sections[0]?.excerpt).toBe("東京都は日本の首都である。");
+  });
+
+  it("URLに生のバランスした括弧(例: a(b))を含むリンクも壊さない", () => {
+    const markdown = ["# 見出し", "", "[説明](https://ex.com/a(b))を参照。"].join("\n");
+    const outline = buildOutline(markdown);
+    expect(outline.sections[0]?.excerpt).toBe("説明を参照。");
+  });
+
+  it("タイトル付きリンク([text](url \"title\"))も壊さない", () => {
+    const markdown = ["# 見出し", "", '[参照](https://example.com/page "Example Title")を参照。'].join("\n");
+    const outline = buildOutline(markdown);
+    expect(outline.sections[0]?.excerpt).toBe("参照を参照。");
+  });
+
   it("フェンスコードブロック内の#はheadingとして扱わない", () => {
     const markdown = "# 本物の見出し\n\n```\n# これはコード内のコメント\n```\n\n本文。";
     const outline = buildOutline(markdown);

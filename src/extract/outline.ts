@@ -158,6 +158,23 @@ export function splitSections(markdown: string): MarkdownSection[] {
 }
 
 /**
+ * リンク先(URL)部分にマッチする断片。`[^)]*`だと`\)`のような
+ * エスケープされた括弧やWikipediaのFileリンク等の生の丸括弧で最初の`)`に
+ * 早期マッチし、URLの残りがexcerptにプレーンテキストとして漏れる
+ * (実測: `en.wikipedia.org/wiki/Tokyo`のoutlineで`.svg)`等の断片が複数節に露出)。
+ * エスケープシーケンス(`\\.`)と1階層までバランスした生の括弧を許容して回避する
+ * (CommonMarkは3階層までのネスト推奨だが、excerptの装飾除去用途では1階層で十分)。
+ *
+ * **3つの選択肢は先頭1文字が重ならないようにすること。** 中央を`[^()]`(バックスラッシュを含む)
+ * にすると`\\`が2つの経路で消費でき、閉じ括弧が来ない入力で総当たりが指数的に増える。
+ * 実測でバックスラッシュ100個の未閉鎖リンクが98秒かかった(取得したWebページの本文が
+ * そのまま入力になるので、これは外部から踏ませられる)。`\\`を中央から除いて解消している。
+ */
+const LINK_DESTINATION = String.raw`(?:\\.|[^()\\]|\([^()]*\))*`;
+const IMAGE_MARKDOWN_LINK = new RegExp(String.raw`!\[([^\]]*)\]\(${LINK_DESTINATION}\)`, "g");
+const TEXT_MARKDOWN_LINK = new RegExp(String.raw`\[([^\]]*)\]\(${LINK_DESTINATION}\)`, "g");
+
+/**
  * Markdownのリンク/画像記法をテキストのみへ変換する(excerpt専用)。
  *
  * レビュー指摘対応: outlineのexcerptに`[text](url)`や`![alt](url)`、`(#cite_note-…)`等の
@@ -167,9 +184,7 @@ export function splitSections(markdown: string): MarkdownSection[] {
  * 本文(section取得時のmarkdown)には手を加えず、excerpt生成時のみ適用する。
  */
 function stripMarkdownLinks(text: string): string {
-  return text
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+  return text.replace(IMAGE_MARKDOWN_LINK, "$1").replace(TEXT_MARKDOWN_LINK, "$1");
 }
 
 /** 節の内容から、見出し行を除いた本文の冒頭1文を抜き出す。 */
