@@ -113,12 +113,29 @@ function textOf(result) {
 
 const WIKIPEDIA_TABLE_URL = "https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7";
 const AOZORA_URL = "https://www.aozora.gr.jp/cards/000148/files/789_14547.html";
+// 抽出品質のチューニングは日本語向けだが、動作は言語非依存であることを謳っている。
+// 実サイトのケースが日本語だけだと、非日本語ページでのみ壊れる欠陥(outlineの括弧欠陥・
+// 本文スコアラーの言語間不公平)を検出できないため、英語ページも定点観測に入れる。
+const EN_WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/Tokyo";
 
 const CASES = [
   {
     id: "wikipedia-table",
     url: WIKIPEDIA_TABLE_URL,
     check: (text) => /^\|.*\|$/m.test(text) || "Markdown表(|区切り)が含まれていない",
+  },
+  {
+    id: "en-wikipedia-body",
+    url: EN_WIKIPEDIA_URL,
+    check: (text) => {
+      // 本文が刈られると見出しとリンクだけが残るため、地の文の量で判定する(英語の記事本文が
+      // 低価値ブロック扱いで丸ごと除去される回帰の検出)。既定のmax_tokens=8000で返る1ページ目は
+      // 冒頭のinfobox表が大半を占め、実測30箇所。本文消失時は数箇所まで落ちるため15を境界にする。
+      const sentences = (text.match(/[a-z]{3,}[,;] |[a-z]{3,}\. /g) ?? []).length;
+      if (sentences < 15) return `英文の地の文が少なすぎる(文らしい区切り${sentences}箇所)`;
+      if (!/^\|.*\|$/m.test(text)) return "Markdown表(|区切り)が含まれていない";
+      return true;
+    },
   },
   {
     id: "aozora-shiftjis",

@@ -332,6 +332,30 @@ describe("collectDataTables probes", () => {
   });
 });
 
+// 抽出品質のチューニングは日本語向けだが、動作そのものは言語に依存しないことが仕様。
+// 年号・略号・単位など短いセルばかりの表は非日本語ページで普通に現れ、日本語の表より
+// プローブ長の下限(8字)に掛かりやすい。
+describe("非日本語ページの表救出", () => {
+  const EN_TABLE =
+    "<table><tr><th>Year</th><th>Pop.</th></tr>" +
+    "<tr><td>1990</td><td>8.1M</td></tr><tr><td>2020</td><td>9.7M</td></tr></table>";
+
+  it("短いセルばかりの英文表は表全体を単一プローブにし、本文に在れば救出をスキップする", () => {
+    const [dropped] = collectDataTables(body(`<h2>Population</h2>${EN_TABLE}`));
+    expect(dropped?.probes).toHaveLength(1);
+    expect(dropped?.probes[0]).toContain("Year Pop. 1990");
+    expect(reinsertDroppedTables(`<div>${EN_TABLE}</div>`, [dropped!]).appended).toBe(0);
+  });
+
+  it("英文の見出しアンカーで、落ちた表が元の節の直後へ戻る", () => {
+    const [dropped] = collectDataTables(body(`<h2>Population</h2>${EN_TABLE}`));
+    expect(dropped?.anchorKind).toBe("heading");
+    const result = reinsertDroppedTables("<h2>Population</h2><p>Body text.</p><h2>Economy</h2>", [dropped!]);
+    expect(result.appended).toBe(1);
+    expect(result.html.indexOf("<table")).toBeLessThan(result.html.indexOf("Economy"));
+  });
+});
+
 describe("normalizeRetainedTables", () => {
   const COMPLEX =
     "<table><tr><th rowspan='2'>地域</th><th colspan='2'>人口</th></tr>" +

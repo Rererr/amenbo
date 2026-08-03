@@ -213,6 +213,34 @@ describe("reinsertDroppedHeadings", () => {
   });
 });
 
+// 抽出品質のチューニングは日本語向けだが、動作そのものは言語に依存しないことが仕様。
+// 特にblock由来アンカーの照合は両辺の空白を落とすため、語間に空白を置く言語で通ることを固定する。
+describe("非日本語ページの見出し救出", () => {
+  const EN_TABLE =
+    "<table><tr><th>Country</th><th>Population</th></tr>" +
+    "<tr><td>Japan</td><td>125 million</td></tr><tr><td>France</td><td>68 million</td></tr></table>";
+
+  it("英文の段落アンカーで見出しが段落の直前へ戻る", () => {
+    const paragraph = "The population of the city grew steadily over the past three decades.";
+    const heads = collectHeadings(body(`<h2>Demographics</h2><p>${paragraph}</p>`));
+    expect(heads[0]?.anchors[0]).toEqual({ text: paragraph, kind: "paragraph" });
+    const result = reinsertDroppedHeadings(`<p>${paragraph}</p>`, heads);
+    expect(result.restored).toBe(1);
+    expect(result.html.indexOf("<h2>Demographics</h2>")).toBeLessThan(result.html.indexOf(paragraph));
+  });
+
+  it("英文の表(セル間空白なしに正規化済み)にもblock由来アンカーが照合する", () => {
+    const heads = collectHeadings(body(`<h2>Population by country</h2>${EN_TABLE}`));
+    expect(heads[0]?.anchors[0]?.kind).toBe("block");
+    const normalized =
+      "<table><thead><tr><th>Country</th><th>Population</th></tr></thead>" +
+      "<tbody><tr><td>Japan</td><td>125 million</td></tr><tr><td>France</td><td>68 million</td></tr></tbody></table>";
+    const result = reinsertDroppedHeadings(normalized, heads);
+    expect(result.restored).toBe(1);
+    expect(result.html.indexOf("<h2>Population by country</h2>")).toBeLessThan(result.html.indexOf("<table"));
+  });
+});
+
 // 統合: MediaWikiが見出しを`<div class="mw-heading">`+編集リンクで包む構造は、本文量が閾値を
 // 超えるとReadabilityがh2-h6を丸ごと落とす(実機同型・計測で確認)。この経路で見出しが復元される
 // ことと、見出し→表の順序で表の位置復元が効くことを固定する。
