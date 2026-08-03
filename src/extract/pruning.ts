@@ -3,11 +3,16 @@
  *
  * Readabilityの本文判定ヒューリスティック(英語の単語数/カンマ数前提)は、
  * スペース区切りの無い日本語では機能しにくい。代わりに
- *   - 句読点密度(、。等。日本語文の「文らしさ」の代替指標)
+ *   - 文・節の区切り(、。,.等)の語あたりの個数(「文」で書かれているかの指標)
  *   - Unicode文字比率(\p{L}。英字・CJK等を問わない)
  *   - リンク密度(ナビ/ランキング/広告枠ほど高くなる)
  * でブロックをスコアリングし、低価値ブロック(ナビ/ランキング/広告枠/フッター相当:
- * リンク密度高・句読点密度低)をMarkdown化前にDOMから除去する。
+ * リンク密度高・区切り密度低)をMarkdown化前にDOMから除去する。
+ *
+ * 3指標はいずれも特定言語の文字種・表記習慣に依存しない形で定義する(Unicodeプロパティと
+ * UAX#29の語分割)。区切りの個数を文字数で割ると、1文字あたりの情報量が多いCJKの密度が
+ * 構造的に高く出て、同じ構造の本文でも言語によって本文/非本文の判定境界がずれる
+ * (実測: 日本語0.66 / 英語0.30 と、リンクへの許容度が2倍以上ずれていた)。
  */
 
 interface BlockTextStats {
@@ -18,8 +23,8 @@ interface BlockTextStats {
 }
 
 export interface BlockScore {
-  /** 句読点(、。!?等)がテキストに占める割合(0-1)。 */
-  punctuationDensity: number;
+  /** 文・節の区切り(、。,.!?等)の語あたりの個数(0-1に丸める)。 */
+  clauseBreaksPerWord: number;
   /** Unicode文字(英字・CJK等、\p{L}に一致する文字)がテキストに占める割合(0-1)。 */
   letterRatio: number;
   /** リンクテキストが全体テキストに占める割合(0-1)。 */
@@ -28,19 +33,39 @@ export interface BlockScore {
   score: number;
 }
 
-const PUNCTUATION_PATTERN = /[、。!?！?.,]/gu;
+// 文・節の区切りはUnicodeのTerminal_Punctuation(、。,.!?、全角記号、デーヴァナーガリーの
+// ダンダ等)で捉える。記号を個別に列挙すると、漏れた表記体系の本文が「文の無いテキスト」と
+// 見なされる(全角?(U+FF1F)が列挙漏れしていた)。ただしコロン類は除く: 「1964年: 東京」形式の
+// リンク一覧(ナビゲーションボックス・パンくず)で高密度に現れ、文の存在の証拠にならないため。
+const CLAUSE_BREAK_CLASS = String.raw`[\p{Terminal_Punctuation}--[;:；：؛]]`;
+// 数値内部の記号(1.1、1,000、3.14.6)は文の区切りではない。目次の節番号やバージョン番号だけで
+// リンク一覧が本文と誤判定されるため、両隣が数字のものを除く。
+const CLAUSE_BREAK_PATTERN = new RegExp(
+  String.raw`(?<!\p{Nd})${CLAUSE_BREAK_CLASS}|${CLAUSE_BREAK_CLASS}(?!\p{Nd})`,
+  "gv",
+);
 // 結合文字(\p{M})も文字として数える(NFD分解形のアクセント記号等で比率が不当に下がらないように)。
 const LETTER_PATTERN = /[\p{L}\p{M}]/gu;
+// UAX#29の語分割。スペース区切りの無い言語(日本語/中国語/タイ語等)にはICUの辞書分割が働くため、
+// 「語」を分母に取れば文字あたり情報量の言語差を通さずに済む。
+const WORD_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "word" });
 
-// スコア係数(設計判断): 句読点密度を最重視(日本語では「文」の存在そのものが本文らしさの
-// 最も強いシグナル)、リンク密度は本文らしさを大きく減点する要因、文字比率は補助的な弱い
-// シグナル(日本語のナビ/フッターも漢字を含み、英語のナビ/フッターも英字を含むため単独では
-// 本文/非本文を判別できない)。従来はCJK文字のみをカウントしていたため、非CJKページの本文が
-// このボーナスを一切得られず、リンクを多く含む英文の本文ブロックが誤って除去されやすかった。
-// \p{L}(Unicode Letter全般)に対象を広げ、言語に依存しない指標にしている。
-const PUNCTUATION_WEIGHT = 40;
+// スコア係数(設計判断): 区切りの密度を最重視(「文」の存在そのものが本文らしさの最も強い
+// シグナル)、リンク密度は本文らしさを大きく減点する要因、文字比率は補助的な弱いシグナル
+// (日本語のナビ/フッターも漢字を含み、英語のナビ/フッターも英字を含むため単独では
+// 本文/非本文を判別できない)。CLAUSE_BREAK_WEIGHTは、Wikipedia実ページの本文段落
+// (ja/en/de/ko/zh/fr)で日本語ページの判定境界が文字数分母時代と一致する値に較正している。
+const CLAUSE_BREAK_WEIGHT = 22;
 const LETTER_WEIGHT = 1;
 const LINK_WEIGHT = 5;
+
+function countWords(text: string): number {
+  let count = 0;
+  for (const segment of WORD_SEGMENTER.segment(text)) {
+    if (segment.isWordLike === true) count++;
+  }
+  return count;
+}
 
 /** J4: ブロックのテキスト統計からスコアを算出する(純関数)。 */
 export function scoreBlock(stats: BlockTextStats): BlockScore {
@@ -49,11 +74,12 @@ export function scoreBlock(stats: BlockTextStats): BlockScore {
   // 補助面の文字(CJK拡張B等のサロゲートペア)を含むテキストで比率が過小評価される。
   const length = [...text].length;
   if (length === 0) {
-    return { punctuationDensity: 0, letterRatio: 0, linkDensity: 0, score: 0 };
+    return { clauseBreaksPerWord: 0, letterRatio: 0, linkDensity: 0, score: 0 };
   }
 
-  const punctuationCount = (text.match(PUNCTUATION_PATTERN) ?? []).length;
-  const punctuationDensity = punctuationCount / length;
+  const clauseBreakCount = (text.match(CLAUSE_BREAK_PATTERN) ?? []).length;
+  const wordCount = countWords(text);
+  const clauseBreaksPerWord = wordCount === 0 ? 0 : Math.min(clauseBreakCount / wordCount, 1);
 
   const letterCount = (text.match(LETTER_PATTERN) ?? []).length;
   const letterRatio = letterCount / length;
@@ -61,9 +87,9 @@ export function scoreBlock(stats: BlockTextStats): BlockScore {
   const linkTextLength = [...stats.linkText.trim()].length;
   const linkDensity = Math.min(linkTextLength / length, 1);
 
-  const score = punctuationDensity * PUNCTUATION_WEIGHT + letterRatio * LETTER_WEIGHT - linkDensity * LINK_WEIGHT;
+  const score = clauseBreaksPerWord * CLAUSE_BREAK_WEIGHT + letterRatio * LETTER_WEIGHT - linkDensity * LINK_WEIGHT;
 
-  return { punctuationDensity, letterRatio, linkDensity, score };
+  return { clauseBreaksPerWord, letterRatio, linkDensity, score };
 }
 
 export interface PruneOptions {
