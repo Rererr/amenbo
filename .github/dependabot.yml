@@ -1,0 +1,34 @@
+version: 2
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # playwright は Dockerfile のベースイメージタグと版を揃える約束がある（Dockerfile 冒頭の注記）。
+      # 片側だけ動く PR はイメージ同梱 Chromium を認識できなくするため、両方まとめて手で上げる。
+      - dependency-name: "playwright"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
