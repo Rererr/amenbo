@@ -198,6 +198,7 @@ Discovery order: sitemap → RSS/Atom → in-page links.
 
 ## Known limitations
 
+- **Content extraction is tuned for Japanese**: progressive disclosure, caching, and low-impact fetching are language-independent, so non-Japanese sites work too. Content extraction heuristics, however, are tuned on Japanese pages — if body text looks missing on a non-Japanese page, retry with a `selector` or `mode: "screenshot"`
 - **No HTTP proxy support**: `HTTP_PROXY` / `HTTPS_PROXY` environment variables are not honored. As an SSRF countermeasure, connections are pinned to a validated IP (DNS rebinding protection), which is incompatible with delegating name resolution to an upstream proxy. Networks that require an upstream proxy are currently unsupported
 - **No anti-bot circumvention**: fetch failures due to robots.txt denial or bot countermeasures are by design and reported as-is (see [Low impact on target sites](#low-impact-on-target-sites))
 
