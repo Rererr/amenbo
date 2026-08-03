@@ -199,6 +199,12 @@ sitemap → RSS/Atom → ページ内リンクの順で探索します。
 
 ## 開発
 
+clone 後に1回、秘密情報検査（gitleaks）の pre-commit フックを有効化する:
+
+```bash
+git config core.hooksPath githooks
+```
+
 ```bash
 npm run typecheck   # strict 型チェック
 npm test            # vitest
