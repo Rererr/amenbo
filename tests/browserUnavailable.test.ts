@@ -6,10 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * BrowserUnavailableError(install-browserへの誘導メッセージ付き)へ変換することを検証する。
  * 実ブラウザは起動せず、"playwright"のchromium.launchをモックする(openPageAndNavigate.test.tsと同系統)。
  */
-const { launchMock } = vi.hoisted(() => ({ launchMock: vi.fn() }));
+const { launchMock, proxyUrlMock } = vi.hoisted(() => ({
+  launchMock: vi.fn(),
+  proxyUrlMock: vi.fn(),
+}));
 
 vi.mock("playwright", () => ({
   chromium: { launch: launchMock },
+}));
+
+vi.mock("../src/fetcher/ssrfProxy.js", () => ({
+  closeSharedSsrfProxy: vi.fn(),
+  getSharedSsrfProxyUrl: proxyUrlMock,
 }));
 
 const MISSING_EXECUTABLE_MESSAGE =
@@ -21,6 +29,7 @@ describe("getBrowser() - Chromium未インストール時のエラー変換", ()
   beforeEach(() => {
     vi.resetModules();
     launchMock.mockReset();
+    proxyUrlMock.mockReset().mockResolvedValue("http://127.0.0.1:1");
   });
 
   afterEach(() => {

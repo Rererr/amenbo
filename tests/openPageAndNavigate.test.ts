@@ -11,10 +11,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * 区別し、各シナリオでの呼び出し回数・フォールバック発火の有無を確認する。
  */
 
-const { launchMock } = vi.hoisted(() => ({ launchMock: vi.fn() }));
+const { launchMock, proxyUrlMock } = vi.hoisted(() => ({
+  launchMock: vi.fn(),
+  proxyUrlMock: vi.fn(),
+}));
 
 vi.mock("playwright", () => ({
   chromium: { launch: launchMock },
+}));
+
+vi.mock("../src/fetcher/ssrfProxy.js", () => ({
+  closeSharedSsrfProxy: vi.fn(),
+  getSharedSsrfProxyUrl: proxyUrlMock,
 }));
 
 // navigateSafely内部のguardPublicAddress(fetcher/http.ts)は実SSRFガードのままだと
@@ -75,6 +83,7 @@ describe("openPageAndNavigate(改善キュー対応: システムChromeフォー
   beforeEach(() => {
     vi.resetModules();
     launchMock.mockReset();
+    proxyUrlMock.mockReset().mockResolvedValue("http://127.0.0.1:1");
   });
 
   afterEach(() => {
