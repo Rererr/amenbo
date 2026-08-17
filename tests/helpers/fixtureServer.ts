@@ -195,6 +195,12 @@ export async function startFixtureServer(): Promise<FixtureServer> {
         send(200, "application/pdf", path === "/pdf-a" ? PDF_BYTES : MULTIPAGE_PDF_BYTES, headers);
         return;
       }
+      case "/no-store.html":
+        send(200, "text/html; charset=utf-8", article("保存禁止のページ", "NO-STORE"), { "Cache-Control": "no-store" });
+        return;
+      case "/long-cache.html":
+        send(200, "text/html; charset=utf-8", article("長いmax-ageのページ", "LONG-CACHE"), { "Cache-Control": "public, max-age=3600" });
+        return;
       case "/concurrent.html":
         send(200, "text/html; charset=utf-8", article("同時取得の対象", "CONCURRENT"));
         return;

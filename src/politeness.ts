@@ -9,6 +9,7 @@
 import robotsParserImport from "robots-parser";
 import { HttpStatusError, PrivateAddressError, RobotsDeniedError } from "./errors.js";
 import { httpGet, USER_AGENT } from "./fetcher/http.js";
+import { DEFAULT_ROBOTS_TTL_MS } from "./ttl.js";
 
 /**
  * robots-parser の同梱型定義(index.d.ts)は `declare module 'robots-parser';` という
@@ -28,7 +29,6 @@ interface Robot {
 const robotsParser = robotsParserImport as unknown as (url: string, robotsTxt: string) => Robot;
 
 const DEFAULT_MIN_INTERVAL_MS = 1000;
-const DEFAULT_ROBOTS_TTL_MS = 60 * 60 * 1000; // 1時間
 const ROBOTS_FETCH_TIMEOUT_MS = 5000;
 
 interface RobotsCacheEntry {

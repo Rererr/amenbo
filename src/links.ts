@@ -278,7 +278,11 @@ export async function discoverLinks(url: string, politeness: PolitenessManager, 
 
   // 2. ページを取得し、<link rel=alternate>が指すRSS/Atomフィードを試す
   await politeness.guard(url, options.onProgress);
-  const pageResult = await fetchPage(url, { timeoutMs, checkRobots: (targetUrl) => politeness.checkRobotsAllowed(targetUrl) });
+  const pageResult = await fetchPage(url, {
+    timeoutMs,
+    checkRobots: (targetUrl) => politeness.checkRobotsAllowed(targetUrl),
+    waitTurn: (targetUrl) => politeness.waitTurn(targetUrl, options.onProgress),
+  });
   if ("notModified" in pageResult) {
     return finalize("page", [], options.filter);
   }

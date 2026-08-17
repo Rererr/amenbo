@@ -469,6 +469,10 @@ export interface HttpGetOptions {
    * 取得してしまう非対称があったための対応。同一オリジン内リダイレクトは初回guardで
    * 確認済みのため呼ばない。拒否時はRobotsDeniedErrorがそのまま伝播する。
    * robots.txt自体の取得(politeness.ts内のhttpGet呼び出し)には渡さないこと(無限再帰回避)。
+   *
+   * 着地先ホストへのレート制御待機はここでは行わない。この関数のタイムアウトはリダイレクト追跡
+   * 全体を1つのAbortControllerで覆っており(httpGet/httpGetRoutedの先頭)、ホップ毎に待つと
+   * 待機時間がそのままタイムアウト予算を食い、Crawl-Delayの長いサイトで取得自体が失敗するため。
    */
   checkRobots?: (url: string) => Promise<void>;
   /**

@@ -25,6 +25,7 @@ const fakeCaptureResult: CaptureResult = {
 };
 
 const httpGetRoutedMock = vi.fn();
+const fetchWithBrowserMock = vi.fn();
 const evaluateQualityMock = vi.fn();
 
 vi.mock("../src/screenshot.js", async (importOriginal) => {
@@ -41,6 +42,11 @@ vi.mock("../src/fetcher/http.js", async (importOriginal) => {
     ...actual,
     httpGetRouted: (...args: Parameters<typeof actual.httpGetRouted>) => httpGetRoutedMock(...args),
   };
+});
+
+vi.mock("../src/fetcher/browser.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/fetcher/browser.js")>();
+  return { ...actual, fetchWithBrowser: (...args: Parameters<typeof actual.fetchWithBrowser>) => fetchWithBrowserMock(...args) };
 });
 
 // mode:autoでのlowQuality→screenshot切替を、Readabilityの抽出結果に依存せず決定的に
@@ -79,6 +85,12 @@ describe("politeness.guard呼び出し回数(実ネットワークfetch直前で
   beforeEach(() => {
     guardSpy = vi.spyOn(politeness, "guard").mockResolvedValue(undefined);
     httpGetRoutedMock.mockReset();
+    fetchWithBrowserMock.mockReset().mockResolvedValue({
+      finalUrl: "https://example.com/",
+      html: articleHtml,
+      status: 200,
+      geometry: { textBlocks: [], visualElements: [], pageWidth: 0, pageHeight: 0 },
+    });
   });
 
   afterEach(() => {
@@ -126,6 +138,26 @@ describe("politeness.guard呼び出し回数(実ネットワークfetch直前で
     // 2回目はcache freshのため実ネットワークへ行かず、guard(robots再判定・レート制御待機)も行わない
     expect(guardSpy).not.toHaveBeenCalled();
     expect(httpGetRoutedMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("body-fallbackからのブラウザ再取得はwaitTurnを1回だけ呼ぶ", async () => {
+    const url = "https://example.com/body-fallback-wait-turn";
+    httpGetRoutedMock.mockResolvedValue(htmlRouted(url, "<html><body><p>本文</p></body></html>"));
+    fetchWithBrowserMock.mockResolvedValue({
+      finalUrl: url,
+      html: articleHtml,
+      status: 200,
+      geometry: { textBlocks: [], visualElements: [], pageWidth: 0, pageHeight: 0 },
+    });
+    const waitTurnSpy = vi.spyOn(politeness, "waitTurn").mockResolvedValue(undefined);
+
+    try {
+      await handleFetchTool({ url });
+      expect(waitTurnSpy).toHaveBeenCalledTimes(1);
+      expect(waitTurnSpy).toHaveBeenCalledWith(url, expect.any(Function));
+    } finally {
+      waitTurnSpy.mockRestore();
+    }
   });
 
   it("mode:autoでlowQuality判定によりscreenshotへ切り替わる場合、markdown取得+screenshot撮影で計2回guardする", async () => {

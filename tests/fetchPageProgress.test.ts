@@ -55,6 +55,28 @@ describe("fetchPage - onProgress(MCP progress notifications)", () => {
     expect(onProgress).toHaveBeenCalledWith("ブラウザで再取得しています…");
   });
 
+  it("SPA判定からのブラウザ昇格前にwaitTurnを呼ぶ", async () => {
+    httpGetRoutedMock.mockResolvedValue(htmlRouted('<html><body><div id="root"></div></body></html>'));
+    const events: string[] = [];
+    const waitTurn = vi.fn(async () => {
+      events.push("wait");
+    });
+    fetchWithBrowserMock.mockImplementation(async () => {
+      events.push("browser");
+      return {
+        finalUrl: "https://example.com/",
+        html: "<html><body>rendered</body></html>",
+        status: 200,
+        geometry: { textBlocks: [], visualElements: [], pageWidth: 0, pageHeight: 0 },
+      };
+    });
+
+    await fetchPage("https://example.com/", { waitTurn });
+
+    expect(waitTurn).toHaveBeenCalledWith("https://example.com/");
+    expect(events).toEqual(["wait", "browser"]);
+  });
+
   it("HTTP tierのまま完結する(昇格しない)場合はonProgressが呼ばれない", async () => {
     httpGetRoutedMock.mockResolvedValue(htmlRouted("<html><body>hello world</body></html>"));
 
@@ -75,11 +97,13 @@ describe("fetchPage - onProgress(MCP progress notifications)", () => {
     });
 
     const onProgress = vi.fn();
-    const result = await fetchPage("https://example.com/", { forceBrowser: true, onProgress });
+    const waitTurn = vi.fn().mockResolvedValue(undefined);
+    const result = await fetchPage("https://example.com/", { forceBrowser: true, onProgress, waitTurn });
 
     expect("tier" in result && result.tier).toBe("browser");
     // 結果を捨てるだけのHTTP取得を先方へ送らない(低負荷の要点)
     expect(httpGetRoutedMock).not.toHaveBeenCalled();
+    expect(waitTurn).toHaveBeenCalledWith("https://example.com/");
     expect(onProgress).toHaveBeenCalledWith("ブラウザで取得しています…");
   });
 

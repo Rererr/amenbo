@@ -39,6 +39,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { DEFAULT_ROBOTS_TTL_MS } from "./ttl.js";
 
 export type CacheStatus = "fresh" | "revalidated" | "miss";
 export type ScreenshotCacheStatus = "fresh" | "miss";
@@ -60,9 +61,28 @@ export interface CacheWriteInput {
   lastModified: string | null;
   markdown: string;
   metadata: Record<string, unknown>;
+  cacheControl?: string | null;
+}
+
+export interface CacheControlDirectives {
+  noStore: boolean;
+  maxAgeMs: number | null;
+}
+
+// 短い宣言まで採用すると再取得が頻発し低負荷の前提を崩すため、延長方向だけ採用する。
+export function parseCacheControl(header: string | null): CacheControlDirectives {
+  if (!header) return { noStore: false, maxAgeMs: null };
+  const normalized = header.toLowerCase();
+  const maxAge = /(?:^|[,\s])max-age\s*=\s*"?(\d+)"?/.exec(normalized);
+  return {
+    noStore: /(?:^|[,\s])no-store(?:[,;\s]|$)/.test(normalized),
+    maxAgeMs: maxAge?.[1] !== undefined ? Number(maxAge[1]) * 1000 : null,
+  };
 }
 
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15分
+// 長い宣言をそのまま信じると変更検知が長期間止まるため、上限を設ける。
+const MAX_CACHE_CONTROL_TTL_MS = 24 * 60 * 60 * 1000;
 /** Phase 4テンプレート学習: 定型ブロック判定に使う「直近ページ数」の既定値。 */
 const DEFAULT_TEMPLATE_RECENT_PAGES = 3;
 /** meta テーブルに前回prune時刻を記録するキー。 */
@@ -125,6 +145,8 @@ interface PreparedStatements {
   getPage: StatementSync;
   setPage: StatementSync;
   touchPage: StatementSync;
+  deletePage: StatementSync;
+  deleteDomainPagesByUrl: StatementSync;
   getScreenshot: StatementSync;
   setScreenshot: StatementSync;
   recordDomainPage: StatementSync;
@@ -165,17 +187,21 @@ export class PageCache {
   private readonly db: DatabaseSync;
   private readonly cacheDir: string;
   private readonly ttlMs: number;
+  private readonly robotsTtlMs: number;
+  private readonly pruneIntervalMs: number;
   private readonly now: () => number;
   private readonly statements: PreparedStatements;
   private closed = false;
 
-  constructor(options: { dbPath?: string; cacheDir?: string; ttlMs?: number; now?: () => number } = {}) {
+  constructor(options: { dbPath?: string; cacheDir?: string; ttlMs?: number; robotsTtlMs?: number; now?: () => number } = {}) {
     this.cacheDir = options.cacheDir ?? resolveCacheDir();
     if (!existsSync(this.cacheDir)) {
       mkdirSync(this.cacheDir, { recursive: true });
     }
     this.db = new DatabaseSync(options.dbPath ?? join(this.cacheDir, "cache.sqlite"));
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+    this.robotsTtlMs = options.robotsTtlMs ?? DEFAULT_ROBOTS_TTL_MS;
+    this.pruneIntervalMs = Math.min(this.ttlMs, this.robotsTtlMs);
     this.now = options.now ?? Date.now;
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(`
@@ -243,7 +269,7 @@ export class PageCache {
   /** 全SQL文を一度だけprepareする(DDL適用後・prune前に呼ぶ)。 */
   private prepareStatements(): PreparedStatements {
     return {
-      deletePagesExpired: this.db.prepare("DELETE FROM pages WHERE fetched_at < ?"),
+      deletePagesExpired: this.db.prepare("DELETE FROM pages WHERE COALESCE(json_extract(metadata, '$.freshUntilAt'), fetched_at + ?) < ?"),
       deleteDomainPagesExpired: this.db.prepare("DELETE FROM domain_pages WHERE fetched_at < ?"),
       deleteHostRequestsExpired: this.db.prepare("DELETE FROM host_requests WHERE last_request_at < ?"),
       deleteRobotsExpired: this.db.prepare("DELETE FROM robots_cache WHERE fetched_at < ?"),
@@ -261,7 +287,9 @@ export class PageCache {
            metadata = excluded.metadata,
            fetched_at = excluded.fetched_at`,
       ),
-      touchPage: this.db.prepare("UPDATE pages SET fetched_at = ? WHERE url = ?"),
+      touchPage: this.db.prepare("UPDATE pages SET fetched_at = ?, metadata = ? WHERE url = ?"),
+      deletePage: this.db.prepare("DELETE FROM pages WHERE url = ?"),
+      deleteDomainPagesByUrl: this.db.prepare("DELETE FROM domain_pages WHERE url = ?"),
       getScreenshot: this.db.prepare("SELECT * FROM screenshots WHERE cache_key = ?"),
       setScreenshot: this.db.prepare(
         `INSERT INTO screenshots (cache_key, url, tile_paths, metadata, fetched_at)
@@ -315,7 +343,7 @@ export class PageCache {
   private maybePruneExpired(): void {
     const lastPrunedAt = this.getMetaValue(META_LAST_PRUNED_AT);
     const at = this.now();
-    if (lastPrunedAt !== null && at - lastPrunedAt < this.ttlMs) return;
+    if (lastPrunedAt !== null && at - lastPrunedAt < this.pruneIntervalMs) return;
     this.pruneExpired();
     this.statements.setMeta.run({ key: META_LAST_PRUNED_AT, value: at });
   }
@@ -331,16 +359,16 @@ export class PageCache {
    * screenshotsはSQLite行に加え、対応するPNGファイル(タイル)もあわせて削除する。
    */
   private pruneExpired(): void {
-    const cutoff = this.now() - this.ttlMs;
+    const now = this.now();
+    const cutoff = now - this.ttlMs;
+    const robotsCutoff = now - this.robotsTtlMs;
 
-    this.statements.deletePagesExpired.run(cutoff);
+    this.statements.deletePagesExpired.run(this.ttlMs, now);
     this.statements.deleteDomainPagesExpired.run(cutoff);
     // code-reviewer指摘: host_requestsもM3の対象から漏れていた(訪問ホスト毎に1行増える
     // 無制限増加テーブルという点でdomain_pages等と同じ性質を持つため、他テーブルと一貫させる)。
     this.statements.deleteHostRequestsExpired.run(cutoff);
-    // robots_cacheも同じ性質(オリジン毎に1行)なのに掃除対象から漏れていた。
-    // 消えてもPolitenessManager側が取得し直すだけなので、他テーブルと同じTTLで揃える。
-    this.statements.deleteRobotsExpired.run(cutoff);
+    this.statements.deleteRobotsExpired.run(robotsCutoff);
 
     const expiredScreenshots = this.statements.selectScreenshotsExpired.all(cutoff) as unknown as ScreenshotRow[];
     for (const row of expiredScreenshots) {
@@ -372,8 +400,17 @@ export class PageCache {
   }
 
   /** エントリ(ページ/スクリーンショットいずれも可)がTTL内(再検証不要)かどうかを判定する。 */
-  isFresh(entry: { fetchedAt: number }): boolean {
+  isFresh(entry: { fetchedAt: number; metadata?: Record<string, unknown> }): boolean {
+    const freshUntilAt = entry.metadata?.["freshUntilAt"];
+    if (typeof freshUntilAt === "number") return this.now() < freshUntilAt;
     return this.now() - entry.fetchedAt < this.ttlMs;
+  }
+
+  private resolveFreshUntilAt(fetchedAt: number, cacheControl: string | null): number | null {
+    const { maxAgeMs } = parseCacheControl(cacheControl);
+    if (maxAgeMs === null) return null;
+    const extendedMs = Math.min(maxAgeMs, MAX_CACHE_CONTROL_TTL_MS);
+    return extendedMs > this.ttlMs ? fetchedAt + extendedMs : null;
   }
 
   /** 保存済みスクリーンショットエントリを取得する(TTL判定は isFresh を使う)。 */
@@ -422,16 +459,24 @@ export class PageCache {
   }
 
   /** 新規取得結果を保存(既存があれば上書き)する。 */
-  set(input: CacheWriteInput): CacheEntry {
+  set(input: CacheWriteInput): CacheEntry | null {
+    const cacheControl = input.cacheControl ?? null;
+    if (parseCacheControl(cacheControl).noStore) {
+      this.delete(input.url);
+      return null;
+    }
+
     const contentHash = hashContent(input.markdown);
     const fetchedAt = this.now();
+    const freshUntilAt = this.resolveFreshUntilAt(fetchedAt, cacheControl);
+    const metadata = freshUntilAt !== null ? { ...input.metadata, freshUntilAt } : input.metadata;
     this.statements.setPage.run({
       url: input.url,
       etag: input.etag,
       lastModified: input.lastModified,
       contentHash,
       markdown: input.markdown,
-      metadata: JSON.stringify(input.metadata),
+      metadata: JSON.stringify(metadata),
       fetchedAt,
     });
     return {
@@ -440,14 +485,33 @@ export class PageCache {
       lastModified: input.lastModified,
       contentHash,
       markdown: input.markdown,
-      metadata: input.metadata,
+      metadata,
       fetchedAt,
     };
   }
 
+  delete(url: string): void {
+    this.statements.deletePage.run(url);
+    this.statements.deleteDomainPagesByUrl.run(url);
+  }
+
   /** 304再検証成功時: 本文は変えず取得時刻のみ更新する(再変換しない)。 */
-  touch(url: string): void {
-    this.statements.touchPage.run(this.now(), url);
+  touch(url: string, cacheControl: string | null = null): void {
+    if (parseCacheControl(cacheControl).noStore) {
+      this.delete(url);
+      return;
+    }
+
+    const row = this.statements.getPage.get(url) as PageRow | undefined;
+    if (!row) return;
+
+    const fetchedAt = this.now();
+    const metadata = JSON.parse(row.metadata) as Record<string, unknown>;
+    delete metadata["freshUntilAt"];
+    const freshUntilAt = this.resolveFreshUntilAt(fetchedAt, cacheControl);
+    if (freshUntilAt !== null) metadata["freshUntilAt"] = freshUntilAt;
+
+    this.statements.touchPage.run(fetchedAt, JSON.stringify(metadata), url);
   }
 
   /** Phase 4テンプレート学習: このページの(除去前・全)ブロックハッシュ集合をドメイン別に記録する。 */

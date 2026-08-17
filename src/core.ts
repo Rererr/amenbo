@@ -160,6 +160,7 @@ interface ExtractedPage {
   lastModified: string | null;
   lowQuality: boolean;
   qualityReason: string | null;
+  cacheControl: string | null;
   prunedBlockCount: number;
   adapterName: string | null;
   extractionMethod: ExtractionMethod;
@@ -167,7 +168,10 @@ interface ExtractedPage {
   dataSourceHints: string[];
 }
 
-type FetchAndExtractResult = { status: "not_modified"; finalUrl: string } | { status: "handoff"; handoff: HandoffResult } | ExtractedPage;
+type FetchAndExtractResult =
+  | { status: "not_modified"; finalUrl: string; cacheControl: string | null }
+  | { status: "handoff"; handoff: HandoffResult }
+  | ExtractedPage;
 
 /** URLとselectorの組から、新規取得・変換したMarkdownと品質スコア/pruning/アダプタ/ジオメトリ結果を作る。 */
 async function fetchAndExtract(
@@ -185,10 +189,11 @@ async function fetchAndExtract(
   // 取得を1回で済ませる(handleFetchToolのhandoff分岐がこのバイト列をそのまま使う)。
   const fullReadMaxBytes = (contentType: string | null, finalUrl: string): number | null =>
     looksLikePdf(finalUrl, contentType) ? DEFAULT_PDF_MAX_BYTES : null;
-  const baseOptions = { onProgress, checkRobots, fullReadMaxBytes };
+  const waitTurn = (targetUrl: string) => politeness.waitTurn(targetUrl, onProgress);
+  const baseOptions = { onProgress, checkRobots, waitTurn, fullReadMaxBytes };
   const fetchResult = await fetchPage(url, conditionalHeaders ? { ...baseOptions, headers: conditionalHeaders } : baseOptions);
   if ("notModified" in fetchResult) {
-    return { status: "not_modified", finalUrl: fetchResult.finalUrl };
+    return { status: "not_modified", finalUrl: fetchResult.finalUrl, cacheControl: fetchResult.cacheControl };
   }
   // 機能B: HTML/PDF以外のコンテンツはハンドオフ応答(メタデータ+プレビュー+curl誘導)の対象。
   // Markdown抽出・品質判定・キャッシュ保存は行わない。
@@ -210,8 +215,7 @@ async function fetchAndExtract(
   // ジオメトリでも改善しなかった場合はHTTP tierの結果(body-fallback)をそのまま使う。
   if (!selector && fetchResult.tier === "http" && extracted.extractionMethod === "body-fallback") {
     try {
-      await politeness.waitTurn(url, onProgress); // 追加のブラウザ遷移が発生するため、律速のため再度順番を待つ
-      const browserFetchResult = await fetchPage(url, { forceBrowser: true, onProgress, checkRobots });
+      const browserFetchResult = await fetchPage(url, { forceBrowser: true, onProgress, checkRobots, waitTurn });
       if (!("notModified" in browserFetchResult) && !("handoff" in browserFetchResult)) {
         const browserExtracted = extractMarkdown(browserFetchResult.html, { url: browserFetchResult.finalUrl, geometry: browserFetchResult.geometry });
         if (browserExtracted.extractionMethod === "geometry") {
@@ -242,6 +246,7 @@ async function fetchAndExtract(
     lastModified: finalFetchResult.lastModified,
     lowQuality: quality.lowQuality,
     qualityReason: quality.reason,
+    cacheControl: finalFetchResult.cacheControl,
     prunedBlockCount: extracted.prunedBlockCount,
     adapterName: extracted.adapterName,
     extractionMethod: extracted.extractionMethod,
@@ -397,7 +402,7 @@ async function fetchAndResolvePage(
     // 応答なので、そのまま返すと古い本文を新しいURLの内容として渡してしまう。
     const cachedFinalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
     if (result.finalUrl === cachedFinalUrl) {
-      cache.touch(url);
+      cache.touch(url, result.cacheControl);
       return pageFromCacheEntry(url, cached, "revalidated");
     }
     await politeness.guard(url, onProgress);
@@ -411,17 +416,11 @@ async function fetchAndResolvePage(
 
   const previousMarkdown = cached?.markdown ?? null;
 
-  // Phase 4 テンプレート学習: このページの(除去前・全)ブロックハッシュをドメイン別に記録する。
-  // selector指定時(このブランチには来ない)は記録しない(選択範囲が偏り学習を汚すため)。
-  const domain = safeHostname(result.finalUrl);
-  if (domain) {
-    cache.recordDomainPageBlocks(domain, url, computeBlockHashes(result.markdown));
-  }
-
-  cache.set({
+  const stored = cache.set({
     url,
     etag: result.etag,
     lastModified: result.lastModified,
+    cacheControl: result.cacheControl,
     markdown: result.markdown,
     metadata: {
       title: result.title,
@@ -435,6 +434,13 @@ async function fetchAndResolvePage(
       dataSourceHints: result.dataSourceHints,
     },
   });
+
+  // Phase 4 テンプレート学習: このページの(除去前・全)ブロックハッシュをドメイン別に記録する。
+  // selector指定時(このブランチには来ない)は記録しない(選択範囲が偏り学習を汚すため)。
+  const domain = stored ? safeHostname(result.finalUrl) : null;
+  if (domain) {
+    cache.recordDomainPageBlocks(domain, url, computeBlockHashes(result.markdown));
+  }
 
   return {
     title: result.title,
@@ -559,6 +565,7 @@ interface PrefetchedPdf {
   finalUrl: string;
   etag: string | null;
   lastModified: string | null;
+  cacheControl: string | null;
 }
 
 /** 取得・解析まで済んだPDF(応答の整形はpage/max_tokens毎に呼び出し側で行う)。 */
@@ -649,7 +656,7 @@ async function loadPdfDocument(url: string, notify: (message: string) => void, p
     // 着地先が一致するときだけキャッシュ済みの本文を使う(resolvePageのコメント参照)。
     const cachedFinalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
     if (binary.finalUrl === cachedFinalUrl) {
-      cache.touch(url);
+      cache.touch(url, binary.headers.get("cache-control"));
       return { kind: "cached" };
     }
     await politeness.guard(url, notify);
@@ -659,7 +666,13 @@ async function loadPdfDocument(url: string, notify: (message: string) => void, p
 
   return parsePdfDocument(
     url,
-    { bytes: binary.bytes, finalUrl: binary.finalUrl, etag: binary.headers.get("etag"), lastModified: binary.headers.get("last-modified") },
+    {
+      bytes: binary.bytes,
+      finalUrl: binary.finalUrl,
+      etag: binary.headers.get("etag"),
+      lastModified: binary.headers.get("last-modified"),
+      cacheControl: binary.headers.get("cache-control"),
+    },
     notify,
   );
 }
@@ -675,6 +688,7 @@ async function parsePdfDocument(url: string, source: PrefetchedPdf, notify: (mes
       url,
       etag: source.etag,
       lastModified: source.lastModified,
+      cacheControl: source.cacheControl,
       markdown,
       metadata: {
         title: textResult.title,
@@ -776,6 +790,7 @@ export async function handleFetchTool(input: FetchToolInput): Promise<Array<Text
         finalUrl: handoff.finalUrl,
         etag: handoff.etag,
         lastModified: handoff.lastModified,
+        cacheControl: handoff.cacheControl,
       });
     }
     return [{ type: "text", text: formatHandoffResponse(handoff, maxTokens) }];

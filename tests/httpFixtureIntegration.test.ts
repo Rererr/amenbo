@@ -127,6 +127,29 @@ describe("同一URLへの同時取得", () => {
   }, 30_000);
 });
 
+describe("Cache-Control(延長方向のみ採用)", () => {
+  it("no-store宣言のページはキャッシュへ保存せず、次回も取得しに行く", async () => {
+    const url = `${server.origin}/no-store.html`;
+
+    expect(await fetchText(url)).toContain("NO-STORE");
+    expect(cache.get(url)).toBeUndefined();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await fetchText(url)).toContain("NO-STORE");
+    expect(server.hits.get("/no-store.html")).toBe(2);
+  }, 30_000);
+
+  it("max-ageが既定TTLより長ければ、TTL超過後でも取得しに行かない", async () => {
+    const url = `${server.origin}/long-cache.html`;
+
+    expect(await fetchText(url)).toContain("cache: miss");
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await fetchText(url)).toContain("cache: fresh");
+    expect(server.hits.get("/long-cache.html")).toBe(1);
+  }, 30_000);
+});
+
 describe("条件付きGET", () => {
   it("TTL超過後の再取得はIf-None-Matchを送り、304なら本文を取り直さない", async () => {
     const first = await fetchText(`${server.origin}/etag.html`);

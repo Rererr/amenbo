@@ -476,12 +476,12 @@ describe("PageCache - robots_cache(politenessのプロセス間robots.txtキャ�
 
   it("M3: TTL超過したrobots_cacheエントリは起動時に削除される(オリジン毎に増える他テーブルと同じ扱い)", () => {
     let now = 1_000_000;
-    const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, robotsTtlMs: 15 * 60 * 1000, now: () => now });
     cache1.setRobotsCache("https://old.example.com", "body", now);
     cache1.close();
 
     now += 20 * 60 * 1000; // TTL(15分)超過
-    const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, robotsTtlMs: 15 * 60 * 1000, now: () => now });
     expect(cache2.getRobotsCache("https://old.example.com")).toBeNull();
     cache2.close();
   });
@@ -496,5 +496,140 @@ describe("PageCache - robots_cache(politenessのプロセス間robots.txtキャ�
     const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
     expect(cache2.getRobotsCache("https://fresh.example.com")).toEqual({ body: "body", fetchedAt: 1_000_000 });
     cache2.close();
+  });
+
+  it("robots_cacheはページTTLではなくrobotsTtlMsで削除する", () => {
+    let now = 1_000_000;
+    const pageTtlMs = 15 * 60 * 1000;
+    const robotsTtlMs = 60 * 60 * 1000;
+    const cache1 = new PageCache({ dbPath, ttlMs: pageTtlMs, robotsTtlMs, now: () => now });
+    cache1.setRobotsCache("https://example.com", "body", now);
+    cache1.close();
+
+    now += 20 * 60 * 1000;
+    const cache2 = new PageCache({ dbPath, ttlMs: pageTtlMs, robotsTtlMs, now: () => now });
+    expect(cache2.getRobotsCache("https://example.com")).not.toBeNull();
+    cache2.close();
+
+    now += 41 * 60 * 1000;
+    const cache3 = new PageCache({ dbPath, ttlMs: pageTtlMs, robotsTtlMs, now: () => now });
+    expect(cache3.getRobotsCache("https://example.com")).toBeNull();
+    cache3.close();
+  });
+});
+
+describe("PageCache - Cache-Control(延長方向のみ採用)", () => {
+  const TTL_MS = 15 * 60 * 1000;
+
+  function makeCache(now: () => number): PageCache {
+    return new PageCache({ dbPath, cacheDir: dir, ttlMs: TTL_MS, now });
+  }
+
+  function write(cache: PageCache, cacheControl: string | null, url = "https://example.com/a") {
+    return cache.set({ url, etag: null, lastModified: null, cacheControl, markdown: "本文", metadata: { title: "t" } });
+  }
+
+  it("max-ageが既定TTLより長ければfresh判定を延長する", () => {
+    let now = 1_000_000;
+    const cache = makeCache(() => now);
+    write(cache, "public, max-age=3600");
+
+    now += 30 * 60 * 1000;
+    expect(cache.isFresh(cache.get("https://example.com/a")!)).toBe(true);
+
+    now += 40 * 60 * 1000;
+    expect(cache.isFresh(cache.get("https://example.com/a")!)).toBe(false);
+    cache.close();
+  });
+
+  it("max-ageが既定TTLより短くてもfresh期間は縮めない(一方向の採用)", () => {
+    let now = 1_000_000;
+    const cache = makeCache(() => now);
+    write(cache, "public, max-age=60");
+
+    now += 5 * 60 * 1000;
+    expect(cache.isFresh(cache.get("https://example.com/a")!)).toBe(true);
+
+    now += 11 * 60 * 1000;
+    expect(cache.isFresh(cache.get("https://example.com/a")!)).toBe(false);
+    cache.close();
+  });
+
+  it("延長は24時間で頭打ちにする(max-age=1年をそのまま信じない)", () => {
+    let now = 1_000_000;
+    const cache = makeCache(() => now);
+    write(cache, "public, max-age=31536000");
+
+    now += 23 * 60 * 60 * 1000;
+    expect(cache.isFresh(cache.get("https://example.com/a")!)).toBe(true);
+
+    now += 2 * 60 * 60 * 1000;
+    expect(cache.isFresh(cache.get("https://example.com/a")!)).toBe(false);
+    cache.close();
+  });
+
+  it("s-maxage(共有キャッシュ向け)はmax-ageとして拾わない", () => {
+    let now = 1_000_000;
+    const cache = makeCache(() => now);
+    write(cache, "public, max-age=0, s-maxage=900");
+
+    now += 16 * 60 * 1000;
+    expect(cache.isFresh(cache.get("https://example.com/a")!)).toBe(false);
+    cache.close();
+  });
+
+  it("no-storeの応答は保存せず、既存エントリとテンプレート学習記録も消す", () => {
+    const now = 1_000_000;
+    const cache = makeCache(() => now);
+    write(cache, null);
+    cache.recordDomainPageBlocks("example.com", "https://example.com/a", ["hash-1"]);
+    expect(cache.getTemplateBlockHashes("example.com", 1)).toEqual(new Set(["hash-1"]));
+
+    expect(write(cache, "private, no-store")).toBeNull();
+
+    expect(cache.get("https://example.com/a")).toBeUndefined();
+    expect(cache.getTemplateBlockHashes("example.com", 1)).toEqual(new Set());
+    cache.close();
+  });
+
+  it("延長したエントリは既定TTL経過後の起動時pruneで消えない", () => {
+    let now = 1_000_000;
+    const cache1 = makeCache(() => now);
+    write(cache1, "public, max-age=3600");
+    cache1.close();
+
+    now += 20 * 60 * 1000;
+    const cache2 = makeCache(() => now);
+    expect(cache2.get("https://example.com/a")).toBeDefined();
+    cache2.close();
+
+    now += 50 * 60 * 1000;
+    const cache3 = makeCache(() => now);
+    expect(cache3.get("https://example.com/a")).toBeUndefined();
+    cache3.close();
+  });
+
+  it("touchは304応答のCache-Controlで延長を取り直す", () => {
+    let now = 1_000_000;
+    const cache = makeCache(() => now);
+    write(cache, "public, max-age=3600");
+
+    now += 10 * 60 * 1000;
+    cache.touch("https://example.com/a", "max-age=0, no-cache");
+
+    now += 16 * 60 * 1000;
+    expect(cache.isFresh(cache.get("https://example.com/a")!)).toBe(false);
+    cache.close();
+  });
+
+  it("304応答がno-storeならキャッシュを消す", () => {
+    const now = 1_000_000;
+    const cache = makeCache(() => now);
+    write(cache, null);
+
+    cache.touch("https://example.com/a", "no-store");
+
+    expect(cache.get("https://example.com/a")).toBeUndefined();
+    cache.close();
   });
 });

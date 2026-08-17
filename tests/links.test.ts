@@ -215,6 +215,35 @@ describe("discoverLinks - ページ内リンク抽出(最終手段)", () => {
     ]);
   });
 
+  it("ブラウザ昇格用のwaitTurnをfetchPageへ渡す(SPA昇格分のレート制御が抜けない)", async () => {
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return notFound();
+      if (url === "http://example.com/sitemap.xml") return notFound();
+      throw new Error(`unexpected url: ${url}`);
+    });
+    fetchPageMock.mockResolvedValue({
+      finalUrl: "http://example.com/",
+      html: `<html><body></body></html>`,
+      tier: "http",
+      status: 200,
+      encoding: "UTF-8",
+      etag: null,
+      lastModified: null,
+      escalationReason: null,
+    });
+
+    const politeness = makePoliteness();
+    const waitTurnSpy = vi.spyOn(politeness, "waitTurn").mockResolvedValue(undefined);
+
+    await discoverLinks("http://example.com/", politeness);
+
+    const options = fetchPageMock.mock.calls[0]?.[1] as { waitTurn?: (url: string) => Promise<void> };
+    expect(options.waitTurn).toBeTypeOf("function");
+
+    await options.waitTurn?.("http://example.com/spa");
+    expect(waitTurnSpy).toHaveBeenCalledWith("http://example.com/spa", undefined);
+  });
+
   it("filter(部分一致)でURLまたはタイトルを絞り込む", async () => {
     httpGetMock.mockImplementation(async (url: string) => {
       if (url.endsWith("/robots.txt")) return notFound();

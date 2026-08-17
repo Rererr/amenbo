@@ -35,7 +35,7 @@ amenbo(アメンボ / water strider)は、Claude Code や Codex のようなコ�
 - **二段フェッチ**：まず素の HTTP GET。JS 描画が必要なページだけ headless Chromium に昇格するので、大半の取得でブラウザを起動しません
 - **礼儀正しいクローラ**：robots.txt と Crawl-Delay を尊重、同一ドメインへは直列 + 既定 1 req/秒（robots.txt の取得もこの1リクエストとして数えます）。リンク列挙は sitemap / RSS を優先しページを舐めません
 - **正直な User-Agent**：ボットであることを明示します。**anti-bot 回避は実装しません**
-- **キャッシュ**：ETag / If-Modified-Since で再検証し、無駄な再取得を避けます
+- **キャッシュ**：ETag / If-Modified-Since で再検証し、無駄な再取得を避けます。有効期限は既定 15 分（`AMENBO_CACHE_TTL_MS`）で、`Cache-Control` は**延長方向のみ**採用します（`max-age` が 15 分より長ければそちらを使い、上限 24 時間。`no-store` は保存しません）。`max-age=0` や `no-cache` で期限を縮めることはしません — 主要サイトの実測ではその宣言が大半で、従うとツール呼び出しの度に取得しに行くことになり、低負荷という前提が崩れるためです
 
 ## インストール
 

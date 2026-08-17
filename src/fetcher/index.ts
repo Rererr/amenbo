@@ -22,6 +22,7 @@ export interface FetchResult {
   /** キャッシュ再検証用のバリデータ(HTTP tierのみ)。 */
   etag: string | null;
   lastModified: string | null;
+  cacheControl: string | null;
   /** SPA判定でブラウザへ昇格した場合、その理由。 */
   escalationReason: string | null;
   /** Phase 4 ジオメトリ抽出用データ。browser tierのみ非null。 */
@@ -31,6 +32,7 @@ export interface FetchResult {
 export interface NotModifiedResult {
   notModified: true;
   finalUrl: string;
+  cacheControl: string | null;
 }
 
 /** 機能B: HTML/PDF以外のコンテンツタイプのハンドオフ応答用データ(メタデータ+プレビュー用バイト列)。 */
@@ -48,6 +50,7 @@ export interface HandoffResult {
   /** 全体取得した非HTMLをキャッシュする経路(PDF等)向けのバリデータ。 */
   etag: string | null;
   lastModified: string | null;
+  cacheControl: string | null;
 }
 
 // ---- SPA判定ヒューリスティック ----
@@ -100,6 +103,7 @@ export interface FetchPageOptions extends HttpGetOptions {
   forceBrowser?: boolean;
   /** MCP progress notifications用。headlessブラウザへ昇格する直前にのみ呼ばれる。 */
   onProgress?: ((message: string) => void) | undefined;
+  waitTurn?: (url: string) => Promise<void>;
 }
 
 /** 二段フェッチ本体。条件付きGETでstatus 304が返った場合はNotModifiedResultを返す。 */
@@ -109,6 +113,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
   // HTTP取得が1回余計に先方へ飛んでいた(body-fallbackからの再エスカレーションでは、
   // 元の取得と合わせて同じページを3回取りにいっていた)。
   if (options.forceBrowser) {
+    await options.waitTurn?.(url);
     options.onProgress?.("ブラウザで取得しています…");
     const forced = await fetchWithBrowser(url, options.timeoutMs, { checkRobots: options.checkRobots });
     return {
@@ -119,6 +124,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
       encoding: "UTF-8",
       etag: null,
       lastModified: null,
+      cacheControl: null,
       escalationReason: "forceBrowser指定",
       geometry: forced.geometry,
     };
@@ -127,7 +133,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
   const routed = await httpGetRouted(url, options);
 
   if (routed.kind === "notModified") {
-    return { notModified: true, finalUrl: routed.finalUrl };
+    return { notModified: true, finalUrl: routed.finalUrl, cacheControl: routed.headers.get("cache-control") };
   }
 
   if (routed.kind === "handoff") {
@@ -148,6 +154,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
       truncated: routed.truncated,
       etag: routed.headers.get("etag"),
       lastModified: routed.headers.get("last-modified"),
+      cacheControl: routed.headers.get("cache-control"),
     };
   }
 
@@ -162,11 +169,13 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
       encoding: routed.encoding,
       etag: routed.headers.get("etag"),
       lastModified: routed.headers.get("last-modified"),
+      cacheControl: routed.headers.get("cache-control"),
       escalationReason: null,
       geometry: null,
     };
   }
 
+  await options.waitTurn?.(routed.finalUrl);
   options.onProgress?.("ブラウザで再取得しています…");
   const browserResult = await fetchWithBrowser(routed.finalUrl, options.timeoutMs, { checkRobots: options.checkRobots });
   return {
@@ -177,6 +186,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
     encoding: "UTF-8",
     etag: null,
     lastModified: null,
+    cacheControl: null,
     escalationReason: spaSignals.reason,
     geometry: browserResult.geometry,
   };

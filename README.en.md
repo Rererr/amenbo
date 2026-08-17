@@ -35,7 +35,7 @@ For a measured comparison against similar tools (official fetch MCP / Jina Reade
 - **Two-tier fetching**: plain HTTP GET first; only pages that need JS rendering escalate to headless Chromium, so most fetches never launch a browser
 - **Polite crawling**: respects robots.txt and Crawl-Delay; serialized access per domain at 1 req/sec by default (fetching robots.txt itself counts as one of those requests). Link discovery prefers sitemap / RSS instead of crawling pages
 - **Honest User-Agent**: identifies itself as a bot. **No anti-bot circumvention is implemented**
-- **Caching**: revalidates with ETag / If-Modified-Since to avoid needless refetches
+- **Caching**: revalidates with ETag / If-Modified-Since to avoid needless refetches. The TTL defaults to 15 minutes (`AMENBO_CACHE_TTL_MS`), and `Cache-Control` is honored **in the lengthening direction only**: a `max-age` longer than the TTL extends it (capped at 24 hours) and `no-store` is never cached, but `max-age=0` / `no-cache` do not shorten it — in practice most sites send those, and following them would mean going to the network on every tool call, which defeats the low-impact premise
 
 ## Installation
 
