@@ -5,12 +5,7 @@ on:
     branches: [main]
   pull_request:
 
-# Chromium遅延化(postinstall廃止)対応: 以前はここでms-playwrightをactions/cacheしていたが、
-# 現在は各ジョブが実際にChromiumを必要とするか実測した結果、いずれも不要と判明したため
-# インストール/キャッシュのステップを撤去した(CI高速化)。unitはfetcher/browser.tsをvi.mockで
-# 差し替えており、e2eの4ケースもHTTP tierのみで完結する(SPA判定/screenshotを踏まない)。
-# ブラウザ層を実際に使うテストを追加する場合は、そのジョブにのみ`npx playwright install chromium`
-# ステップを追加すること。
+# unit/e2eではChromiumを使わない。実ブラウザのテストはbrowserジョブに分離する。
 jobs:
   unit:
     strategy:
@@ -36,6 +31,18 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: node scripts/check-version-sync.mjs
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx vitest run tests/consentBannerBrowser.test.ts
 
   pnpm:
     runs-on: ubuntu-latest

@@ -1,5 +1,6 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
+import { hideConsentBanners } from "../src/fetcher/browser.js";
 import { removeConsentBanners, type ConsentBannerHostDocument } from "../src/jp/consentBanner.js";
 
 function makeDocument(bodyHtml: string): ConsentBannerHostDocument {
@@ -24,6 +25,31 @@ describe("removeConsentBanners", () => {
     `);
     const removed = removeConsentBanners(doc);
     expect(removed).toBe(1);
+  });
+
+  it("App Store/Google Play誘導バナーを除去する", () => {
+    const doc = makeDocument(`<div class="smart-banner">App Storeから開く</div>`);
+    expect(removeConsentBanners(doc)).toBe(1);
+  });
+
+  it("ブラウザ版も共有パターンでApp Store誘導を隠す", async () => {
+    const { document } = parseHTML(`<html><body><div class="smart-banner">App Storeから開く</div></body></html>`);
+    const globals = globalThis as unknown as { document?: unknown; window?: unknown };
+    const previousDocument = globals.document;
+    const previousWindow = globals.window;
+    globals.document = document;
+    globals.window = { getComputedStyle: () => ({ position: "fixed", zIndex: "100" }) };
+    const page = {
+      evaluate: async (pageFunction: (arg: unknown) => number, arg: unknown) => pageFunction(arg),
+    } as unknown as import("playwright").Page;
+
+    try {
+      await expect(hideConsentBanners(page)).resolves.toBe(1);
+      expect((document.querySelector(".smart-banner") as unknown as { style: { display: string } }).style.display).toBe("none");
+    } finally {
+      globals.document = previousDocument;
+      globals.window = previousWindow;
+    }
   });
 
   it("id/classパターンに一致しても文言が無ければ除去しない(誤検知防止)", () => {

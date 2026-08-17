@@ -28,6 +28,13 @@ const BANNER_ID_CLASS_PATTERN = /cookie|consent|cmp[-_]|gdpr|app[-_]?banner|inte
 /** 本文ブロックを誤って除去しないよう、この文字数を超えるブロックは対象外にする(バナーは短文が通例)。 */
 const MAX_BANNER_TEXT_LENGTH = 400;
 
+// RegExpをそのままpage.evaluateへ渡せないため、ブラウザ側で再構築できる定義を公開する。
+export const CONSENT_BANNER_RULES = {
+  textPatterns: BANNER_TEXT_PATTERNS.map(({ source, flags }) => ({ source, flags })),
+  idClassPattern: { source: BANNER_ID_CLASS_PATTERN.source, flags: BANNER_ID_CLASS_PATTERN.flags },
+  maxTextLength: MAX_BANNER_TEXT_LENGTH,
+};
+
 interface RemovableElement {
   id: string;
   className: string;

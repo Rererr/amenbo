@@ -16,6 +16,7 @@ import {
 } from "playwright";
 import { AmenboError, BrowserLaunchError, BrowserUnavailableError, FetchTimeoutError, InvalidUrlError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
+import { CONSENT_BANNER_RULES } from "../jp/consentBanner.js";
 import { guardPublicAddress, USER_AGENT } from "./http.js";
 import { closeSharedSsrfProxy, getSharedSsrfProxyUrl } from "./ssrfProxy.js";
 
@@ -220,51 +221,35 @@ export async function collectPageGeometry(page: Page): Promise<PageGeometrySnaps
   });
 }
 
-/**
- * J8: 国内同意バナー・アプリ誘導インタースティシャルを実レンダリング結果から隠す。
- *
- * jp/consentBanner.tsの静的DOM版と同じ判定パターンだが、page.evaluate内は
- * ブラウザコンテキストで実行されNode側のクロージャを参照できないため、判定パターンを
- * self-containedな関数として定義し直している(多少の重複はやむを得ない設計判断)。
- * 実ブラウザではcomputed styleが取得できるため、position:fixed等の判定も加えている。
- * DOMから除去するのではなく非表示にする(スクリーンショット/SPA判定への影響を抑えつつ
- * 視覚的な妨げだけを取り除く)。
- */
+// page.evaluate内でNode側のRegExpを参照できないため、判定定義を引数で渡す。
 export async function hideConsentBanners(page: Page): Promise<number> {
-  return page.evaluate(() => {
-    const textPatterns = [
-      /同意して閉じる/,
-      /同意する/,
-      /Cookie.{0,10}(の使用に|に)?同意/i,
-      /このサイトはCookieを使用/,
-      /アプリで(開く|見る|読む)/,
-      /アプリをダウンロード/,
-      /アプリ内で開く/,
-      /ストアで見る/,
-    ];
-    const idClassPattern = /cookie|consent|cmp[-_]|gdpr|app[-_]?banner|interstitial|smart-?banner/i;
-    const maxTextLength = 400;
+  return page.evaluate(
+    ({ textPatterns, idClassPattern, maxTextLength }) => {
+      const textRegexes = textPatterns.map(({ source, flags }) => new RegExp(source, flags));
+      const idClassRegex = new RegExp(idClassPattern.source, idClassPattern.flags);
 
-    let hidden = 0;
-    const candidates = Array.from(document.querySelectorAll("div, section, aside, dialog"));
-    for (const el of candidates) {
-      const text = el.textContent ?? "";
-      if (text.length === 0 || text.length > maxTextLength) continue;
+      let hidden = 0;
+      const candidates = Array.from(document.querySelectorAll("div, section, aside, dialog"));
+      for (const el of candidates) {
+        const text = el.textContent ?? "";
+        if (text.length === 0 || text.length > maxTextLength) continue;
 
-      const idClassMatch = idClassPattern.test(`${el.id} ${el.className}`);
-      const textMatch = textPatterns.some((pattern) => pattern.test(text));
-      if (!(idClassMatch && textMatch)) continue;
+        const idClassMatch = idClassRegex.test(`${el.id} ${el.className}`);
+        const textMatch = textRegexes.some((pattern) => pattern.test(text));
+        if (!(idClassMatch && textMatch)) continue;
 
-      const style = window.getComputedStyle(el);
-      const isOverlayish = style.position === "fixed" || style.position === "sticky" || Number(style.zIndex || "0") >= 100;
+        const style = window.getComputedStyle(el);
+        const isOverlayish = style.position === "fixed" || style.position === "sticky" || Number(style.zIndex || "0") >= 100;
 
-      if (isOverlayish) {
-        (el as HTMLElement).style.setProperty("display", "none", "important");
-        hidden++;
+        if (isOverlayish) {
+          (el as HTMLElement).style.setProperty("display", "none", "important");
+          hidden++;
+        }
       }
-    }
-    return hidden;
-  });
+      return hidden;
+    },
+    CONSENT_BANNER_RULES,
+  );
 }
 
 // ---- C1/C2: SSRFガード付きナビゲーション ----
@@ -341,9 +326,7 @@ export async function navigateSafely(
     try {
       if (isMainFrameNavigation) {
         await guardPublicAddress(requestUrl);
-        // HTTP層(guardedFetch)は別オリジンへのリダイレクト着地でrobots.txtを再確認するのに、
-        // ブラウザ層はSSRFしか見ていなかった。同じリダイレクトでも取得経路が違うだけで
-        // 拒否されたりされなかったりするため、判定を揃える。
+        // HTTP層と同じリダイレクト先のrobots.txt判定を保つ。レート制御の待機はタイムアウト予算を消費するため、ここでは行わない。
         if (options.checkRobots && new URL(requestUrl).origin !== initialOrigin) {
           await options.checkRobots(requestUrl);
         }
@@ -414,6 +397,10 @@ export interface SafeNavigationOptions {
  *   - HTTP2以外のエラー(接続拒否/タイムアウト等)
  *   - システムにChromeが無くgetSystemChromeBrowser自体が失敗した場合
  * Chromeでの再試行も失敗した場合は、そちらのエラー(Chrome経由での実際の失敗内容)を投げる。
+ *
+ * Chromeでの再遷移前にレート制御の待機は入れない。直前の遷移はプロトコル層で失敗しており
+ * 応答を得られていない再試行であること、待機を入れるにはwaitTurnをこの層まで配線する必要があり
+ * 別オリジンへのリダイレクト待機(fetcher/http.ts)を見送ったのと同じ理由で今は踏み込まないため。
  */
 export async function openPageAndNavigate(
   url: string,
