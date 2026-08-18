@@ -42,11 +42,11 @@
     "@napi-rs/canvas": "^1.0.2",
     "encoding-japanese": "^2.2.0",
     "linkedom": "^0.18.13",
-    "pdfjs-dist": "^6.1.200",
+    "pdfjs-dist": "^6.2.108",
     "playwright": "^1.61.1",
     "robots-parser": "^3.0.1",
     "turndown": "^7.2.4",
-    "undici": "^8.7.0",
+    "undici": "^7.29.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
