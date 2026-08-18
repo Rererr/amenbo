@@ -1,0 +1,38 @@
+name: Release Prep (one-shot 2026-09-02)
+
+on:
+  schedule:
+    - cron: "0 0 2 9 *"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  release-prep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+      - run: test "$(date -u +%F)" = "2026-09-02"
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=moderate
+      - run: npm audit --audit-level=moderate
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: node scripts/check-version-sync.mjs
+      - run: npm pack --dry-run
+      - run: node scripts/mcp-init-smoke.mjs
+      - run: node scripts/mcp-modern-smoke.mjs
+      - run: npx playwright install --with-deps chromium
+      - run: npx vitest run tests/consentBannerBrowser.test.ts
+      - run: node scripts/e2e-smoke.mjs
+      - name: Disable this one-shot workflow
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable release-prep-once-2026-09-02.yml --repo "$GITHUB_REPOSITORY"
