@@ -234,7 +234,7 @@ amenboは `npm install -g amenbo` で入ります。リポジトリは [github.c
 
 ## 追記（2026-09-02 再計測）
 
-現行版（v0.6.0）で再度同じハーネスを実行しました（生ログ: [`bench/logs-2026-09-02/`](https://github.com/Rererr/amenbo/tree/main/bench/logs-2026-09-02)）。
+現行版（v0.6.1）で再度同じハーネスを実行しました（生ログ: [`bench/logs-2026-09-02/`](https://github.com/Rererr/amenbo/tree/main/bench/logs-2026-09-02)）。
 
 - **トークン推定器を実測に合わせて修正した**ため、絶対値は上表と直接比較できません（全ツール同じ推定器で測り直しているので、ツール間の比較は有効です）。主要な値: amenbo 4,527 / 6,112 / 8,014 / 1,914 / 832 / 970、mcp-server-fetch 2,800 / 2,219 / 2,373 / 539 / 2,105 / 2,859、Jina 4,476 / 54,120 / 313,193 / 33,950 / 822 / 4,908,137（zenn / wiki / aozora / gov / pdf / csv の順）。**CSVの約5,000倍差は再現**しています。
 - **mcp-server-fetch（2026.8.18）の挙動は7月と同じ**でした。5,000文字打切り・Shift_JIS文字化け・PDF生バイト・robots.txt誤報告はすべて再現しています。
