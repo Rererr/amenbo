@@ -1,6 +1,6 @@
 # 競合比較ベンチ(2026-07-10)
 
-記事「[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)」の実測に使ったハーネスと生ログ。最新版は [docs/article-updated-2026-07-12.md](../docs/article-updated-2026-07-12.md)。
+記事「[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)」の実測に使ったハーネスと生ログ。最新版は [docs/article-updated-2026-07-12.md](../docs/article-updated-2026-07-12.md)。最新の再計測は [logs-2026-09-02/](logs-2026-09-02/)。
 
 ## 使い方
 
@@ -19,6 +19,6 @@ Jina Readerはキー無しで r.jina.ai を叩く(レート制限あり)。
 
 ## ログ
 
-`logs-2026-07-10/` に各ツールの結果JSONを保存。
+`logs-2026-07-10/` に各ツールの結果JSONを保存。再計測は `logs-2026-07-12/`・`logs-2026-09-02/`（各 README に要点）。
 amenboは `results-amenbo-after-fixes.json` が最終計測(記事に掲載した値)、`results-amenbo.json` は初回計測。
 計測の考え方(トークン統一・画像換算)は記事本文を参照。

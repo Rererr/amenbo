@@ -1,0 +1,65 @@
+[
+  {
+    "tool": "pixelshot",
+    "id": "zenn",
+    "url": "https://zenn.dev/avaintelligence/articles/b7d4743a448485",
+    "ok": false,
+    "ms": 13271,
+    "error": "2026-09-02 11:40:37,075 INFO pixelrag_render.render: Rendering 1 URL(s) with backend=cdp workers=4\n2026-09-02 11:40:49,536 INFO pixelrag_render.backends.cdp: Batch complete: done=0 failed=0\n2026-09-02 11:40:49,538 WARNING pixelrag_render.render: No outputs produced.\n",
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-McU6ny"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "wiki",
+    "url": "https://ja.wikipedia.org/wiki/%E9%83%BD%E9%81%93%E5%BA%9C%E7%9C%8C%E3%81%AE%E4%BA%BA%E5%8F%A3%E4%B8%80%E8%A6%A7",
+    "ok": false,
+    "ms": 7137,
+    "error": "2026-09-02 11:40:49,596 INFO pixelrag_render.render: Rendering 1 URL(s) with backend=cdp workers=4\n2026-09-02 11:40:56,678 INFO pixelrag_render.backends.cdp: Batch complete: done=0 failed=0\n2026-09-02 11:40:56,679 WARNING pixelrag_render.render: No outputs produced.\n",
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-bR2Zwu"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "aozora",
+    "url": "https://www.aozora.gr.jp/cards/000148/files/789_14547.html",
+    "ok": false,
+    "ms": 7118,
+    "error": "2026-09-02 11:40:56,736 INFO pixelrag_render.render: Rendering 1 URL(s) with backend=cdp workers=4\n2026-09-02 11:41:03,802 INFO pixelrag_render.backends.cdp: Batch complete: done=0 failed=0\n2026-09-02 11:41:03,803 WARNING pixelrag_render.render: No outputs produced.\n",
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-80jfUw"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "gov",
+    "url": "https://www.mhlw.go.jp/stf/kaigo-kouhyou_opendata.html",
+    "ok": false,
+    "ms": 7135,
+    "error": "2026-09-02 11:41:03,850 INFO pixelrag_render.render: Rendering 1 URL(s) with backend=cdp workers=4\n2026-09-02 11:41:10,925 INFO pixelrag_render.backends.cdp: Batch complete: done=0 failed=0\n2026-09-02 11:41:10,927 WARNING pixelrag_render.render: No outputs produced.\n",
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-LjW2qH"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "pdf",
+    "url": "https://www.mhlw.go.jp/content/000778218.pdf",
+    "ok": false,
+    "ms": 7143,
+    "error": "2026-09-02 11:41:10,989 INFO pixelrag_render.render: Rendering 1 URL(s) with backend=cdp workers=4\n2026-09-02 11:41:18,073 INFO pixelrag_render.backends.cdp: Batch complete: done=0 failed=0\n2026-09-02 11:41:18,074 WARNING pixelrag_render.render: No outputs produced.\n",
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-qPRrQT"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "csv",
+    "url": "https://www.mhlw.go.jp/content/12300000/jigyosho_110.csv",
+    "ok": false,
+    "ms": 7142,
+    "error": "2026-09-02 11:41:18,133 INFO pixelrag_render.render: Rendering 1 URL(s) with backend=cdp workers=4\n2026-09-02 11:41:25,215 INFO pixelrag_render.backends.cdp: Batch complete: done=0 failed=0\n2026-09-02 11:41:25,216 WARNING pixelrag_render.render: No outputs produced.\n",
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-pG8YFj"
+  },
+  {
+    "tool": "pixelshot",
+    "id": "err",
+    "url": "https://initial.inc/",
+    "ok": false,
+    "ms": 7139,
+    "error": "2026-09-02 11:41:25,274 INFO pixelrag_render.render: Rendering 1 URL(s) with backend=cdp workers=4\n2026-09-02 11:41:32,353 INFO pixelrag_render.backends.cdp: Batch complete: done=0 failed=0\n2026-09-02 11:41:32,354 WARNING pixelrag_render.render: No outputs produced.\n",
+    "outDir": "/var/folders/fx/cb32_0_56w7bb4l4jjbg79580000gn/T/pxl-NmzrFh"
+  }
+]

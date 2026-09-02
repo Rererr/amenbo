@@ -1,0 +1,91 @@
+{
+  "note": "browser_navigate応答が参照するスナップショット.ymlの実体を現行estimateTokensで計測(URL順に対応)。2026-07-12分は同じ推定器で再計測した値",
+  "2026-07-12": [
+    {
+      "id": "zenn",
+      "file": "page-2026-07-12T13-34-58-306Z.yml",
+      "chars": 38593,
+      "textTokens": 10243
+    },
+    {
+      "id": "wiki",
+      "file": "page-2026-07-12T13-35-00-504Z.yml",
+      "chars": 361946,
+      "textTokens": 68322
+    },
+    {
+      "id": "aozora",
+      "file": "page-2026-07-12T13-35-02-343Z.yml",
+      "chars": 1199016,
+      "textTokens": 485997
+    },
+    {
+      "id": "gov",
+      "file": "page-2026-07-12T13-35-03-022Z.yml",
+      "chars": 115404,
+      "textTokens": 28847
+    },
+    {
+      "id": "pdf",
+      "file": "page-2026-07-12T13-35-03-134Z.yml",
+      "chars": 0,
+      "textTokens": 0
+    },
+    {
+      "id": "csv",
+      "file": "page-2026-07-12T13-35-03-729Z.yml",
+      "chars": 0,
+      "textTokens": 0
+    },
+    {
+      "id": "err",
+      "file": "page-2026-07-12T13-35-06-701Z.yml",
+      "chars": 55366,
+      "textTokens": 16170
+    }
+  ],
+  "2026-09-02": [
+    {
+      "id": "zenn",
+      "file": "page-2026-09-02T02-40-30-700Z.yml",
+      "chars": 34213,
+      "textTokens": 9556
+    },
+    {
+      "id": "wiki",
+      "file": "page-2026-09-02T02-40-32-156Z.yml",
+      "chars": 360323,
+      "textTokens": 67757
+    },
+    {
+      "id": "aozora",
+      "file": "page-2026-09-02T02-40-32-956Z.yml",
+      "chars": 1199016,
+      "textTokens": 485997
+    },
+    {
+      "id": "gov",
+      "file": "page-2026-09-02T02-40-33-464Z.yml",
+      "chars": 126213,
+      "textTokens": 31394
+    },
+    {
+      "id": "pdf",
+      "file": "page-2026-09-02T02-40-33-490Z.yml",
+      "chars": 0,
+      "textTokens": 0
+    },
+    {
+      "id": "csv",
+      "file": "page-2026-09-02T02-40-34-041Z.yml",
+      "chars": 0,
+      "textTokens": 0
+    },
+    {
+      "id": "err",
+      "file": "page-2026-09-02T02-40-36-147Z.yml",
+      "chars": 57203,
+      "textTokens": 15992
+    }
+  ]
+}
