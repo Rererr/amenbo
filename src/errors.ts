@@ -16,6 +16,22 @@ export abstract class AmenboError extends Error {
   }
 }
 
+/**
+ * tls/connection/応答なしタイムアウト時に付与するヒント。dns失敗・本文途中のタイムアウトには
+ * 付けない(前者はブラウザ経由でも解決せず、後者は遅い/大きい本文が原因でボット対策ではないため)。
+ */
+const SCREENSHOT_RETRY_HINT =
+  " — サイト側がボットアクセスを遮断している可能性があります。mode: screenshot(ブラウザ経由)で再試行すると通る場合があります";
+
+/**
+ * タイムアウトが起きた段階。
+ * - response: HTTP応答(ヘッダ)が1バイトも届かないまま期限切れ。ボット対策で応答を保留する
+ *   サイト(接続は受け付けるが返さない)がここに落ちるため、ブラウザ経由の再試行を案内する
+ * - body: ヘッダ受信後、本文読み取り中に期限切れ
+ * - browser: ブラウザ経由の取得が期限切れ
+ */
+export type FetchTimeoutStage = "response" | "body" | "browser";
+
 /** HTTP/ブラウザ取得がタイムアウトした。 */
 export class FetchTimeoutError extends AmenboError {
   readonly code = "FETCH_TIMEOUT";
@@ -23,8 +39,11 @@ export class FetchTimeoutError extends AmenboError {
   constructor(
     readonly url: string,
     readonly timeoutMs: number,
+    readonly stage: FetchTimeoutStage,
   ) {
-    super(`取得がタイムアウトしました(${timeoutMs}ms): ${url}`);
+    const detail = stage === "response" ? `${timeoutMs}ms、応答なし` : `${timeoutMs}ms`;
+    const hint = stage === "response" ? SCREENSHOT_RETRY_HINT : "";
+    super(`取得がタイムアウトしました(${detail}): ${url}${hint}`);
   }
 }
 
@@ -146,10 +165,6 @@ const NETWORK_ERROR_KIND_LABELS: Record<Exclude<NetworkErrorKind, "unknown">, st
   connection: "接続拒否/リセット",
 };
 
-/** tls/connection時のみ付与するヒント(dns失敗はブラウザ経由でも解決しないため付けない)。 */
-const NETWORK_ERROR_SCREENSHOT_HINT =
-  " — サイト側がボットアクセスを遮断している可能性があります。mode: screenshot(ブラウザ経由)で再試行すると通る場合があります";
-
 const DNS_ERROR_CODES = new Set(["ENOTFOUND", "EAI_AGAIN"]);
 const CONNECTION_ERROR_CODES = new Set([
   "ECONNREFUSED",
@@ -209,7 +224,7 @@ function walkCauseChain(error: unknown, maxDepth = 5): CauseChainNode[] {
 
 function buildNetworkErrorMessage(url: string, kind: NetworkErrorKind, rawMessage: string): string {
   const detail = kind === "unknown" ? rawMessage : NETWORK_ERROR_KIND_LABELS[kind];
-  const hint = kind === "tls" || kind === "connection" ? NETWORK_ERROR_SCREENSHOT_HINT : "";
+  const hint = kind === "tls" || kind === "connection" ? SCREENSHOT_RETRY_HINT : "";
   return `接続に失敗しました(${detail}): ${url}${hint}`;
 }
 

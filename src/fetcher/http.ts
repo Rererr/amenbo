@@ -394,7 +394,7 @@ export function resolveDefaultMaxBodyBytes(): number {
  */
 function classifyBodyReadError(error: unknown, url: string, timeout: TimeoutContext): AmenboError {
   if (error instanceof AmenboError) return error;
-  if (timeout.signal.aborted) return new FetchTimeoutError(url, timeout.timeoutMs);
+  if (timeout.signal.aborted) return new FetchTimeoutError(url, timeout.timeoutMs, "body");
   return NetworkError.fromCause(url, error);
 }
 
@@ -524,7 +524,7 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
         throw privateAddressError;
       }
       if (controller.signal.aborted) {
-        throw new FetchTimeoutError(url, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+        throw new FetchTimeoutError(url, options.timeoutMs ?? DEFAULT_TIMEOUT_MS, "response");
       }
       // 機能A: undiciのcauseチェーン(error.cause.code等)からdns/tls/connection/unknownを
       // 分類した型付きエラーにして投げる(以前は生の"TypeError: fetch failed"が素通りしていた)。

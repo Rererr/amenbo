@@ -61,9 +61,30 @@ const LEAF_ELEMENT_SELECTOR = "p, li, td, th, span, div, canvas, svg, img, h1, h
 // 固定近似値として、screenshot.tsの既定タイルサイズ(1280x1080)に揃えている。
 const REFERENCE_PAGE_AREA = 1280 * 1080;
 
+/** alt/titleのいずれかに文字を持つ画像。LLMはMarkdown経由で画像を見られないため、それ以外はURLしか情報がない。 */
+function isInformativeImage(img: Element): boolean {
+  return (img.getAttribute("alt") ?? "").trim() !== "" || (img.getAttribute("title") ?? "").trim() !== "";
+}
+
 function createTurndownService(): TurndownService {
   const service = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
   service.use(gfm);
+  // 文字情報を持たない画像・リンクは出力しない。turndownはhref付きの<a>を空でも意味あり
+  // (meaningfulWhenBlank)として `[](href)` を残すが、これは読み手に何も伝えない
+  // (Zennの見出しアンカー、Wikipediaの国旗アイコン・サムネイルリンク等。1ページで数百〜数千トークン)。
+  service.addRule("imageWithoutText", {
+    filter: (node) => node.nodeName === "IMG" && !isInformativeImage(node),
+    replacement: () => "",
+  });
+  service.addRule("linkWithoutText", {
+    filter: (node) =>
+      node.nodeName === "A" &&
+      (node.textContent ?? "").trim() === "" &&
+      (node.getAttribute("title") ?? "").trim() === "" &&
+      (node.getAttribute("aria-label") ?? "").trim() === "" &&
+      !Array.from(node.querySelectorAll("img")).some(isInformativeImage),
+    replacement: () => "",
+  });
   return service;
 }
 

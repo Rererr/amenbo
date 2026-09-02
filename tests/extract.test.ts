@@ -454,7 +454,7 @@ describe("extractMarkdown - CSSリーク除去(style/script/noscript)", () => {
   it("Readability経路: 遅延読み込みプレースホルダをnoscript内の実画像URLへ差し替える(Readability本来の機能を壊さない)", () => {
     const html = `<!DOCTYPE html><html><body><article><h1>見出し</h1>
       <p>${"本文の段落です。".repeat(15)}</p>
-      <img src="placeholder.gif"><noscript><img src="https://example.com/real-photo.jpg"></noscript>
+      <img src="placeholder.gif" alt="写真"><noscript><img src="https://example.com/real-photo.jpg" alt="写真"></noscript>
       <p>${"続きの本文です。".repeat(15)}</p>
     </article></body></html>`;
     const result = extractMarkdown(html, { url: "https://example.com/article" });
@@ -469,7 +469,7 @@ describe("extractMarkdown - CSSリーク除去(style/script/noscript)", () => {
   it("body-fallback経路でもReadability.parse()の画像復元が先に効く(常にparse()が呼ばれるため)", () => {
     const html = `<!DOCTYPE html><html><body>
       <div>短い。</div>
-      <img src="placeholder.gif"><noscript><img src="https://example.com/real-photo.jpg"></noscript>
+      <img src="placeholder.gif" alt="写真"><noscript><img src="https://example.com/real-photo.jpg" alt="写真"></noscript>
     </body></html>`;
     const result = extractMarkdown(html, { url: "https://example.com/old-site" });
     expect(result.extractionMethod).toBe("body-fallback");
@@ -523,5 +523,38 @@ describe("extractMarkdown - Readability経路のノイズ除去", () => {
     // リンク密度の高いリンク集は本文へ混入しない。
     expect(result.markdown).not.toContain("関連項目リンク番号");
     expect(result.markdown).not.toContain("/related/");
+  });
+});
+
+describe("文字情報を持たない画像・リンクの除去", () => {
+  const paragraph = `<p>${"本文の段落です。".repeat(20)}</p>`;
+
+  it("alt/title無しの画像は落とし、alt付き・title付きの画像は保持する", () => {
+    const html = `<!DOCTYPE html><html><body><article><h1>見出し</h1>${paragraph}
+      <p><img alt="図1" src="https://example.com/fig.png"> <img title="図2" src="https://example.com/fig2.png"> <img alt=" " src="https://example.com/noalt.png"></p>
+      ${paragraph}</article></body></html>`;
+    const result = extractMarkdown(html, { url: "https://example.com/article" });
+    expect(result.markdown).toContain("![図1](https://example.com/fig.png)");
+    expect(result.markdown).toContain("fig2.png");
+    expect(result.markdown).not.toContain("noalt.png");
+  });
+
+  it("本文を持たないリンク(見出しアンカー・alt無し画像だけのサムネイルリンク)は落とす(adapter経路)", () => {
+    const html = `<!DOCTYPE html><html><body><div class="znc">
+      <h2 id="x"><a class="header-anchor-link" href="#x" aria-hidden="true"></a> はじめに</h2>${paragraph}
+      <p><a href="/wiki/File:Flag.svg"><img alt="" src="//thumb.example.org/40px-Flag.svg.png"></a> 東京都</p>
+      <p><a href="/wiki/File:Logo.svg"><img alt="ロゴ" src="//thumb.example.org/logo.png"></a></p>
+      <p><a href="/next" aria-label="次のページへ"></a><a href="/prev" title="前のページへ"></a></p>
+      ${paragraph}</div></body></html>`;
+    const result = extractMarkdown(html, { url: "https://zenn.dev/someone/articles/abc123" });
+    expect(result.adapterName).toBe("zenn");
+    expect(result.markdown).toContain("## はじめに");
+    expect(result.markdown).not.toContain("[](#x)");
+    expect(result.markdown).not.toContain("Flag.svg");
+    expect(result.markdown).toContain("東京都");
+    expect(result.markdown).toContain("[![ロゴ](//thumb.example.org/logo.png)](/wiki/File:Logo.svg)");
+    // aria-label / title で意味を持つ空リンクは残す(ナビゲーションの手掛かり)
+    expect(result.markdown).toContain("](/next)");
+    expect(result.markdown).toContain('](/prev "前のページへ")');
   });
 });

@@ -351,7 +351,7 @@ export async function navigateSafely(
   } catch (cause) {
     if (blockedError) throw blockedError as AmenboError;
     if (cause instanceof Error && /timeout/i.test(cause.message)) {
-      throw new FetchTimeoutError(url, timeoutMs);
+      throw new FetchTimeoutError(url, timeoutMs, "browser");
     }
     throw cause;
   } finally {
