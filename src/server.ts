@@ -99,7 +99,8 @@ export function createServer(): McpServer {
       description:
         "Fetch a web page (Japanese-web-native) as low-impact, token-efficient Markdown. Built-in robots.txt compliance, rate limiting, and caching. " +
         "mode: auto (default; quality score picks Markdown or screenshot) / markdown / outline (heading summary) / screenshot. " +
-        "Refetching a cached URL returns cache: unchanged, or diff (changed sections only), to save tokens. PDF URLs are handled automatically.",
+        "Refetching a cached URL returns cache: unchanged, or diff (changed sections only), to save tokens. PDF URLs are handled automatically. " +
+        "mode: screenshot is the retry for pages whose Markdown came back poor; when the layout itself is the information or you need viewport/scale control, use the `screenshot` tool instead.",
       inputSchema: z.object({
         url: z.string().url().describe("Target URL (http/https only; PDF supported)"),
         mode: z.enum(["auto", "markdown", "outline", "screenshot"]).optional().describe("Default: auto"),
@@ -133,7 +134,10 @@ export function createServer(): McpServer {
     "links",
     {
       title: "List links from a page (sitemap/RSS-first)",
-      description: "Low-impact link discovery: prefers sitemap.xml / RSS / Atom feeds when available, otherwise extracts in-page links.",
+      description:
+        "Enumerate URLs under a site or page without fetching each one. Tries sitemap.xml, then RSS/Atom feeds, then falls back to links found in the page itself; the response header reports which source was used (`source:`), the `count:`, and `(truncated)` when more than 200 links were cut. " +
+        "Each link is one line, `- <title> — <url>` (title omitted when unknown). `filter` narrows by substring or `*` glob against URL and link text; an empty result states whether the filter removed everything or the source had no links. " +
+        "Use it to find the right page before `fetch`. It does not return page content and does not follow more than the first 3 child sitemaps.",
       inputSchema: z.object({
         url: z.string().url().describe("Starting URL"),
         filter: z.string().optional().describe("Substring match against URL/link text, or a glob using *"),
@@ -162,7 +166,10 @@ export function createServer(): McpServer {
     "screenshot",
     {
       title: "Capture a tiled screenshot of a web page",
-      description: "For explicit visual inspection. Renders the page with a headless browser and returns tiled PNG screenshots. Built-in robots.txt compliance, rate limiting, and caching.",
+      description:
+        "Render a page in a headless browser and return it as up to 10 tiled PNG images (1280px wide by default; `fullPage: false` returns only the first viewport). Pages taller than 10 tiles are cut off and the response says `truncated: true`. " +
+        "Use it when the layout or an image is the information (pricing tables, banners, visual QA) or when you need explicit viewport/scale control; `scale: 0.5` roughly halves image tokens. " +
+        "For text content use `fetch`. Built-in robots.txt compliance, rate limiting, and caching.",
       inputSchema: z.object({
         url: z.string().url().describe("Target URL (http/https only)"),
         fullPage: z.boolean().optional().describe("Default true. If false, captures only the first viewport (1 tile)"),
