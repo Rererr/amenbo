@@ -115,6 +115,20 @@ describe("buildOutline", () => {
     expect(outline.sections[0]?.excerpt).toBe("参照を参照。");
   });
 
+  // 取得したページ本文がそのまま入力になるため、長大な1行でも線形時間で終わること。
+  it.each([
+    ["文末記号(。!?)の無い長い行", "a".repeat(200_000)],
+    ["閉じ]の無い[の連続", "[".repeat(200_000)],
+    ["閉じ]の無い![の連続", "![".repeat(100_000)],
+    ["1つの](を共有する[の連続", `${"[".repeat(1_000_000)}](a`],
+    ["エスケープを挟んで閉じない[](の連続", "[](\\)".repeat(40_000)],
+    ["エスケープを挟んで閉じない![](の連続", "![](\\)".repeat(40_000)],
+  ])("%sでも抜粋生成が時間内に終わる", (_label, line) => {
+    const started = performance.now();
+    buildOutline(`# 見出し\n\n${line}`);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   it("フェンスコードブロック内の#はheadingとして扱わない", () => {
     const markdown = "# 本物の見出し\n\n```\n# これはコード内のコメント\n```\n\n本文。";
     const outline = buildOutline(markdown);

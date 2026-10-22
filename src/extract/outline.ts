@@ -158,21 +158,86 @@ export function splitSections(markdown: string): MarkdownSection[] {
 }
 
 /**
- * リンク先(URL)部分にマッチする断片。`[^)]*`だと`\)`のような
+ * リンク先(URL)部分の照合。`[^)]*`だと`\)`のような
  * エスケープされた括弧やWikipediaのFileリンク等の生の丸括弧で最初の`)`に
  * 早期マッチし、URLの残りがexcerptにプレーンテキストとして漏れる
  * (実測: `en.wikipedia.org/wiki/Tokyo`のoutlineで`.svg)`等の断片が複数節に露出)。
  * エスケープシーケンス(`\\.`)と1階層までバランスした生の括弧を許容して回避する
  * (CommonMarkは3階層までのネスト推奨だが、excerptの装飾除去用途では1階層で十分)。
  *
- * **3つの選択肢は先頭1文字が重ならないようにすること。** 中央を`[^()]`(バックスラッシュを含む)
- * にすると`\\`が2つの経路で消費でき、閉じ括弧が来ない入力で総当たりが指数的に増える。
- * 実測でバックスラッシュ100個の未閉鎖リンクが98秒かかった(取得したWebページの本文が
- * そのまま入力になるので、これは外部から踏ませられる)。`\\`を中央から除いて解消している。
+ * 正規表現`(?:\\.|[^()\\]|\([^()]*\))*\)`と同じ結果を返す。3つの選択肢は先頭1文字が重ならないので
+ * 照合経路は1本に決まり、位置ごとの結果は開始位置に依らない。正規表現のままにしないのは、
+ * `](`ごとに末尾まで照合し直すため`[](\)`の繰り返しのような入力で二次時間になるから。
+ * 位置ごとの結果をmemoに残し、各位置を1回だけ判定して線形に保つ。
  */
-const LINK_DESTINATION = String.raw`(?:\\.|[^()\\]|\([^()]*\))*`;
-const IMAGE_MARKDOWN_LINK = new RegExp(String.raw`!\[([^\]]*)\]\(${LINK_DESTINATION}\)`, "g");
-const TEXT_MARKDOWN_LINK = new RegExp(String.raw`\[([^\]]*)\]\(${LINK_DESTINATION}\)`, "g");
+const PAREN = /[()]/g;
+
+function createDestinationMatcher(text: string): (from: number) => number {
+  const memo = new Map<number, number>();
+  return (from) => {
+    const path: number[] = [];
+    let pos = from;
+    let end = -1;
+    while (pos < text.length) {
+      const known = memo.get(pos);
+      if (known !== undefined) {
+        end = known;
+        break;
+      }
+      path.push(pos);
+      const ch = text[pos];
+      if (ch === ")") {
+        end = pos + 1;
+        break;
+      }
+      if (ch === "\\") {
+        // 正規表現の`.`と同じく行終端文字はエスケープできない。
+        if (pos + 1 >= text.length || "\n\r\u2028\u2029".includes(text[pos + 1] ?? "")) break;
+        pos += 2;
+      } else if (ch === "(") {
+        PAREN.lastIndex = pos + 1;
+        const next = PAREN.exec(text);
+        if (next?.[0] !== ")") break;
+        pos = next.index + 1;
+      } else {
+        pos++;
+      }
+    }
+    for (const visited of path) memo.set(visited, end);
+    return end;
+  };
+}
+
+/**
+ * `opener`(`[`か`![`)から始まる`opener label](destination)`をlabelへ置き換える。
+ * `/\[([^\]]*)\]\(…\)/g`と同じ結果を返す。正規表現のままにしないのは、`[`ごとに次の`]`まで
+ * 走査し直すため`[`が多く`](…)`が続かない入力で二次時間になるから。
+ * 同じ`]`へ行き着く`[`の判定結果を使い回して線形に保つ。
+ */
+function replaceLinksWithLabel(text: string, opener: "[" | "!["): string {
+  const matchDestination = createDestinationMatcher(text);
+  let out = "";
+  let copied = 0;
+  let close = -1;
+  let tailEnd = -1;
+  let start = text.indexOf(opener);
+  while (start !== -1) {
+    const labelStart = start + opener.length;
+    if (close < labelStart) {
+      close = text.indexOf("]", labelStart);
+      if (close === -1) break;
+      tailEnd = text[close + 1] === "(" ? matchDestination(close + 2) : -1;
+    }
+    if (tailEnd === -1) {
+      start = text.indexOf(opener, start + 1);
+      continue;
+    }
+    out += text.slice(copied, start) + text.slice(labelStart, close);
+    copied = tailEnd;
+    start = text.indexOf(opener, tailEnd);
+  }
+  return out + text.slice(copied);
+}
 
 /**
  * Markdownのリンク/画像記法をテキストのみへ変換する(excerpt専用)。
@@ -184,7 +249,7 @@ const TEXT_MARKDOWN_LINK = new RegExp(String.raw`\[([^\]]*)\]\(${LINK_DESTINATIO
  * 本文(section取得時のmarkdown)には手を加えず、excerpt生成時のみ適用する。
  */
 function stripMarkdownLinks(text: string): string {
-  return text.replace(IMAGE_MARKDOWN_LINK, "$1").replace(TEXT_MARKDOWN_LINK, "$1");
+  return replaceLinksWithLabel(replaceLinksWithLabel(text, "!["), "[");
 }
 
 /** 節の内容から、見出し行を除いた本文の冒頭1文を抜き出す。 */
@@ -193,8 +258,13 @@ function extractExcerpt(content: string): string {
   const body = stripMarkdownLinks(bodyLines.join("\n")).trim();
   if (body.length === 0) return "";
 
-  const sentenceMatch = /[^。!?\n]*[。!?]/u.exec(body);
-  const raw = sentenceMatch ? sentenceMatch[0] : (body.split("\n").find((l) => l.trim().length > 0) ?? "");
+  // 最初の文末記号を含む行の、行頭から文末記号までを1文とする。`/[^。!?\n]*[。!?]/u`で書くと
+  // 文末記号の無い行で開始位置ごとに行末まで走査し直し、長い行で二次時間になる。
+  const sentenceEnd = body.search(/[。!?]/u);
+  const raw =
+    sentenceEnd === -1
+      ? (body.split("\n").find((l) => l.trim().length > 0) ?? "")
+      : body.slice(body.lastIndexOf("\n", sentenceEnd) + 1, sentenceEnd + 1);
   return raw.trim().slice(0, EXCERPT_MAX_LENGTH);
 }
 
