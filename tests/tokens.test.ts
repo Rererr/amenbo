@@ -71,6 +71,13 @@ describe("paginateMarkdown", () => {
     expect(result.content).toBe(markdown);
   });
 
+  it("フェンス内に大量の空行を持つコードブロックでも時間内に分割する", () => {
+    const markdown = `本文。\n\n\`\`\`\n${"\n".repeat(200_000)}x\n\`\`\``;
+    const started = performance.now();
+    paginateMarkdown(markdown, 1000, 1);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   it("予算を超える長文は段落境界で複数ページに分割する", () => {
     const paragraphs = Array.from({ length: 20 }, (_, i) => `段落${i}です。`.repeat(20));
     const markdown = paragraphs.join("\n\n");

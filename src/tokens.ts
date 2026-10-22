@@ -123,6 +123,16 @@ export interface Block {
 }
 
 /**
+ * 末尾の改行を取り除く。`/\n+$/`は改行の連続の各位置から末尾まで照合し直すため、
+ * フェンス内に空行が大量にあるブロックで二次時間になる。
+ */
+function trimTrailingNewlines(text: string): string {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "\n") end--;
+  return text.slice(0, end);
+}
+
+/**
  * Markdownをブロック単位(空行区切り)に分割する。
  * フェンスコードブロック(```)内の空行はブロック境界として扱わない。
  * templateLearning.ts(Phase 4定型ブロック除去)からも再利用される共通処理。
@@ -135,7 +145,7 @@ export function splitIntoBlocks(markdown: string): Block[] {
 
   const flush = (): void => {
     if (current.length === 0) return;
-    const text = current.join("\n").replace(/\n+$/, "");
+    const text = trimTrailingNewlines(current.join("\n"));
     if (text.trim().length > 0) {
       blocks.push({ text, isHeading: /^#{1,6}\s/.test(current[0] ?? "") });
     }
