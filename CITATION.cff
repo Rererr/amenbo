@@ -15,8 +15,8 @@ authors:
 repository-code: "https://github.com/Rererr/amenbo"
 url: "https://github.com/Rererr/amenbo"
 license: MIT
-version: 0.6.1
-date-released: "2026-09-02"
+version: 0.6.2
+date-released: "2026-10-23"
 keywords:
   - model-context-protocol
   - mcp-server
