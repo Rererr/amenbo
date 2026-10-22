@@ -26,7 +26,19 @@ export interface OutlineResult {
 
 const MAX_OUTLINE_LEVEL = 4;
 const EXCERPT_MAX_LENGTH = 80;
-const HEADING_PATTERN = /^(#{1,6})\s+(.*)$/;
+/**
+ * 見出し行(`/^(#{1,6})\s+(.*)$/`)を判定する。正規表現のままにしないのは、`\s`に含まれ`.`に含まれない
+ * 行終端文字(\r・U+2028・U+2029)が後ろにあると、`\s+`を1文字ずつ戻すたびに`.*`を走査し直し、
+ * 長い空白の連続で二次時間になるから。`#`と空白の連続をどこで区切っても結果は変わらないため、
+ * 前半を最長で取り、残りに行終端文字が無いかだけを見る。
+ */
+function matchHeading(line: string): { level: number; text: string } | null {
+  const prefix = /^(#{1,6})\s+/.exec(line);
+  if (!prefix?.[1]) return null;
+  const text = line.slice(prefix[0].length);
+  if (/[\n\r\u2028\u2029]/.test(text)) return null;
+  return { level: prefix[1].length, text };
+}
 
 interface HeadingLine {
   lineIndex: number;
@@ -46,10 +58,8 @@ function findHeadingLines(lines: string[]): HeadingLine[] {
     }
     if (inFence) return;
 
-    const match = HEADING_PATTERN.exec(line);
-    if (match?.[1] && match[2] !== undefined) {
-      headings.push({ lineIndex, level: match[1].length, text: match[2].trim() });
-    }
+    const heading = matchHeading(line);
+    if (heading) headings.push({ lineIndex, level: heading.level, text: heading.text.trim() });
   });
 
   return headings;
@@ -141,8 +151,9 @@ export function splitSections(markdown: string): MarkdownSection[] {
     const contentLines = lines.slice(contentStart, contentEnd);
     for (const line of contentLines) {
       for (const open of stack) open.lines.push(line);
+      // push(...contentLines)は引数展開のため、節が約15万行を超えるとスタックが溢れる。
+      ownOwner?.ownLines.push(line);
     }
-    if (ownOwner) ownOwner.ownLines.push(...contentLines);
   }
 
   return emitted.map((section) => ({
@@ -254,7 +265,7 @@ function stripMarkdownLinks(text: string): string {
 
 /** 節の内容から、見出し行を除いた本文の冒頭1文を抜き出す。 */
 function extractExcerpt(content: string): string {
-  const bodyLines = content.split("\n").filter((line) => !HEADING_PATTERN.test(line));
+  const bodyLines = content.split("\n").filter((line) => matchHeading(line) === null);
   const body = stripMarkdownLinks(bodyLines.join("\n")).trim();
   if (body.length === 0) return "";
 

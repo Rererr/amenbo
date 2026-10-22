@@ -129,6 +129,18 @@ describe("buildOutline", () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  it("見出し記号の後に長い空白と行終端文字(U+2028)が続く行でも時間内に終わる", () => {
+    const started = performance.now();
+    buildOutline(`#${"\u3000".repeat(200_000)}a\u2028b`);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("20万行の節でもoutlineを生成できる", () => {
+    const outline = buildOutline(`# 見出し\n${"本文。\n".repeat(200_000)}`);
+    expect(outline.sections).toHaveLength(1);
+    expect(outline.sections[0]?.excerpt).toBe("本文。");
+  });
+
   it("フェンスコードブロック内の#はheadingとして扱わない", () => {
     const markdown = "# 本物の見出し\n\n```\n# これはコード内のコメント\n```\n\n本文。";
     const outline = buildOutline(markdown);
