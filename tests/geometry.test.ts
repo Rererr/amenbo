@@ -28,6 +28,13 @@ describe("clusterTextBlocks", () => {
     expect(clusters[0]?.totalTextLength).toBe(150);
   });
 
+  it("20万ブロックが1カラムに並んでもクラスタを作れる", () => {
+    const blocks = Array.from({ length: 200_000 }, (_, i) => block(i + 1, 100, i * 30, 400, 20, 10));
+    const clusters = clusterTextBlocks(blocks);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0]?.bottom).toBe(199_999 * 30 + 20);
+  });
+
   it("左右に離れた2カラム(サイドバーと本文)は別クラスタになる", () => {
     const sidebar = [block(1, 0, 0, 200, 20, 10), block(2, 0, 30, 200, 20, 10)];
     const main = [block(3, 300, 0, 500, 20, 100), block(4, 300, 30, 500, 20, 100)];

@@ -137,7 +137,8 @@ async function tryParseSitemap(
       const childUrl = loc.textContent.trim();
       if (!childUrl) continue;
       const childLinks = await tryParseSitemap(childUrl, politeness, timeoutMs, depth + 1, onProgress);
-      if (childLinks) results.push(...childLinks);
+      // push(...childLinks)は引数展開のため、子sitemapが約15万件を超えるとスタックが溢れる。
+      if (childLinks) for (const link of childLinks) results.push(link);
       if (results.length >= MAX_LINKS) break;
     }
     return results.length > 0 ? results : null;

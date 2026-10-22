@@ -452,7 +452,8 @@ export function normalizeTableHtml(tableHtml: string): string {
     const capHtml = caption.innerHTML.trim();
     if (capHtml) captionParts.push(capHtml);
   }
-  captionParts.push(...foldedCaptions);
+  // push(...foldedCaptions)は引数展開のため、畳む行が約15万を超えるとスタックが溢れる。
+  for (const text of foldedCaptions) captionParts.push(text);
 
   const out: string[] = ["<table>"];
   if (captionParts.length > 0) out.push(`<caption>${captionParts.join(" ")}</caption>`);

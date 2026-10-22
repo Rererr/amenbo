@@ -67,10 +67,11 @@ const HORIZONTAL_ALIGN_TOLERANCE_PX = 40;
 
 function buildCluster(blocks: TextBlockGeometry[]): GeometryCluster {
   const totalTextLength = blocks.reduce((sum, b) => sum + b.textLength, 0);
-  const left = Math.min(...blocks.map((b) => b.x));
-  const right = Math.max(...blocks.map((b) => b.x + b.width));
-  const top = Math.min(...blocks.map((b) => b.y));
-  const bottom = Math.max(...blocks.map((b) => b.y + b.height));
+  // Math.min(...)は引数展開のため、1カラムが約15万ブロックを超えるとスタックが溢れる。
+  const left = blocks.reduce((min, b) => Math.min(min, b.x), Infinity);
+  const right = blocks.reduce((max, b) => Math.max(max, b.x + b.width), -Infinity);
+  const top = blocks.reduce((min, b) => Math.min(min, b.y), Infinity);
+  const bottom = blocks.reduce((max, b) => Math.max(max, b.y + b.height), -Infinity);
   return { blockIds: blocks.map((b) => b.id), totalTextLength, top, bottom, left, right };
 }
 

@@ -66,6 +66,12 @@ describe("normalizeTableHtml", () => {
     expect(normalized).not.toContain("rowspan");
   });
 
+  it("全幅単一th行が20万行続いてもcaptionへ畳める", () => {
+    const labels = "<tr><th colspan='2'>見出し</th></tr>".repeat(200_000);
+    const normalized = normalizeTableHtml(`<table>${labels}<tr><td>a</td><td>b</td></tr></table>`);
+    expect(normalized.match(/見出し/g)?.length).toBe(200_000);
+  });
+
   it("先頭の全幅単一th行(合計)はcaptionへ畳み複製しない", () => {
     const normalized = normalizeTableHtml(
       "<table><tr><th colspan='2'>合計</th></tr><tr><td>a</td><td>b</td></tr></table>",

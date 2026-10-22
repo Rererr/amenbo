@@ -78,6 +78,23 @@ describe("discoverLinks - sitemap優先", () => {
     expect(result.links.map((l) => l.url).sort()).toEqual(["http://example.com/p1", "http://example.com/p2"]);
   });
 
+  it("子sitemapが20万件のURLを持っても上限件数で列挙する", async () => {
+    const urls = Array.from({ length: 200_000 }, (_, i) => `<url><loc>http://example.com/p${i}</loc></url>`).join("");
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return htmlResult("Sitemap: http://example.com/sitemap-index.xml\n");
+      if (url === "http://example.com/sitemap-index.xml") {
+        return htmlResult(`<sitemapindex><sitemap><loc>http://example.com/sitemap-1.xml</loc></sitemap></sitemapindex>`);
+      }
+      if (url === "http://example.com/sitemap-1.xml") return htmlResult(`<urlset>${urls}</urlset>`);
+      throw new Error(`unexpected url: ${url}`);
+    });
+
+    const result = await discoverLinks("http://example.com/", makePoliteness());
+    expect(result.source).toBe("sitemap");
+    expect(result.links).toHaveLength(200);
+    expect(result.truncated).toBe(true);
+  });
+
   it("robots.txtにSitemap宣言が無ければ慣例パス/sitemap.xmlを試す", async () => {
     httpGetMock.mockImplementation(async (url: string) => {
       if (url.endsWith("/robots.txt")) return htmlResult("User-agent: *\nDisallow:\n");
