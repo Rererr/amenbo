@@ -926,7 +926,9 @@ function inlineReplacement(el: InlineBlockElement): string {
   if (/^H[1-6]$/.test(tag)) return `${lead}<strong>${el.innerHTML.trim()}</strong><br>`;
   if (tag === "HR") return "<br>";
   if (tag === "BLOCKQUOTE") return el.innerHTML; // unwrap(子を保持)。
-  return `${lead}<code>${escapeHtml(el.textContent.replace(/\s*\n\s*/g, " ").trim())}</code>`; // PRE。
+  // PRE。改行を含む空白の連続を空白1つにする。`/\s*\n\s*/g`は改行の無い長い空白の連続で二次時間になる。
+  const flattened = el.textContent.replace(/\s+/g, (run) => (run.includes("\n") ? " " : run));
+  return `${lead}<code>${escapeHtml(flattened.trim())}</code>`;
 }
 
 /** rootからの深さ(祖先数)を返す。入れ子リスト等を深い方から平坦化する順序付けに使う。 */

@@ -452,6 +452,15 @@ describe("normalizeRetainedTables セル内ブロックのインライン化", (
     expect(out).toContain("<code>code line</code>");
   });
 
+  it("改行を含まない長い空白の連続を持つセル内preも時間内にインライン化する", () => {
+    const html =
+      "<table><tr><th>種別</th><th>内容</th></tr>" +
+      `<tr><td>空白</td><td><pre>a${" ".repeat(200_000)}b</pre></td></tr></table>`;
+    const started = performance.now();
+    normalizeRetainedTables(html);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   it("入れ子表そのものはインライン化で触らない(セル内に保持)", () => {
     const html =
       "<table><tr><th>外A</th><th>外B</th></tr>" +
