@@ -218,4 +218,11 @@ describe("parseCliArgs", () => {
       expect(() => parseCliArgs(["screenshot"])).toThrow(CliUsageError);
     });
   });
+
+  it("fetch と screenshot は --ask-robots-override を受け付け、links は受け付けない", () => {
+    expect(parseCliArgs(["fetch", "https://example.com/", "--ask-robots-override"])).toMatchObject({ kind: "fetch", askRobotsOverride: true });
+    expect(parseCliArgs(["screenshot", "https://example.com/", "--ask-robots-override"])).toMatchObject({ kind: "screenshot", askRobotsOverride: true });
+    expect(parseCliArgs(["fetch", "https://example.com/"])).not.toHaveProperty("askRobotsOverride");
+    expect(() => parseCliArgs(["links", "https://example.com/", "--ask-robots-override"])).toThrow(CliUsageError);
+  });
 });

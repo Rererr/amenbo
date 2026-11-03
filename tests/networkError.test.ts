@@ -45,7 +45,7 @@ describe("機能A: NetworkError.fromCause - undici causeチェーンの分類", 
 
     expect(error.kind).toBe("tls");
     expect(error.message).toBe(
-      "接続に失敗しました(TLS/証明書エラー): https://initial.inc/ — サイト側がボットアクセスを遮断している可能性があります。mode: screenshot(ブラウザ経由)で再試行すると通る場合があります",
+      "接続に失敗しました(TLS/証明書エラー): https://initial.inc/ — 素の HTTP 取得では接続できませんでした。ブラウザ経由(mode: screenshot)なら接続できる場合があります。ブラウザでも断られたら、取り直さずにそのまま報告してください",
     );
   });
 

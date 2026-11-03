@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetch as undiciFetch } from "undici";
 import { HttpStatusError, InvalidUrlError, PayloadTooLargeError, RobotsDeniedError } from "../src/errors.js";
-import { httpGet, httpGetBinary } from "../src/fetcher/http.js";
+import { httpGet, httpGetBinary, httpGetRouted } from "../src/fetcher/http.js";
 
 // src/fetcher/http.tsはグローバルfetchではなくnpmパッケージundiciのfetchを直接importして使う
 // (Node 20〜24の同梱undiciとnpm undici v8 Agentのハンドラプロトコル不整合を避けるため)。
@@ -66,6 +66,18 @@ describe("httpGet - 非2xx", () => {
     fetchMock.mockResolvedValue(mockResponse(404, {}, "not found") as never);
 
     await expect(httpGet("http://93.184.216.34/", { timeoutMs: 5000 })).rejects.toThrow(HttpStatusError);
+  });
+
+  it.each([
+    ["httpGet", httpGet],
+    ["httpGetBinary", httpGetBinary],
+    ["httpGetRouted", httpGetRouted],
+  ])("%s: 断られた応答の Retry-After をエラーに載せる", async (_label, get) => {
+    fetchMock.mockResolvedValue(mockResponse(503, { "retry-after": "120" }, "busy") as never);
+
+    const error = await get("http://93.184.216.34/", { timeoutMs: 5000 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(HttpStatusError);
+    expect(error).toMatchObject({ status: 503, retryAfterMs: 120_000, isRefusal: true });
   });
 });
 

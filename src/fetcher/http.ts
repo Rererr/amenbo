@@ -580,7 +580,7 @@ export async function httpGet(url: string, options: HttpGetOptions = {}): Promis
       return { finalUrl, status: 304, headers: response.headers, html: "", encoding: "" };
     }
     if (!response.ok) {
-      throw new HttpStatusError(finalUrl, response.status, response.statusText);
+      throw new HttpStatusError(finalUrl, response.status, response.statusText, response.headers.get("retry-after"));
     }
 
     const buffer = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes(), {
@@ -628,7 +628,7 @@ export async function httpGetBinary(url: string, options: HttpGetBinaryOptions =
       return { finalUrl, status: 304, headers: response.headers, bytes: new Uint8Array(0), contentType: null };
     }
     if (!response.ok) {
-      throw new HttpStatusError(finalUrl, response.status, response.statusText);
+      throw new HttpStatusError(finalUrl, response.status, response.statusText, response.headers.get("retry-after"));
     }
 
     const bytes = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes(), {
@@ -735,7 +735,7 @@ export async function httpGetRouted(url: string, options: HttpGetOptions = {}): 
       return { kind: "notModified", status: 304, finalUrl, headers: response.headers };
     }
     if (!response.ok) {
-      throw new HttpStatusError(finalUrl, response.status, response.statusText);
+      throw new HttpStatusError(finalUrl, response.status, response.statusText, response.headers.get("retry-after"));
     }
 
     const timeout = { signal: controller.signal, timeoutMs };

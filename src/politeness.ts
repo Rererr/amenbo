@@ -2,14 +2,38 @@
  * politeness.ts — 収集先への低負荷を担保するpolitenessマネージャ。
  *
  * - robots.txt尊重(robots-parser)。取得結果はプロセス内でキャッシュ(TTL付き)し、
- *   robotsStore注入時はプロセス間でも共有する(CLI併設対応)
+ *   robotsStore注入時はプロセス間でも共有する(CLI併設対応)。利用者が個別に許可した
+ *   1回の取得(runIgnoringRobotsFor)の間だけ、許可したページと同じオリジンへの拒否を適用しない
  * - Crawl-Delay尊重
  * - ドメイン毎の直列キュー + 既定最小間隔1秒
+ * - 取得を断られた(429 / Retry-After)ホストへは、期限までアクセスしない
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import robotsParserImport from "robots-parser";
-import { HttpStatusError, PrivateAddressError, RobotsDeniedError } from "./errors.js";
+import { HostRefusedError, HttpStatusError, PrivateAddressError, RobotsDeniedError } from "./errors.js";
 import { httpGet, USER_AGENT } from "./fetcher/http.js";
 import { DEFAULT_ROBOTS_TTL_MS } from "./ttl.js";
+
+/** 利用者が許可したページのオリジン。許可の範囲を、利用者が確認画面で見たサイトに限る。 */
+const robotsOverrideScope = new AsyncLocalStorage<ReadonlySet<string>>();
+
+/**
+ * fnの実行中に限り、approvedUrlsと同じオリジンへのrobots.txtの拒否を適用しない。それ以外のオリジンへの
+ * リダイレクトは利用者が見ていないので、通常どおり拒否する(呼び出し側が改めて確認する)。
+ * レート制御とCrawl-Delayは維持する。呼び出してよいのは、利用者本人が各ページを許可した場合だけ。
+ */
+export function runIgnoringRobotsFor<T>(approvedUrls: readonly string[], fn: () => Promise<T>): Promise<T> {
+  return robotsOverrideScope.run(new Set(approvedUrls.map((url) => new URL(url).origin)), fn);
+}
+
+function isOverriddenIn(approvedOrigins: ReadonlySet<string> | undefined, url: string): boolean {
+  if (approvedOrigins === undefined) return false;
+  try {
+    return approvedOrigins.has(new URL(url).origin);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * robots-parser の同梱型定義(index.d.ts)は `declare module 'robots-parser';` という
@@ -29,12 +53,21 @@ interface Robot {
 const robotsParser = robotsParserImport as unknown as (url: string, robotsTxt: string) => Robot;
 
 const DEFAULT_MIN_INTERVAL_MS = 1000;
+/** 断られたときに Retry-After が無ければ、この時間アクセスを止める。 */
+export const DEFAULT_REFUSAL_COOLDOWN_MS = 30 * 60_000;
+/** Retry-After が長すぎる値でも、止めるのはこの時間まで。 */
+export const MAX_REFUSAL_COOLDOWN_MS = 24 * 60 * 60_000;
 const ROBOTS_FETCH_TIMEOUT_MS = 5000;
 
 interface RobotsCacheEntry {
   robots: Robot;
   fetchedAt: number;
+  /** 既定(robotsTtlMs)より短く持つときだけ指定する。 */
+  ttlMs?: number;
 }
+
+/** robots.txt が 5xx だったときの全面拒否を持つ時間。一時的な障害で長く止めず、1回の呼び出しの中では取り直さない長さ。 */
+export const UNREACHABLE_ROBOTS_TTL_MS = 5 * 60_000;
 
 /**
  * CLI併設対応: ドメイン毎の最終リクエスト時刻をプロセス間で共有するための永続化ストア。
@@ -66,6 +99,12 @@ export interface RobotsStore {
   set(origin: string, body: string, fetchedAt: number): void;
 }
 
+/** 断られたホストと期限を、MCPサーバーとCLIのプロセス間で共有する(cache.tsのhost_refusalsテーブル)。 */
+export interface RefusalStore {
+  getRefusedUntil(host: string): number | null;
+  setRefusedUntil(host: string, until: number): void;
+}
+
 export interface PolitenessOptions {
   /** ドメイン毎の最小リクエスト間隔(ミリ秒、既定1000ms)。robots.txtのCrawl-Delayがこれより長ければそちらを優先。 */
   minIntervalMs?: number;
@@ -79,6 +118,8 @@ export interface PolitenessOptions {
   store?: PolitenessStore;
   /** 未指定時は従来通りインメモリのみでrobots.txtをキャッシュする(完全後方互換)。 */
   robotsStore?: RobotsStore;
+  /** 未指定時はインメモリのみで記録する。 */
+  refusalStore?: RefusalStore;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -92,8 +133,12 @@ export class PolitenessManager {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly store: PolitenessStore | undefined;
   private readonly robotsStore: RobotsStore | undefined;
+  private readonly refusalStore: RefusalStore | undefined;
+  private readonly refusedUntil = new Map<string, number>();
 
   private readonly robotsCache = new Map<string, RobotsCacheEntry>();
+  /** robots.txt が 5xx を返して規則を確認できなかったオリジンと、そのステータス(全面拒否の理由に添える)。 */
+  private readonly robotsUnreachable = new Map<string, number>();
   // N8: settledを持たせるのは、pruneStaleHostStateがまだ完了していない(=キューに並んでいる
   // 呼び出しがある)ロックを誤って消してしまうと直列化が壊れる(同一ホストへの同時呼び出しが
   // 追い越してしまう)ため。「完了済み」かつ「最終アクセスから十分時間が経っている」ロックのみ
@@ -108,6 +153,44 @@ export class PolitenessManager {
     this.sleep = options.sleep ?? defaultSleep;
     this.store = options.store;
     this.robotsStore = options.robotsStore;
+    this.refusalStore = options.refusalStore;
+  }
+
+  /**
+   * fnがサイトに断られて失敗したら(HttpStatusError.isRefusal)、そのホストを期限まで止めてから投げ直す。
+   * LLMが同じサイトへ取得を繰り返しても、2回目以降は相手に届かない。
+   */
+  async rememberRefusals<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      this.noteRefusal(error);
+      throw error;
+    }
+  }
+
+  /** errorがサイトに断られたことを示すなら、そのホストを期限まで止める。それ以外は何もしない。 */
+  noteRefusal(error: unknown): void {
+    if (!(error instanceof HttpStatusError && error.isRefusal)) return;
+    const cooldownMs = Math.min(error.retryAfterMs ?? DEFAULT_REFUSAL_COOLDOWN_MS, MAX_REFUSAL_COOLDOWN_MS);
+    const host = new URL(error.url).host;
+    const until = this.now() + cooldownMs;
+    this.refusedUntil.set(host, Math.max(this.refusedUntil.get(host) ?? 0, until));
+    this.refusalStore?.setRefusedUntil(host, until);
+  }
+
+  /** 止めているホストなら HostRefusedError を投げる。相手へ何か送る前に呼ぶ。 */
+  assertNotRefused(url: string): void {
+    const host = new URL(url).host;
+    const until = Math.max(this.refusedUntil.get(host) ?? 0, this.refusalStore?.getRefusedUntil(host) ?? 0);
+    const now = this.now();
+    if (now < until) throw new HostRefusedError(url, host, until, now);
+  }
+
+  /** 転送先の確認(HttpGetOptions.checkRobots)。止めているホストと robots.txt の拒否を、どちらも相手へ送る前に止める。 */
+  async checkRedirectTarget(url: string): Promise<void> {
+    this.assertNotRefused(url);
+    await this.checkRobotsAllowed(url);
   }
 
   /**
@@ -115,7 +198,10 @@ export class PolitenessManager {
    * onProgress: MCP progress notifications用。実際に待機が発生する場合のみ呼ばれる(待機0の場合は呼ばれない)。
    */
   async guard(url: string, onProgress?: ((message: string) => void) | undefined): Promise<void> {
-    await this.checkRobotsAllowed(url);
+    this.assertNotRefused(url);
+    // 範囲を呼ばれた時点で読むので、ツール呼び出しのawaitの連鎖からだけ呼ぶ。イベントのコールバックから
+    // 呼ぶと、その資源を作った別の呼び出しの許可を読んでしまう(robotsCheckForThisCall参照)。
+    if (!isOverriddenIn(robotsOverrideScope.getStore(), url)) await this.checkRobotsAllowed(url);
     await this.waitTurn(url, onProgress);
   }
 
@@ -123,8 +209,25 @@ export class PolitenessManager {
   async checkRobotsAllowed(url: string): Promise<void> {
     const robots = await this.getRobots(url);
     if (robots && robots.isAllowed(url, USER_AGENT) === false) {
-      throw new RobotsDeniedError(url);
+      const unreachableStatus = this.robotsUnreachable.get(new URL(url).origin);
+      throw new RobotsDeniedError(
+        url,
+        unreachableStatus === undefined ? undefined : `robots.txt が ${unreachableStatus} を返し規則を確認できないため、全面拒否として扱います(RFC 9309)`,
+      );
     }
+  }
+
+  /**
+   * リダイレクト先の確認に渡すrobots判定を作る。許可の有無は作った時点(=ツール呼び出しの中)で固定する。
+   * 判定は後でブラウザのrouteハンドラ等から呼ばれ、そこではAsyncLocalStorageの値がブラウザを起動した
+   * 呼び出しのものになる(実測)ため、呼ばれた時点で読むと許可が別の呼び出しへ漏れる。
+   */
+  robotsCheckForThisCall(): (url: string) => Promise<void> {
+    const approvedOrigins = robotsOverrideScope.getStore();
+    return async (url) => {
+      this.assertNotRefused(url);
+      if (!isOverriddenIn(approvedOrigins, url)) await this.checkRobotsAllowed(url);
+    };
   }
 
   /** robots.txtが宣言するSitemap URLの一覧を返す(linksツールのsitemap優先探索用)。 */
@@ -141,6 +244,7 @@ export class PolitenessManager {
    * onProgress: 実際にsleepが発生する場合のみ呼ばれる(待機0のときは呼ばれない)。
    */
   async waitTurn(url: string, onProgress?: ((message: string) => void) | undefined): Promise<void> {
+    this.assertNotRefused(url);
     this.pruneStaleHostState();
     const host = new URL(url).host;
     const crawlDelayMs = await this.getCrawlDelayMs(url);
@@ -167,6 +271,8 @@ export class PolitenessManager {
         onProgress?.("アクセス間隔を確保するため待機しています…");
         await this.sleep(intervalMs - elapsed);
       }
+      // 待っている間に、先に並んでいた同じホストへの取得が断られていることがある。
+      this.assertNotRefused(url);
       this.noteRequest(host, this.now());
     } finally {
       release();
@@ -201,6 +307,10 @@ export class PolitenessManager {
       }
     }
 
+    for (const [host, until] of this.refusedUntil) {
+      if (until <= this.now()) this.refusedUntil.delete(host);
+    }
+
     for (const [origin, entry] of this.robotsCache) {
       if (entry.fetchedAt < cutoff) {
         this.robotsCache.delete(origin);
@@ -229,9 +339,10 @@ export class PolitenessManager {
 
     const origin = parsed.origin;
     const cached = this.robotsCache.get(origin);
-    if (cached && this.now() - cached.fetchedAt < this.robotsTtlMs) {
+    if (cached && this.now() - cached.fetchedAt < (cached.ttlMs ?? this.robotsTtlMs)) {
       return cached.robots;
     }
+    this.robotsUnreachable.delete(origin);
 
     // レビュー指摘対応: インメモリキャッシュに無い/TTL超過の場合、ネットワークへ行く前に
     // robotsStore(cache.tsのrobots_cacheテーブル。プロセス間共有)を確認する。ここで
@@ -257,10 +368,22 @@ export class PolitenessManager {
       // 公開品質バグ修正: 一方で当初の修正はAmenboError全般(HttpStatusError等)まで
       // 再送出しており、robots.txtが存在しない(404)という極めて一般的なケースで
       // 「robots.txtが無いだけの普通のサイト」への通常のfetchすら失敗するようになって
-      // いた(HttpStatusErrorは非2xx全般で投げられるため)。404/403/5xx等のHTTPエラーは
+      // いた(HttpStatusErrorは非2xx全般で投げられるため)。404/403等のHTTPエラーは
       // robots.txt不在の慣習的な扱い(=制限なし)としてそのまま静かに継続する
       // (ログも出さない。頻出するため公開ツールとしてノイズになる)。
       if (error instanceof PrivateAddressError) throw error;
+      // robots.txt への応答で断られたら、規則が読めないまま取りに行かず、ページの取得と同じく引く。
+      if (error instanceof HttpStatusError && error.isRefusal) throw error;
+      // RFC 9309: 5xx で robots.txt に届かないときは全面拒否とみなす。一時的な障害で長く止めないよう短く持ち、
+      // プロセス間のストアにも残さない。
+      if (error instanceof HttpStatusError && error.status >= 500) {
+        const robots = robotsParser(robotsUrl, "User-agent: *\nDisallow: /\n");
+        const fetchedAt = this.now();
+        this.robotsUnreachable.set(origin, error.status);
+        this.robotsCache.set(origin, { robots, fetchedAt, ttlMs: UNREACHABLE_ROBOTS_TTL_MS });
+        this.noteRequest(new URL(robotsUrl).host, fetchedAt);
+        return robots;
+      }
       if (!(error instanceof HttpStatusError)) {
         console.error(`robots.txtの取得に失敗しました(制限なしとして扱います): ${robotsUrl}`, error);
       }

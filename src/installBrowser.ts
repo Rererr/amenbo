@@ -2,8 +2,8 @@
  * installBrowser.ts — `amenbo install-browser` サブコマンドの本体。
  *
  * Chromium遅延化(postinstall廃止)対応: package.jsonのpostinstallを撤去したため、
- * ブラウザが必要な操作(SPA昇格・screenshot)を使う利用者は、このコマンドで明示的に
- * 一度だけChromiumを取得する。
+ * ブラウザが必要な操作(SPA昇格・screenshot)を使う利用者のうち、Google Chromeが無い環境では
+ * このコマンドで明示的に一度だけChromiumを取得する(Chromeがあればそちらを優先して使う)。
  */
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";

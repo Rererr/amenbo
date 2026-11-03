@@ -155,6 +155,9 @@ interface PreparedStatements {
   setHostRequest: StatementSync;
   getRobots: StatementSync;
   setRobots: StatementSync;
+  getHostRefusal: StatementSync;
+  setHostRefusal: StatementSync;
+  deleteHostRefusalsExpired: StatementSync;
   getMeta: StatementSync;
   setMeta: StatementSync;
 }
@@ -250,6 +253,13 @@ export class PageCache {
         fetched_at INTEGER NOT NULL
       )
     `);
+    // サイトに取得を断られたホストと、amenbo 側でアクセスを止めておく期限。
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS host_refusals (
+        host TEXT PRIMARY KEY,
+        refused_until INTEGER NOT NULL
+      )
+    `);
     // 前回prune時刻等の単一値メタデータ。maybePruneExpired の間引き判定に使う。
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (
@@ -322,6 +332,13 @@ export class PageCache {
            body = excluded.body,
            fetched_at = excluded.fetched_at`,
       ),
+      getHostRefusal: this.db.prepare("SELECT refused_until FROM host_refusals WHERE host = ?"),
+      setHostRefusal: this.db.prepare(
+        `INSERT INTO host_refusals (host, refused_until)
+         VALUES (@host, @refusedUntil)
+         ON CONFLICT(host) DO UPDATE SET refused_until = MAX(refused_until, excluded.refused_until)`,
+      ),
+      deleteHostRefusalsExpired: this.db.prepare("DELETE FROM host_refusals WHERE refused_until < ?"),
       getMeta: this.db.prepare("SELECT value FROM meta WHERE key = ?"),
       setMeta: this.db.prepare(
         `INSERT INTO meta (key, value) VALUES (@key, @value)
@@ -369,6 +386,7 @@ export class PageCache {
     // 無制限増加テーブルという点でdomain_pages等と同じ性質を持つため、他テーブルと一貫させる)。
     this.statements.deleteHostRequestsExpired.run(cutoff);
     this.statements.deleteRobotsExpired.run(robotsCutoff);
+    this.statements.deleteHostRefusalsExpired.run(now);
 
     const expiredScreenshots = this.statements.selectScreenshotsExpired.all(cutoff) as unknown as ScreenshotRow[];
     for (const row of expiredScreenshots) {
@@ -582,6 +600,17 @@ export class PageCache {
   /** オリジンのrobots.txt取得結果(本文+取得時刻)を記録する。既存があれば上書きする。 */
   setRobotsCache(origin: string, body: string, fetchedAt: number): void {
     this.statements.setRobots.run({ origin, body, fetchedAt });
+  }
+
+  /** ホストへのアクセスを止めておく期限(未記録ならnull)。期限切れの行も返すので、判定は呼び出し元が行う。 */
+  getHostRefusedUntil(host: string): number | null {
+    const row = this.statements.getHostRefusal.get(host) as { refused_until: number } | undefined;
+    return row ? row.refused_until : null;
+  }
+
+  /** ホストへのアクセスを止めておく期限を記録する。既存の期限より短くはしない。 */
+  setHostRefusedUntil(host: string, refusedUntil: number): void {
+    this.statements.setHostRefusal.run({ host, refusedUntil });
   }
 
   /**

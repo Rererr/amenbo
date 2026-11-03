@@ -37,6 +37,7 @@ import { closeBrowser } from "./fetcher/browser.js";
 import { formatLinksResponse } from "./formatting.js";
 import { installBrowser } from "./installBrowser.js";
 import { discoverLinks } from "./links.js";
+import { runWithTerminalRobotsConsent } from "./terminalRobotsConsent.js";
 import { MAX_SCALE, MIN_SCALE } from "./screenshot.js";
 import { runServer } from "./server.js";
 
@@ -67,6 +68,7 @@ export interface ParsedFetchCommand {
   maxTokens?: number;
   forceFull?: boolean;
   outDir?: string;
+  askRobotsOverride?: boolean;
 }
 
 export interface ParsedLinksCommand {
@@ -82,6 +84,7 @@ export interface ParsedScreenshotCommand {
   width?: number;
   scale?: number;
   outDir?: string;
+  askRobotsOverride?: boolean;
 }
 
 function parsePositiveInt(raw: string, flag: string): number {
@@ -149,6 +152,7 @@ function parseFetchArgs(args: string[]): ParsedCommand {
     "max-tokens": { type: "string" },
     "force-full": { type: "boolean" },
     "out-dir": { type: "string" },
+    "ask-robots-override": { type: "boolean" },
     help: { type: "boolean", short: "h" },
   });
 
@@ -170,6 +174,7 @@ function parseFetchArgs(args: string[]): ParsedCommand {
     ...(values["max-tokens"] !== undefined ? { maxTokens: parsePositiveInt(values["max-tokens"], "--max-tokens") } : {}),
     ...(values["force-full"] ? { forceFull: true } : {}),
     ...(values["out-dir"] !== undefined ? { outDir: values["out-dir"] } : {}),
+    ...(values["ask-robots-override"] ? { askRobotsOverride: true } : {}),
   };
 }
 
@@ -195,6 +200,7 @@ function parseScreenshotArgs(args: string[]): ParsedCommand {
     width: { type: "string" },
     scale: { type: "string" },
     "out-dir": { type: "string" },
+    "ask-robots-override": { type: "boolean" },
     help: { type: "boolean", short: "h" },
   });
 
@@ -208,6 +214,7 @@ function parseScreenshotArgs(args: string[]): ParsedCommand {
     ...(values.width !== undefined ? { width: parsePositiveInt(values.width, "--width") } : {}),
     ...(values.scale !== undefined ? { scale: parseScreenshotScale(values.scale) } : {}),
     ...(values["out-dir"] !== undefined ? { outDir: values["out-dir"] } : {}),
+    ...(values["ask-robots-override"] ? { askRobotsOverride: true } : {}),
   };
 }
 
@@ -249,7 +256,7 @@ function usageText(): string {
     "  fetch <url> [options]          ページをMarkdownとして取得する",
     "  links <url> [options]          ページ内のリンクを列挙する(sitemap/RSS優先)",
     "  screenshot <url> [options]     ページのスクリーンショットを撮影する",
-    "  install-browser                スクリーンショット/SPA取得に必要なChromiumをインストールする(初回のみ)",
+    "  install-browser                スクリーンショット/SPA取得用のChromiumをインストールする(Chromeが無い環境のみ必要)",
     "",
     "Options:",
     "  -h, --help       ヘルプを表示する",
@@ -271,6 +278,7 @@ function fetchHelpText(): string {
     "  --max-tokens <n>                             1ページの概算トークン上限(既定 8000)",
     "  --force-full                                 差分応答(unchanged/diff)と定型ブロック除去を無効化し常に全文を返す",
     "  --out-dir <dir>                              screenshot切替時の画像保存先(既定 $AMENBO_CACHE_DIR/screenshots-cli/、未設定時は ~/.cache/amenbo/screenshots-cli/)",
+    "  --ask-robots-override                        robots.txt が拒否したとき、端末で利用者に y/N を確認し、許可されたらこの1回だけ取得する(端末が無いときは拒否)",
   ].join("\n");
 }
 
@@ -287,6 +295,7 @@ function screenshotHelpText(): string {
     "  --width <n>         タイル幅px(既定 1280)",
     "  --scale <x>         解像度スケール(0.5〜1.0、既定 1.0)。小さいほど画像トークンが減る",
     "  --out-dir <dir>     画像保存先(既定 カレントディレクトリ)",
+    "  --ask-robots-override  robots.txt が拒否したとき、端末で利用者に y/N を確認し、許可されたらこの1回だけ撮影する(端末が無いときは拒否)",
   ].join("\n");
 }
 
@@ -294,10 +303,10 @@ function installBrowserHelpText(): string {
   return [
     "amenbo install-browser",
     "",
-    "スクリーンショット撮影やSPA(JavaScriptレンダリング必須)ページの取得に必要なChromiumを",
-    "インストールする(初回のみ、約170MBのダウンロード)。通常のHTTP取得(fetch/linksの大半)は",
-    "この操作なしで動作する。amenboに同梱されたバージョンのplaywright CLIを使うため、",
-    "バージョン不一致は起こらない。",
+    "スクリーンショット撮影やSPA(JavaScriptレンダリング必須)ページの取得に使うChromiumを",
+    "インストールする(初回のみ、約170MBのダウンロード)。Google Chromeがインストール済みなら",
+    "そちらを優先して使うため不要。通常のHTTP取得(fetch/linksの大半)はブラウザなしで動作する。",
+    "amenboに同梱されたバージョンのplaywright CLIを使うため、バージョン不一致は起こらない。",
   ].join("\n");
 }
 
@@ -375,7 +384,7 @@ async function dispatch(command: ParsedFetchCommand | ParsedLinksCommand | Parse
       ...(command.maxTokens !== undefined ? { max_tokens: command.maxTokens } : {}),
       ...(command.forceFull !== undefined ? { force_full: command.forceFull } : {}),
     };
-    const blocks = await handleFetchTool(input);
+    const blocks = await runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => handleFetchTool(input));
     writeBlocks(blocks, command.url, command.outDir ?? resolveFetchScreenshotDir());
     return;
   }
@@ -392,7 +401,7 @@ async function dispatch(command: ParsedFetchCommand | ParsedLinksCommand | Parse
     ...(command.width !== undefined ? { width: command.width } : {}),
     ...(command.scale !== undefined ? { scale: command.scale } : {}),
   };
-  const blocks = await handleScreenshotTool(input);
+  const blocks = await runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => handleScreenshotTool(input));
   writeBlocks(blocks, command.url, command.outDir ?? process.cwd());
 }
 

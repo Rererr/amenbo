@@ -83,6 +83,10 @@ export const politeness = new PolitenessManager({
     get: (origin) => cache.getRobotsCache(origin),
     set: (origin, body, fetchedAt) => cache.setRobotsCache(origin, body, fetchedAt),
   },
+  refusalStore: {
+    getRefusedUntil: (host) => cache.getHostRefusedUntil(host),
+    setRefusedUntil: (host, until) => cache.setHostRefusedUntil(host, until),
+  },
 });
 
 // M2: cache.close()は同期処理なので'exit'イベント(非同期処理を待てない)内でも安全に呼べる。
@@ -183,7 +187,7 @@ async function fetchAndExtract(
   // レビュー指摘対応: リダイレクトで別オリジンへ着地した場合、その着地先のrobots.txtも
   // 確認する(guardedFetch内で着地先オリジンが変わった場合のみ呼ばれる。同一オリジン内
   // リダイレクトや初回URLは呼び出し元のpoliteness.guardで確認済みのため二重チェックしない)。
-  const checkRobots = (targetUrl: string) => politeness.checkRobotsAllowed(targetUrl);
+  const checkRobots = politeness.robotsCheckForThisCall();
   // content-typeでしかPDFと分からないURLは、プレビュー読み(256KB)で返してもらうと
   // 専用経路が同じURLをもう一度全体取得することになる。この段階で全体を読み切ってもらい、
   // 取得を1回で済ませる(handleFetchToolのhandoff分岐がこのバイト列をそのまま使う)。
@@ -223,8 +227,10 @@ async function fetchAndExtract(
           finalFetchResult = browserFetchResult;
         }
       }
-    } catch {
-      // 再エスカレーションに失敗してもHTTP tierの結果(body-fallback)をそのまま使う(ベストエフォート)
+    } catch (error) {
+      // 再エスカレーションに失敗してもHTTP tierの結果(body-fallback)をそのまま使う(ベストエフォート)。
+      // ただし断られたことは記録する(しないと、キャッシュが切れるたびに同じ取り直しで断られに行く)。
+      politeness.noteRefusal(error);
     }
   }
 
@@ -530,7 +536,7 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
   const captured = await captureTiledScreenshot(url, {
     ...options,
     // ブラウザ層が別オリジンへリダイレクトした場合もrobots.txtを確認する(HTTP層と同じ扱い)。
-    checkRobots: (targetUrl: string) => politeness.checkRobotsAllowed(targetUrl),
+    checkRobots: politeness.robotsCheckForThisCall(),
   });
   cache.setScreenshot({
     cacheKey,
@@ -643,7 +649,7 @@ async function loadPdfDocument(url: string, notify: (message: string) => void, p
   if (cached?.etag) conditionalHeaders["If-None-Match"] = cached.etag;
   if (cached?.lastModified) conditionalHeaders["If-Modified-Since"] = cached.lastModified;
 
-  const checkRobots = (targetUrl: string) => politeness.checkRobotsAllowed(targetUrl);
+  const checkRobots = politeness.robotsCheckForThisCall();
   let binary = await httpGetBinary(url, {
     maxBytes: DEFAULT_PDF_MAX_BYTES,
     checkRobots,
@@ -734,7 +740,11 @@ export interface FetchToolInput {
 }
 
 // テスト用export(既存スタイルに合わせた最小のテスト可能化。politeness.guard呼び出し回数の検証用)。
-export async function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock | ImageBlock>> {
+export function handleFetchTool(input: FetchToolInput): Promise<Array<TextBlock | ImageBlock>> {
+  return politeness.rememberRefusals(() => fetchToolOnce(input));
+}
+
+async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | ImageBlock>> {
   const mode = input.mode ?? "auto";
   const page = input.page ?? DEFAULT_PAGE;
   const maxTokens = input.max_tokens ?? DEFAULT_MAX_TOKENS;
@@ -874,11 +884,11 @@ export interface ScreenshotToolInput {
 // テスト用export(既存スタイルに合わせた最小のテスト可能化。politeness.guard呼び出し回数の検証用)。
 // 独立screenshotツールも含め、resolveScreenshotは常に自身でguardする。
 export async function handleScreenshotTool(input: ScreenshotToolInput): Promise<Array<TextBlock | ImageBlock>> {
-  const screenshot = await resolveScreenshot(input.url, {
+  const screenshot = await politeness.rememberRefusals(() => resolveScreenshot(input.url, {
     fullPage: input.fullPage ?? true,
     width: input.width ?? DEFAULT_TILE_WIDTH,
     scale: input.scale ?? DEFAULT_SCREENSHOT_SCALE,
     onProgress: input.onProgress,
-  });
+  }));
   return buildScreenshotContent({ title: null }, screenshot, null);
 }

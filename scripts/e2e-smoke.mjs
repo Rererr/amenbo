@@ -77,6 +77,64 @@ async function probeProgress(s, extraMeta) {
   return progressCount(s);
 }
 
+// robots.txt の例外取得(利用者の確認)の新era側の往復。InMemoryTransportでは新eraへ繋げないため、
+// 実プロセスで確かめる。Wikipediaの検索結果は robots.txt が拒否している実在のページで、拒否の判定は
+// robots.txt の取得だけで済む。許可(accept)して実際に取得する経路は、拒否されたページへの
+// アクセスになるため流さない。代わりに、取得の手前で止まる許可の再呼び出し(改ざんしたrequestState・
+// 別URLへの流用)で、requestStateの検証とURLの照合が配線されていることを確かめる。
+const ROBOTS_DENIED_URL = "https://ja.wikipedia.org/w/index.php?search=amenbo";
+/** robots.txt が拒否し、bot 対策もしている大手。確認を出さずに対象外として断ることを確かめる。 */
+const BOT_PROTECTED_URL = "https://www.google.com/search?q=amenbo";
+const MODERN_FORM_META = { ...MODERN_META, "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {} } } };
+
+async function checkModernRobotsConsent() {
+  const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-e2e-robots-"));
+  const s = mcpSession("node", [SERVER_PATH], { AMENBO_CACHE_DIR: cacheDir });
+  const call = (params) => s.rpc("tools/call", { name: "fetch", arguments: { url: ROBOTS_DENIED_URL, ask_robots_override: true }, _meta: MODERN_FORM_META, ...params }, CALL_TIMEOUT_MS);
+  try {
+    const first = await call({});
+    const asked = first.result;
+    if (asked?.resultType !== "input_required" || !asked.inputRequests?.robots_override || typeof asked.requestState !== "string") {
+      return `modern-robots-consent: 確認(input_required)が返らない: ${JSON.stringify(first).slice(0, 300)}`;
+    }
+    const declined = await call({ inputResponses: { robots_override: { action: "decline" } }, requestState: asked.requestState });
+    const text = textOf(declined.result ?? {});
+    if (declined.result?.isError !== true || !text.includes("利用者が例外の取得を許可しませんでした")) {
+      return `modern-robots-consent: 断った再呼び出しが拒否にならない: ${JSON.stringify(declined).slice(0, 300)}`;
+    }
+
+    const accept = { robots_override: { action: "accept" } };
+    // 末尾の文字は base64url の使われない下位ビットを含み、書き換えても復号結果が変わらないことがある(実測)。
+    // その場合は正しい state のまま許可が通り、拒否されたページを実際に取りに行ってしまうので、全ビットが使われる
+    // 中央の文字の上位ビットを変える。
+    const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const mid = Math.floor(asked.requestState.length / 2);
+    const flipped = B64URL[B64URL.indexOf(asked.requestState[mid]) ^ 32];
+    const tampered = asked.requestState.slice(0, mid) + flipped + asked.requestState.slice(mid + 1);
+    const tamperedResp = await call({ inputResponses: accept, requestState: tampered });
+    if (tamperedResp.error?.code !== -32602) {
+      return `modern-robots-consent: 改ざんしたrequestStateが拒否されない(検証の未登録): ${JSON.stringify(tamperedResp).slice(0, 300)}`;
+    }
+
+    const otherUrl = { name: "fetch", arguments: { url: `${ROBOTS_DENIED_URL}-other`, ask_robots_override: true }, _meta: MODERN_FORM_META };
+    const reused = await s.rpc("tools/call", { ...otherUrl, inputResponses: accept, requestState: asked.requestState }, CALL_TIMEOUT_MS);
+    if (reused.result?.isError !== true || !textOf(reused.result).includes("確認した内容とこの呼び出しが一致しない")) {
+      return `modern-robots-consent: 別URLへ流用した許可が拒否されない: ${JSON.stringify(reused).slice(0, 300)}`;
+    }
+    const botProtected = await s.rpc("tools/call", { name: "fetch", arguments: { url: BOT_PROTECTED_URL, ask_robots_override: true }, _meta: MODERN_FORM_META }, CALL_TIMEOUT_MS);
+    if (botProtected.result?.isError !== true || !textOf(botProtected.result).includes("例外の取得の対象外")) {
+      return `modern-robots-consent: bot 対策をしている大手で確認を出してしまう: ${JSON.stringify(botProtected).slice(0, 300)}`;
+    }
+    console.log(`OK modern-robots-consent (${MODERN_VERSION}): 確認を返し、断った再呼び出し・改ざん・別URLへの流用・bot 対策の大手を拒否`);
+    return null;
+  } catch (e) {
+    return `modern-robots-consent: ${String(e)}`;
+  } finally {
+    s.child.kill();
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+}
+
 /** ハンドシェイク無し(2026-07-28)のセッションで進捗通知が届くことを確認する。 */
 async function checkModernProgress() {
   const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-e2e-modern-"));
@@ -294,12 +352,18 @@ async function main() {
     console.log(`NG ${modernFailure}`);
   }
 
+  const robotsConsentFailure = await checkModernRobotsConsent();
+  if (robotsConsentFailure !== null) {
+    failures.push(robotsConsentFailure);
+    console.log(`NG ${robotsConsentFailure}`);
+  }
+
   if (failures.length > 0) {
     console.error(`\n${failures.length}件が失敗しました:`);
     for (const f of failures) console.error(`  - ${f}`);
     process.exit(1);
   }
-  console.log(`\nOK: 取得${CASES.length}件 + 主機能${FEATURE_CHECKS.length}件 + 進捗通知2era すべて成功`);
+  console.log(`\nOK: 取得${CASES.length}件 + 主機能${FEATURE_CHECKS.length}件 + 進捗通知2era + robots例外の確認 すべて成功`);
 }
 
 main().catch((e) => {

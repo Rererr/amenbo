@@ -21,7 +21,7 @@ export abstract class AmenboError extends Error {
  * 付けない(前者はブラウザ経由でも解決せず、後者は遅い/大きい本文が原因でボット対策ではないため)。
  */
 const SCREENSHOT_RETRY_HINT =
-  " — サイト側がボットアクセスを遮断している可能性があります。mode: screenshot(ブラウザ経由)で再試行すると通る場合があります";
+  " — 素の HTTP 取得では接続できませんでした。ブラウザ経由(mode: screenshot)なら接続できる場合があります。ブラウザでも断られたら、取り直さずにそのまま報告してください";
 
 /**
  * タイムアウトが起きた段階。
@@ -51,8 +51,12 @@ export class FetchTimeoutError extends AmenboError {
 export class RobotsDeniedError extends AmenboError {
   readonly code = "ROBOTS_DENIED";
 
-  constructor(readonly url: string) {
-    super(`robots.txt によりアクセスが拒否されています: ${url}`);
+  constructor(
+    readonly url: string,
+    detail?: string,
+  ) {
+    // URLの直後に括弧を続けると、自動リンクが括弧までURLに含めるため空白で区切る。
+    super(`robots.txt によりアクセスが拒否されています: ${url}${detail ? ` (${detail})` : ""}`);
   }
 }
 
@@ -92,16 +96,54 @@ export class UnsupportedContentError extends AmenboError {
   }
 }
 
+/** Retry-After ヘッダ(秒数またはHTTP日付)を、nowからの待ち時間(ミリ秒)にする。読めなければnull。 */
+export function parseRetryAfterMs(value: string | null | undefined, now: number = Date.now()): number | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  // 待ち時間が0以下の値は「すぐ来てよい」なので、待ち時間の指定が無いのと同じに扱う。
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) > 0 ? Number(trimmed) * 1000 : null;
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) || at <= now ? null : at - now;
+}
+
+const REFUSAL_HINT = " — サイトが取得を断っています(回数制限・bot 対策・一時的な過負荷など)。しばらくの間、amenbo はこのサイトへの取得を止めます";
+
 /** HTTP応答がエラーステータスを返した。 */
 export class HttpStatusError extends AmenboError {
   readonly code = "HTTP_STATUS_ERROR";
+  /** Retry-After が示す待ち時間(ミリ秒)。ヘッダが無いか読めなければnull。 */
+  readonly retryAfterMs: number | null;
+  /** サイトが「しばらく来ないで」と伝えてきたか。403は権限が無いだけのページでも返るので含めない。 */
+  readonly isRefusal: boolean;
 
   constructor(
     readonly url: string,
     readonly status: number,
     statusText: string,
+    retryAfter?: string | null,
   ) {
-    super(`HTTPエラー(${status} ${statusText}): ${url}`);
+    const retryAfterMs = parseRetryAfterMs(retryAfter);
+    const isRefusal = status === 429 || retryAfterMs !== null;
+    super(`HTTPエラー(${status} ${statusText}): ${url}${isRefusal ? REFUSAL_HINT : ""}`);
+    this.retryAfterMs = retryAfterMs;
+    this.isRefusal = isRefusal;
+  }
+}
+
+/** 以前に取得を断られたホストへは、期限まで amenbo 側でアクセスしない。 */
+export class HostRefusedError extends AmenboError {
+  readonly code = "HOST_REFUSED";
+
+  constructor(
+    readonly url: string,
+    readonly host: string,
+    readonly refusedUntil: number,
+    now: number,
+  ) {
+    // LLMは現在時刻を知らないことが多いので、時刻だけでなく残り時間も示す。時刻はタイムゾーンを付けて書く。
+    const minutesLeft = Math.max(1, Math.ceil((refusedUntil - now) / 60_000));
+    const until = new Date(refusedUntil).toLocaleString("ja-JP", { timeZoneName: "short" });
+    super(`このサイト(${host})に取得を断られたため、あと約${minutesLeft}分(${until}まで) amenbo からのアクセスを止めています: ${url}`);
   }
 }
 
@@ -115,17 +157,17 @@ export class BrowserLaunchError extends AmenboError {
 }
 
 /**
- * Chromium遅延化(§4)対応: postinstallを廃止したため、`npx -y amenbo install-browser`を
- * 未実行の環境ではChromiumが存在しない。BrowserLaunchErrorの単なる一種として握り潰さず、
- * LLM/利用者が次に取るべき行動(install-browserコマンド)を明示するために型を分ける。
+ * Chromium遅延化(§4)対応: postinstallを廃止したため、システムにGoogle Chromeが無く
+ * `npx -y amenbo install-browser`も未実行の環境では使えるブラウザが存在しない。BrowserLaunchErrorの
+ * 単なる一種として握り潰さず、LLM/利用者が次に取るべき行動を明示するために型を分ける。
  */
 export class BrowserUnavailableError extends AmenboError {
   readonly code = "BROWSER_UNAVAILABLE";
 
   constructor(options?: { cause?: unknown }) {
     super(
-      "この操作にはChromiumが必要ですが、まだインストールされていません。" +
-        "`npx -y amenbo install-browser` を実行してください(初回のみ、約170MBのダウンロード)。" +
+      "この操作にはブラウザが必要ですが、Google Chromeも同梱Chromiumも見つかりません。" +
+        "Google Chromeをインストールするか、`npx -y amenbo install-browser` を実行してください(初回のみ、約170MBのダウンロード)。" +
         "通常のHTTP取得(mode: markdown/outline等)はブラウザなしで動作します。",
       options,
     );

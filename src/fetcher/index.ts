@@ -2,7 +2,7 @@
  * fetcher/index.ts — 二段フェッチ。
  *
  * まず素のHTTP GET(fetcher/http.ts)を行い、SPA判定(ヒューリスティック)に該当した
- * 場合のみheadless Chromium(fetcher/browser.ts)へ昇格する。
+ * 場合のみheadlessブラウザ(fetcher/browser.ts)へ昇格する。
  * 大半の静的/SSRページはHTTP GETのみで完結し、先方負荷・自機資源を最小化する。
  */
 import { parseHTML } from "linkedom";

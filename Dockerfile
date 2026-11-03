@@ -4,7 +4,7 @@
 # (Chromium遅延化。README/`amenbo install-browser`参照)ため、このベースイメージが同梱する
 # Chromiumがそのまま使われる。バージョンが食い違うと同梱ブラウザをplaywrightが認識できない
 # ため、タグ更新時はpackage-lock.jsonのplaywrightバージョンとの一致を維持すること。
-FROM mcr.microsoft.com/playwright:v1.61.1-noble
+FROM mcr.microsoft.com/playwright:v1.64.1-noble
 
 WORKDIR /app
 

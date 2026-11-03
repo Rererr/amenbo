@@ -9,7 +9,7 @@
  * が指すRSS/Atomフィード → 最終手段としてページ内の<a>リンク抽出。
  */
 import { parseHTML } from "linkedom";
-import { HttpStatusError, PrivateAddressError, RobotsDeniedError, UnsupportedContentError } from "./errors.js";
+import { HostRefusedError, HttpStatusError, PrivateAddressError, RobotsDeniedError, UnsupportedContentError } from "./errors.js";
 import { fetchPage } from "./fetcher/index.js";
 import { assertHttpScheme, httpGet } from "./fetcher/http.js";
 import type { PolitenessManager } from "./politeness.js";
@@ -25,7 +25,12 @@ import type { PolitenessManager } from "./politeness.js";
  * 深刻な回帰になるため、再送出するのは拒否シグナルのみに絞る。
  */
 function isFallbackBlockingError(error: unknown): boolean {
-  return error instanceof PrivateAddressError || error instanceof RobotsDeniedError;
+  return (
+    error instanceof PrivateAddressError ||
+    error instanceof RobotsDeniedError ||
+    error instanceof HostRefusedError ||
+    (error instanceof HttpStatusError && error.isRefusal)
+  );
 }
 
 export type LinkSource = "sitemap" | "rss" | "page";
@@ -93,7 +98,7 @@ async function fetchXml(
 ): Promise<XmlLikeDocument> {
   // レビュー指摘対応: リダイレクトで別オリジンへ着地した場合、着地先のrobots.txtも確認する
   // (fetcher/http.tsのHttpGetOptions.checkRobots参照)。
-  const result = await httpGet(url, { timeoutMs, checkRobots: (targetUrl) => politeness.checkRobotsAllowed(targetUrl) });
+  const result = await httpGet(url, { timeoutMs, checkRobots: (targetUrl) => politeness.checkRedirectTarget(targetUrl) });
   const { document } = parseHTML(rewrite ? rewrite(result.html) : result.html);
   return document as unknown as XmlLikeDocument;
 }
@@ -259,11 +264,17 @@ export interface DiscoverLinksOptions {
 }
 
 /** URLからリンク一覧を発見する。sitemap → RSS/Atom → ページ内リンクの優先順で試す。 */
-export async function discoverLinks(url: string, politeness: PolitenessManager, options: DiscoverLinksOptions = {}): Promise<LinksResult> {
+export function discoverLinks(url: string, politeness: PolitenessManager, options: DiscoverLinksOptions = {}): Promise<LinksResult> {
+  return politeness.rememberRefusals(() => discoverLinksOnce(url, politeness, options));
+}
+
+async function discoverLinksOnce(url: string, politeness: PolitenessManager, options: DiscoverLinksOptions): Promise<LinksResult> {
   // 公開品質バグ修正: robots.txt/sitemap取得より前にスキームを検証する。file:等を先に弾かないと
   // origin("null"等)から `null/sitemap.xml` のような壊れたURLを組み立ててしまい、
   // new URL()の生のTypeErrorがstderrに漏れてしまう。
   assertHttpScheme(url);
+  // robots.txt の取得(getSitemaps)は guard より前にあるので、止めているホストはここで止める。
+  politeness.assertNotRefused(url);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const origin = new URL(url).origin;
 
@@ -281,7 +292,7 @@ export async function discoverLinks(url: string, politeness: PolitenessManager, 
   await politeness.guard(url, options.onProgress);
   const pageResult = await fetchPage(url, {
     timeoutMs,
-    checkRobots: (targetUrl) => politeness.checkRobotsAllowed(targetUrl),
+    checkRobots: (targetUrl) => politeness.checkRedirectTarget(targetUrl),
     waitTurn: (targetUrl) => politeness.waitTurn(targetUrl, options.onProgress),
   });
   if ("notModified" in pageResult) {

@@ -10,7 +10,7 @@ vi.mock("../src/fetcher/http.js", async (importOriginal) => {
   };
 });
 
-const { PolitenessManager } = await import("../src/politeness.js");
+const { PolitenessManager, runIgnoringRobotsFor } = await import("../src/politeness.js");
 const { RobotsDeniedError } = await import("../src/errors.js");
 
 /** 実時間を待たずに経過時間だけを進める疑似クロック(sleepするとnow()も進む)。 */
@@ -204,6 +204,84 @@ describe("PolitenessManager - checkRobotsAllowed / guard", () => {
     await pm.checkRobotsAllowed("http://example.com/b");
 
     expect(httpGetMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runIgnoringRobotsFor(利用者が個別に許可した1回の取得)", () => {
+  const APPROVED = "http://example.com/a";
+
+  it("範囲内では許可したページと同じオリジンの拒否を適用せず、範囲を抜けると元どおり拒否する", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /\n");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+
+    await expect(runIgnoringRobotsFor([APPROVED], () => pm.guard("http://example.com/b"))).resolves.toBeUndefined();
+    await expect(pm.guard("http://example.com/b")).rejects.toThrow(RobotsDeniedError);
+  });
+
+  it("許可した複数のページのオリジンは、どれも拒否を適用しない", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /\n");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+
+    await expect(runIgnoringRobotsFor([APPROVED, "https://www.example.com/a"], () => pm.guard("https://www.example.com/b"))).resolves.toBeUndefined();
+  });
+
+  it("範囲内でも、許可したページと別のオリジンは拒否する(利用者が見ていない転送先)", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /\n");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+
+    await expect(runIgnoringRobotsFor([APPROVED], () => pm.guard("http://other.example.com/b"))).rejects.toThrow(RobotsDeniedError);
+    await expect(runIgnoringRobotsFor([APPROVED], () => pm.robotsCheckForThisCall()("http://other.example.com/b"))).rejects.toThrow(RobotsDeniedError);
+  });
+
+  it("checkRobotsAllowed(links等が直接使う判定)は範囲内でも常に拒否を適用する", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /\n");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+
+    await expect(runIgnoringRobotsFor([APPROVED], () => pm.checkRobotsAllowed(APPROVED))).rejects.toThrow(RobotsDeniedError);
+  });
+
+  it("範囲内で作った判定は、後で範囲外から呼ばれても、作った呼び出しの許可のまま働く", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /\n");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+
+    const approvedCheck = await runIgnoringRobotsFor([APPROVED], async () => pm.robotsCheckForThisCall());
+    await expect(approvedCheck("http://example.com/b")).resolves.toBeUndefined();
+  });
+
+  it("範囲内で登録したリスナー(共有ブラウザのrouteハンドラ相当)から呼ばれても、範囲外で作った判定には許可が漏れない", async () => {
+    mockRobotsResponse("User-agent: *\nDisallow: /\n");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+    // 生成時の非同期コンテキストでリスナーを呼ぶ資源。Playwrightの接続も、起動した呼び出しの文脈で
+    // routeハンドラを呼ぶ(実測)。許可付きの呼び出しがこれを最初に作る(ブラウザの初回起動に当たる)。
+    const { EventEmitterAsyncResource } = await import("node:events");
+    let currentCheck: (url: string) => Promise<void> = async () => {};
+    let outcome: Promise<void> = Promise.resolve();
+    const sharedResource = await runIgnoringRobotsFor([APPROVED], async () => {
+      const resource = new EventEmitterAsyncResource({ name: "shared-browser" });
+      resource.on("request", (url: string) => {
+        outcome = currentCheck(url);
+      });
+      return resource;
+    });
+
+    // 許可なしの後続呼び出しが自分の判定を渡し、共有リソースから呼ばれる。
+    currentCheck = pm.robotsCheckForThisCall();
+    sharedResource.emit("request", "http://example.com/b");
+    await expect(outcome).rejects.toThrow(RobotsDeniedError);
+  });
+
+  it("範囲内でもCrawl-Delayとアクセス間隔の待機は維持する", async () => {
+    mockRobotsResponse("User-agent: *\nCrawl-delay: 5\nDisallow: /\n");
+    const clock = createClock();
+    const sleepSpy = vi.fn(clock.sleep);
+    const pm = new PolitenessManager({ now: clock.now, sleep: sleepSpy, minIntervalMs: 1000 });
+
+    await runIgnoringRobotsFor([APPROVED], async () => {
+      await pm.guard("http://example.com/a");
+      sleepSpy.mockClear();
+      await pm.guard("http://example.com/b");
+    });
+    expect(sleepSpy).toHaveBeenCalledWith(5000);
   });
 });
 

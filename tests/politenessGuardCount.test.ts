@@ -177,3 +177,46 @@ describe("politeness.guard呼び出し回数(実ネットワークfetch直前で
     expect(guardSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("fetch / screenshot ツールは、サイトに断られたホストを止める", () => {
+  it("body-fallback のブラウザでの取り直しが 429 で断られたら、HTTP の結果を返しつつホストを止める", async () => {
+    const { HostRefusedError, HttpStatusError } = await import("../src/errors.js");
+    const host = "refused-fallback.example.com";
+    const url = `https://${host}/page`;
+    httpGetRoutedMock.mockReset().mockResolvedValue(htmlRouted(url, "<html><body><p>本文</p></body></html>"));
+    fetchWithBrowserMock.mockReset().mockRejectedValueOnce(new HttpStatusError(url, 429, "Too Many Requests"));
+    const guardSpy = vi.spyOn(politeness, "guard").mockResolvedValueOnce(undefined);
+    const waitTurnSpy = vi.spyOn(politeness, "waitTurn").mockResolvedValueOnce(undefined);
+    try {
+      await expect(handleFetchTool({ url })).resolves.toBeDefined();
+      await expect(handleFetchTool({ url: `https://${host}/other`, mode: "markdown" })).rejects.toThrow(HostRefusedError);
+    } finally {
+      guardSpy.mockRestore();
+      waitTurnSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ["fetch", "refused-fetch.example.com"],
+    ["screenshot", "refused-shot.example.com"],
+  ])("%s: 429 で断られたら、次の取得は相手に届く前に止まる", async (tool, host) => {
+    const { HostRefusedError, HttpStatusError } = await import("../src/errors.js");
+    const { captureTiledScreenshot } = await import("../src/screenshot.js");
+    const url = `https://${host}/page`;
+    const refused = new HttpStatusError(url, 429, "Too Many Requests");
+    const guardSpy = vi.spyOn(politeness, "guard").mockResolvedValueOnce(undefined);
+    try {
+      if (tool === "fetch") {
+        httpGetRoutedMock.mockReset().mockRejectedValueOnce(refused);
+        await expect(handleFetchTool({ url, mode: "markdown" })).rejects.toThrow(HttpStatusError);
+      } else {
+        vi.mocked(captureTiledScreenshot).mockRejectedValueOnce(refused);
+        await expect(handleScreenshotTool({ url })).rejects.toThrow(HttpStatusError);
+      }
+      // 2回目は本物のguard。止めている判定はrobots.txtの取得より前なので、ネットワークへ出ない。
+      await expect(handleFetchTool({ url: `https://${host}/other`, mode: "markdown" })).rejects.toThrow(HostRefusedError);
+    } finally {
+      guardSpy.mockRestore();
+    }
+  });
+});

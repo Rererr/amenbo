@@ -98,8 +98,6 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   // C1: SSRF/スキーム検証(guardPublicAddress)+リダイレクト再検証込みのナビゲーション。
-  // 改善キュー対応: 同梱ChromiumがERR_HTTP2_PROTOCOL_ERROR系で失敗した場合、システムに
-  // Chromeがあれば1回だけそちらへフォールバックする(openPageAndNavigate参照)。
   const { context, page } = await openPageAndNavigate(
     url,
     timeoutMs,

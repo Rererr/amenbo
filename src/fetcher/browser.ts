@@ -1,5 +1,5 @@
 /**
- * fetcher/browser.ts — Playwright chromium共有インスタンス。
+ * fetcher/browser.ts — Playwrightで起動する共有ブラウザインスタンス(システムのChrome優先、無ければ同梱Chromium)。
  *
  * 二段フェッチ(fetcher/index.ts)でSPAと判定された場合のみ起動する遅延初期化。
  * プロセス終了シグナルでクリーンアップする。
@@ -14,7 +14,7 @@ import {
   type Response as PlaywrightResponse,
   type Route,
 } from "playwright";
-import { AmenboError, BrowserLaunchError, BrowserUnavailableError, FetchTimeoutError, InvalidUrlError } from "../errors.js";
+import { AmenboError, BrowserLaunchError, BrowserUnavailableError, FetchTimeoutError, HttpStatusError, InvalidUrlError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { CONSENT_BANNER_RULES } from "../jp/consentBanner.js";
 import { guardPublicAddress, USER_AGENT } from "./http.js";
@@ -25,27 +25,17 @@ export type { PageGeometrySnapshot } from "../extract/geometry.js";
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 let browserPromise: Promise<Browser> | null = null;
-// 改善キュー対応: 同梱Chromium(Playwrightがpinするビルド)がERR_HTTP2_PROTOCOL_ERROR系で
-// ナビゲーションに失敗するサイト(実機確認: initial.inc)向けのフォールバック専用インスタンス。
-// 低負荷優先の設計原則に従い、実際にフォールバックが発生するまでは起動しない(遅延初期化)。
-let systemChromeBrowserPromise: Promise<Browser> | null = null;
-// code-reviewer指摘: システムChromeの実行ファイル自体が存在しない(未インストール)場合、
-// HTTP2エラーが起きる度に無駄なlaunch試行(失敗が確定しているのに毎回レイテンシを払う)を
-// 繰り返さないよう、プロセス寿命内で「無い」と分かった事実をキャッシュする。
-// (launch失敗が実行ファイル不在以外の理由の場合はキャッシュせず、以後も再試行を許す。)
-let systemChromeExecutableMissing = false;
 let cleanupRegistered = false;
 
 /**
- * Playwrightがchannel指定の実行ファイルを見つけられない場合に投げるエラーメッセージ
- * ("Chromium distribution 'chrome' is not found at ...")のパターン。この場合のみ
- * systemChromeExecutableMissingへ恒久的にキャッシュする(それ以外の起動失敗は一時的な
- * 可能性があるため、次回のHTTP2エラー発生時に再試行を許す)。
+ * システムのGoogle Chromeを使えない場合にplaywright-coreが投げるエラーメッセージのパターン。
+ * 未インストール("... is not found at ...")と、Chromeの配布先として定義の無いOS
+ * ("... is not supported on freebsd"等。linux/darwin/win32以外)の両方を含む。
  */
-const CHROME_EXECUTABLE_MISSING_PATTERN = /is not found/i;
+const SYSTEM_CHROME_UNAVAILABLE_PATTERN = /Chromium distribution 'chrome' is not (found|supported)/;
 
-function isMissingExecutableError(error: unknown): boolean {
-  return error instanceof Error && CHROME_EXECUTABLE_MISSING_PATTERN.test(error.message);
+function isSystemChromeUnavailableError(error: unknown): boolean {
+  return error instanceof Error && SYSTEM_CHROME_UNAVAILABLE_PATTERN.test(error.message);
 }
 
 /**
@@ -79,70 +69,104 @@ function registerCleanupHandlers(): void {
   process.once("SIGTERM", shutdown);
 }
 
-/** 共有chromiumインスタンスを取得する(未起動なら遅延起動)。 */
+/**
+ * 共有ブラウザインスタンスを取得する(未起動なら遅延起動)。
+ *
+ * システムのGoogle Chromeを優先し、使えない環境に限り同梱Chromiumを使う。同梱Chromiumは
+ * Playwrightの版に固定されたベータ相当のビルドで、Chrome安定版のセキュリティ修正が届かない
+ * (任意の外部ページを開くamenboでは古いビルドがそのまま攻撃面になる)。どちらもOSの
+ * サンドボックスを有効にして起動する(Playwrightの既定は--no-sandbox)。
+ */
 export async function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
     registerCleanupHandlers();
-    // C2(browser tier): 全リクエストをSSRF検証プロキシ経由にする。Chromiumがホスト名を自前で
-    // 解決せずプロキシへ委ねるため、事前検証と実接続の間のDNS rebinding(TOCTOU)を塞げる。
-    browserPromise = getSharedSsrfProxyUrl()
-      .then((proxyServer) => chromium.launch({ headless: true, proxy: { server: proxyServer } }))
-      .catch((cause: unknown) => {
-        browserPromise = null;
-        if (isMissingChromiumExecutableError(cause)) {
-          throw new BrowserUnavailableError({ cause });
-        }
-        throw new BrowserLaunchError("chromiumの起動に失敗しました", { cause });
-      });
+    const promise: Promise<Browser> = startBrowser().then(
+      (browser) => {
+        // 常駐MCPでブラウザが落ちた(OOM kill・パッケージ更新による実行ファイルの置き換え等)後も
+        // 死んだインスタンスを返し続けないよう、次の呼び出しで起動し直させる。
+        browser.on("disconnected", () => {
+          if (browserPromise === promise) browserPromise = null;
+        });
+        return browser;
+      },
+      (cause: unknown) => {
+        // 失敗中にcloseBrowser→getBrowserで始まった別の起動を消さないよう、自分の起動の場合だけ戻す。
+        if (browserPromise === promise) browserPromise = null;
+        throw cause;
+      },
+    );
+    browserPromise = promise;
   }
   return browserPromise;
 }
 
-/**
- * システムにインストール済みのGoogle Chrome(channel: "chrome")を遅延起動する。
- * 同梱Chromiumのpage.goto()がERR_HTTP2_PROTOCOL_ERROR系で失敗した場合のみ呼ばれる想定
- * (isChromiumHttp2NavigationError参照)。未インストール環境ではchromium.launch自体が
- * 失敗するため、呼び出し元(openPageAndNavigate)でcatchし元のエラーへフォールスルーする。
- * 実行ファイル不在と判明した場合はプロセス寿命内でキャッシュし、以後は起動を試みない
- * (毎回のlaunch失敗レイテンシを避ける)。
- */
-async function getSystemChromeBrowser(): Promise<Browser> {
-  if (systemChromeExecutableMissing) {
-    throw new BrowserLaunchError("システムのGoogle Chromeが見つかりません(未インストールと判明済みのため再試行しません)");
-  }
-
-  if (!systemChromeBrowserPromise) {
-    registerCleanupHandlers();
-    systemChromeBrowserPromise = getSharedSsrfProxyUrl()
-      .then((proxyServer) => chromium.launch({ headless: true, channel: "chrome", proxy: { server: proxyServer } }))
-      .catch((cause: unknown) => {
-        systemChromeBrowserPromise = null;
-        if (isMissingExecutableError(cause)) {
-          systemChromeExecutableMissing = true;
-        }
-        throw new BrowserLaunchError("システムのGoogle Chromeの起動に失敗しました", { cause });
-      });
-  }
-  return systemChromeBrowserPromise;
-}
-
-async function closeBrowserPromise(promise: Promise<Browser> | null): Promise<void> {
-  if (!promise) return;
+async function startBrowser(): Promise<Browser> {
+  // C2(browser tier): 全リクエストをSSRF検証プロキシ経由にする。Chromiumがホスト名を自前で
+  // 解決せずプロキシへ委ねるため、事前検証と実接続の間のDNS rebinding(TOCTOU)を塞げる。
+  let proxyServer: string;
   try {
-    const browser = await promise;
-    await browser.close();
-  } catch {
-    // 起動に失敗していた場合等は無視(既にクローズ済み/未起動)
+    proxyServer = await getSharedSsrfProxyUrl();
+  } catch (cause) {
+    throw new BrowserLaunchError(`SSRF検証プロキシを起動できませんでした(${firstLine(cause)})`, { cause });
+  }
+
+  const options = { headless: true, chromiumSandbox: true, proxy: { server: proxyServer } };
+  try {
+    return await chromium.launch({ ...options, channel: "chrome" });
+  } catch (cause) {
+    // Chromeはあるが起動に失敗した場合は同梱Chromiumへ黙って切り替えない(古いビルドで
+    // 動き続けると、利用者は失敗の原因にも安全性の低下にも気づけない)。
+    if (!isSystemChromeUnavailableError(cause)) {
+      throw new BrowserLaunchError(describeLaunchFailure("システムのGoogle Chrome", cause), { cause });
+    }
+  }
+  try {
+    return await chromium.launch(options);
+  } catch (cause) {
+    if (isMissingChromiumExecutableError(cause)) {
+      throw new BrowserUnavailableError({ cause });
+    }
+    throw new BrowserLaunchError(describeLaunchFailure("同梱Chromium", cause), { cause });
   }
 }
 
-/** 共有chromium/システムChromeインスタンスを終了する(プロセス終了時・テストのクリーンアップ用)。 */
+/** playwright-coreが"No usable sandbox!"等のサンドボックス起動失敗を書き換えた先頭行。 */
+const SANDBOX_FAILURE_MARKER = "Chromium sandboxing failed!";
+
+/**
+ * 起動失敗の理由と対処を利用者向けの文言にする(呼び出し側はcauseを表示しないため、ここで要点を含める)。
+ * サンドボックスを無効にして起動し直す道は用意しない(任意の外部ページを開くamenboでは、
+ * 無効化がそのまま利用者のユーザー権限での任意コード実行につながるため)。
+ */
+function describeLaunchFailure(browserLabel: string, cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  if (message.includes(SANDBOX_FAILURE_MARKER)) {
+    return (
+      `${browserLabel}をOSのサンドボックス付きで起動できませんでした。` +
+      "rootで実行している場合は一般ユーザーで実行してください。" +
+      "ユーザー名前空間を制限している環境(Ubuntu 23.10以降の既定など)では、その利用を許可する設定が必要です"
+    );
+  }
+  return `${browserLabel}の起動に失敗しました(${firstLine(cause)})`;
+}
+
+function firstLine(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return message.split("\n").find((line) => line.trim() !== "")?.trim() ?? "原因不明";
+}
+
+/** 共有ブラウザインスタンスを終了する(プロセス終了時・テストのクリーンアップ用)。 */
 export async function closeBrowser(): Promise<void> {
-  const primary = browserPromise;
-  const systemChrome = systemChromeBrowserPromise;
+  const promise = browserPromise;
   browserPromise = null;
-  systemChromeBrowserPromise = null;
-  await Promise.all([closeBrowserPromise(primary), closeBrowserPromise(systemChrome)]);
+  if (promise) {
+    try {
+      const browser = await promise;
+      await browser.close();
+    } catch {
+      // 起動に失敗していた場合等は無視(既にクローズ済み/未起動)
+    }
+  }
   // ブラウザを閉じた後にSSRF検証プロキシも停止する(開いているとプロセスが終了できずハングする)。
   await closeSharedSsrfProxy();
 }
@@ -359,21 +383,6 @@ export async function navigateSafely(
   }
 }
 
-// ---- 改善キュー対応: 同梱ChromiumのHTTP/2非互換に対するシステムChromeフォールバック ----
-
-const HTTP2_NAVIGATION_ERROR_PATTERN = /ERR_HTTP2_/;
-
-/**
- * page.goto()の失敗が、ERR_HTTP2_PROTOCOL_ERROR系(実機検証: initial.inc等でPlaywright
- * pinビルドのChromiumのみ発生し、素のcurl --http2やシステムのGoogle Chromeでは成功する
- * ブラウザビルド固有のHTTP/2非互換)かどうかを判定する。この場合のみシステムChromeへの
- * フォールバックを試みる(接続拒否/タイムアウト等の一般的なネットワークエラーは対象外。
- * 常時Chrome起動という追加コストを、明確にビルド固有と分かっているケース以外では払わない)。
- */
-export function isChromiumHttp2NavigationError(error: unknown): boolean {
-  return error instanceof Error && HTTP2_NAVIGATION_ERROR_PATTERN.test(error.message);
-}
-
 export interface BrowserNavigation {
   context: BrowserContext;
   page: Page;
@@ -388,63 +397,26 @@ export interface SafeNavigationOptions {
   checkRobots?: ((url: string) => Promise<void>) | undefined;
 }
 
-/**
- * 共有chromiumでcontext/pageを作りnavigateSafelyでナビゲーションする。ERR_HTTP2_PROTOCOL_ERROR系
- * で失敗した場合のみ、システムのGoogle Chromeへ1回だけフォールバックする。
- *
- * フォールバックが行われないケース(元のエラーをそのまま投げ、呼び出し元の既存の
- * エラー分類・メッセージ生成をそのまま活かす):
- *   - HTTP2以外のエラー(接続拒否/タイムアウト等)
- *   - システムにChromeが無くgetSystemChromeBrowser自体が失敗した場合
- * Chromeでの再試行も失敗した場合は、そちらのエラー(Chrome経由での実際の失敗内容)を投げる。
- *
- * Chromeでの再遷移前にレート制御の待機は入れない。直前の遷移はプロトコル層で失敗しており
- * 応答を得られていない再試行であること、待機を入れるにはwaitTurnをこの層まで配線する必要があり
- * 別オリジンへのリダイレクト待機(fetcher/http.ts)を見送ったのと同じ理由で今は踏み込まないため。
- */
+/** 共有ブラウザでcontext/pageを作りnavigateSafelyでナビゲーションする。失敗時はcontextを閉じて投げ直す。 */
 export async function openPageAndNavigate(
   url: string,
   timeoutMs: number,
   contextOptions: BrowserContextOptions = {},
   navigationOptions: SafeNavigationOptions = {},
 ): Promise<BrowserNavigation> {
-  const primaryBrowser = await getBrowser();
-  const primaryContext = await primaryBrowser.newContext(contextOptions);
+  const browser = await getBrowser();
+  const context = await browser.newContext(contextOptions);
   try {
-    const page = await primaryContext.newPage();
+    const page = await context.newPage();
     const response = await navigateSafely(page, url, timeoutMs, navigationOptions);
-    return { context: primaryContext, page, response };
-  } catch (primaryError) {
-    await primaryContext.close().catch(() => {});
-    if (!isChromiumHttp2NavigationError(primaryError)) throw primaryError;
-
-    let chromeBrowser: Browser;
-    try {
-      chromeBrowser = await getSystemChromeBrowser();
-    } catch {
-      // システムChrome未インストール等: 元のエラー(分類済みメッセージ)にフォールスルーする
-      throw primaryError;
+    // HTTP経路(httpGet)と同じく非2xxは失敗にする。bot対策の画面(429等)を取得成功として返さないため。
+    if (response && response.status() >= 400) {
+      throw new HttpStatusError(page.url(), response.status(), response.statusText(), response.headers()["retry-after"]);
     }
-
-    let chromeContext: BrowserContext;
-    try {
-      chromeContext = await chromeBrowser.newContext(contextOptions);
-    } catch {
-      // code-reviewer指摘: newContext自体をtry内に含める。前回のフォールバック使用後に
-      // システムChromeが切断されていた場合等、newContextが素の例外を投げうるため、
-      // getSystemChromeBrowser失敗時と同様に元のエラー(分類済みメッセージ)へ
-      // フォールスルーする(Chrome側の生の例外で覆い隠さない)。
-      throw primaryError;
-    }
-
-    try {
-      const page = await chromeContext.newPage();
-      const response = await navigateSafely(page, url, timeoutMs, navigationOptions);
-      return { context: chromeContext, page, response };
-    } catch (fallbackError) {
-      await chromeContext.close().catch(() => {});
-      throw fallbackError;
-    }
+    return { context, page, response };
+  } catch (error) {
+    await context.close().catch(() => {});
+    throw error;
   }
 }
 

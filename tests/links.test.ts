@@ -422,3 +422,81 @@ describe("discoverLinks - M5: AmenboErrorは握りつぶさず再送出する", 
     expect(fetchPageMock).not.toHaveBeenCalled();
   });
 });
+
+describe("discoverLinks - サイトに断られたホスト", () => {
+  it("ページの取得が 429 で断られたら、次の links は相手に届く前に止まる", async () => {
+    const { HostRefusedError, HttpStatusError } = await import("../src/errors.js");
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return notFound();
+      throw new HttpStatusError(url, 404, "Not Found");
+    });
+    fetchPageMock.mockRejectedValueOnce(new HttpStatusError("http://example.com/", 429, "Too Many Requests"));
+    const politeness = makePoliteness();
+
+    await expect(discoverLinks("http://example.com/", politeness)).rejects.toThrow(HttpStatusError);
+    httpGetMock.mockClear();
+
+    await expect(discoverLinks("http://example.com/", politeness)).rejects.toThrow(HostRefusedError);
+    expect(fetchPageMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("discoverLinks - sitemap や feed、転送先で断られたとき", () => {
+  it("sitemap が 429 を返したら、ページへは進まずに失敗し、次の links は robots.txt にも届かない", async () => {
+    const { HostRefusedError, HttpStatusError } = await import("../src/errors.js");
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return htmlResult("Sitemap: http://example.com/sitemap.xml\n");
+      throw new HttpStatusError(url, 429, "Too Many Requests");
+    });
+    const politeness = makePoliteness();
+
+    await expect(discoverLinks("http://example.com/", politeness)).rejects.toThrow(HttpStatusError);
+    expect(fetchPageMock).not.toHaveBeenCalled();
+    httpGetMock.mockClear();
+
+    await expect(discoverLinks("http://example.com/", politeness)).rejects.toThrow(HostRefusedError);
+    expect(httpGetMock).not.toHaveBeenCalled();
+  });
+
+  it("ページ取得の転送先の確認で、止めているホストへは送らない", async () => {
+    const { HostRefusedError, HttpStatusError } = await import("../src/errors.js");
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return notFound();
+      throw new HttpStatusError(url, 404, "Not Found");
+    });
+    const politeness = makePoliteness();
+    politeness.noteRefusal(new HttpStatusError("http://www.example.com/", 429, "Too Many Requests"));
+    fetchPageMock.mockImplementation(async (_url: string, options: { checkRobots: (u: string) => Promise<void> }) => {
+      await options.checkRobots("http://www.example.com/");
+      return htmlResult("<html><body></body></html>");
+    });
+
+    await expect(discoverLinks("http://example.com/", politeness)).rejects.toThrow(HostRefusedError);
+  });
+
+  it("sitemap 取得の転送先の確認で、止めているホストへは送らない", async () => {
+    const { HostRefusedError, HttpStatusError } = await import("../src/errors.js");
+    httpGetMock.mockImplementation(async (url: string, options: { checkRobots?: (u: string) => Promise<void> }) => {
+      if (url.endsWith("/robots.txt")) return htmlResult("Sitemap: http://example.com/sitemap.xml\n");
+      await options.checkRobots?.("http://www.example.com/sitemap.xml");
+      return htmlResult(`<?xml version="1.0"?><urlset><url><loc>http://example.com/a</loc></url></urlset>`);
+    });
+    const politeness = makePoliteness();
+    politeness.noteRefusal(new HttpStatusError("http://www.example.com/", 429, "Too Many Requests"));
+
+    await expect(discoverLinks("http://example.com/", politeness)).rejects.toThrow(HostRefusedError);
+  });
+});
+
+describe("discoverLinks - 止めているホストで robots.txt のキャッシュが切れているとき", () => {
+  it("robots.txt も取りに行かずに止まる", async () => {
+    const { HostRefusedError, HttpStatusError } = await import("../src/errors.js");
+    let now = 0;
+    const politeness = new PolitenessManager({ sleep: async () => {}, now: () => now, robotsTtlMs: 1000 });
+    politeness.noteRefusal(new HttpStatusError("http://example.com/", 429, "Too Many Requests"));
+    now = 2000;
+
+    await expect(discoverLinks("http://example.com/", politeness)).rejects.toThrow(HostRefusedError);
+    expect(httpGetMock).not.toHaveBeenCalled();
+  });
+});
