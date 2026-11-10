@@ -1038,11 +1038,9 @@ interface ClassHostElement {
 const UTILITY_CLASS_TOKEN = /^(?:[^:\s]+:)*!?-?(?:overflow|scroll)-/;
 
 /**
- * Readabilityはclass名を本文らしさの採点に部分一致で使い、`hidden`・`scroll`を負の語とする。
- * ユーティリティクラスの`overflow-hidden`等がこれに当たり、本文の容れ物(手順・図・カード)を
- * 採点で捨てていた。Readabilityに渡す前に、値がこれらの語と重なるユーティリティクラスだけを外す。
+ * Readabilityが負の語(hidden・scroll)として採点に使うclass名のうち、ユーティリティクラスの値だけを外す。
  * 他のユーティリティクラスは外さない: `text-*`等は正の語(text・content)にも当たり、まとめて外すと
- * 本文の容れ物の加点まで失って抽出量が減る(実測)。
+ * 本文の容れ物の加点まで失う。
  */
 function neutralizeUtilityClassTokens(root: ClassHostElement): void {
   for (const el of Array.from(root.querySelectorAll("[class]"))) {
@@ -1052,9 +1050,23 @@ function neutralizeUtilityClassTokens(root: ClassHostElement): void {
   }
 }
 
-// Readabilityが採点の前に要素ごと捨てる「本文らしくない名前」の判定。同じ版の正規表現を使うため本体から借りる。
-const READABILITY_NAME_PATTERNS = (Readability.prototype as unknown as { REGEXPS: { unlikelyCandidates: RegExp; okMaybeItsACandidate: RegExp } })
-  .REGEXPS;
+interface ReadabilityNamePatterns {
+  unlikelyCandidates: RegExp;
+  okMaybeItsACandidate: RegExp;
+}
+
+/**
+ * Readabilityが採点の前に要素ごと捨てる「本文らしくない名前」の判定を、同じ版の本体から借りる。
+ * 非公開のプロパティなので、版の更新で無くなったら名前に関する前処理を飛ばして抽出は続ける。
+ */
+function readabilityNamePatterns(): ReadabilityNamePatterns | null {
+  const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
+  const unlikelyCandidates = regexps?.unlikelyCandidates;
+  const okMaybeItsACandidate = regexps?.okMaybeItsACandidate;
+  if (!(unlikelyCandidates instanceof RegExp) || !(okMaybeItsACandidate instanceof RegExp)) return null;
+  return { unlikelyCandidates, okMaybeItsACandidate };
+}
+
 const UNLIKELY_NAME_MIN_TEXT_SHARE = 0.1;
 
 function visibleLength(text: string | null): number {
@@ -1063,20 +1075,17 @@ function visibleLength(text: string | null): number {
 
 /**
  * idの部分一致で「本文らしくない」と判定される要素のうち、ページの文字の1割以上を持つものは
- * idを外してReadabilityに捨てさせない。見出しから作ったid(`header.field.definitions`)が判定の語に
- * 当たり、章を丸ごと捨てていた。ナビ・ヘッダ・フッタはpruningがタグで先に除いており、残る名前の
- * 当たる部品(サイドバー等)は保存済みのページで本文の4%以下だった。
- * classは外さない: 本文全体の容れ物がユーティリティクラスの値(`--banner-height`)で捨てられる
- * ページは、Readabilityの再試行で本文を取れている。外すと採点の起点が変わり、記事の冒頭の
- * 説明文を落とした(mintlify.comのquickstartで実測)。
+ * idを外してReadabilityに捨てさせない(見出しから作ったid`header.field.definitions`が当たる)。
+ * classは外さない: 本文全体の容れ物がclassの語で捨てられるページはReadabilityの再試行で本文を
+ * 取れており、外すと採点の起点が変わって記事の冒頭の説明文を落とす。
  */
-function dropUnlikelyIdsOfLargeBlocks(body: ClassHostElement): void {
+function dropUnlikelyIdsOfLargeBlocks(body: ClassHostElement, patterns: ReadabilityNamePatterns): void {
   const total = visibleLength(body.textContent);
   if (total === 0) return;
   for (const el of Array.from(body.querySelectorAll("[id]"))) {
     const id = el.getAttribute("id") ?? "";
-    if (!READABILITY_NAME_PATTERNS.unlikelyCandidates.test(id)) continue;
-    if (READABILITY_NAME_PATTERNS.okMaybeItsACandidate.test(`${el.getAttribute("class") ?? ""} ${id}`)) continue;
+    if (!patterns.unlikelyCandidates.test(id)) continue;
+    if (patterns.okMaybeItsACandidate.test(`${el.getAttribute("class") ?? ""} ${id}`)) continue;
     if (visibleLength(el.textContent) / total < UNLIKELY_NAME_MIN_TEXT_SHARE) continue;
     el.removeAttribute("id");
   }
@@ -1215,7 +1224,8 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
 
       if (document.body) {
         neutralizeUtilityClassTokens(document.body as unknown as ClassHostElement);
-        dropUnlikelyIdsOfLargeBlocks(document.body as unknown as ClassHostElement);
+        const namePatterns = readabilityNamePatterns();
+        if (namePatterns) dropUnlikelyIdsOfLargeBlocks(document.body as unknown as ClassHostElement, namePatterns);
       }
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;

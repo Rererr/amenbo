@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { Readability } from "@mozilla/readability";
 import { describe, expect, it } from "vitest";
 import { extractMarkdown } from "../src/extract/markdown.js";
 import { buildOutline } from "../src/extract/outline.js";
@@ -73,6 +74,29 @@ describe("見出しから作ったidとReadabilityの「本文らしくない名
   it("本文に比べて小さいサイドバーは従来どおり落ちる", () => {
     const { markdown } = extractMarkdown(html, { url: "https://www.example.org/rfc/rfc0000.html" });
     expect(markdown).not.toContain("Sidebar links");
+  });
+
+  it("名前の判定はReadabilityの同じ版から借りている(版の更新で消えたらここで気づく)", () => {
+    const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
+    expect(regexps?.unlikelyCandidates).toBeInstanceOf(RegExp);
+    expect(regexps?.okMaybeItsACandidate).toBeInstanceOf(RegExp);
+  });
+
+  it("Readabilityの版が変わって名前の判定を借りられなくても、抽出は失敗しない", () => {
+    const prototype = Readability.prototype as unknown as { REGEXPS?: unknown };
+    const saved = prototype.REGEXPS;
+    // 本体はインスタンス経由で同じ表を引くので、プロトタイプから直接引いたときだけ無いことにする。
+    Object.defineProperty(prototype, "REGEXPS", {
+      configurable: true,
+      get(this: unknown) {
+        return this === prototype ? undefined : saved;
+      },
+    });
+    try {
+      expect(extractMarkdown(html, { url: "https://www.example.org/rfc/rfc0000.html" }).markdown).toContain("Section 1 paragraph 0");
+    } finally {
+      Object.defineProperty(prototype, "REGEXPS", { configurable: true, writable: true, value: saved });
+    }
   });
 });
 
