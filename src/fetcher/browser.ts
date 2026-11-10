@@ -468,7 +468,9 @@ export async function openPageAndNavigate(
   navigationOptions: SafeNavigationOptions = {},
 ): Promise<BrowserNavigation> {
   const browser = await getBrowser();
-  const context = await browser.newContext(contextOptions);
+  // Service Workerはナビゲーションを横取りして、遷移の検証を通らない応答(robots.txtが拒否するページ等)を返せる。
+  // 取得のためのブラウザには要らないので登録させない。
+  const context = await browser.newContext({ ...contextOptions, serviceWorkers: "block" });
   try {
     const page = await context.newPage();
     const { response, assertNotBlocked } = await navigateSafely(page, url, timeoutMs, navigationOptions);
