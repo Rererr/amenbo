@@ -235,7 +235,7 @@ export class SectionNotFoundError extends AmenboError {
 /** 機能A: undiciのcauseチェーンから分類したネットワークエラーの種別。 */
 export type NetworkErrorKind = "dns" | "tls" | "connection" | "unknown";
 
-const NETWORK_ERROR_KIND_LABELS: Record<Exclude<NetworkErrorKind, "unknown">, string> = {
+export const NETWORK_ERROR_KIND_LABELS: Record<Exclude<NetworkErrorKind, "unknown">, string> = {
   dns: "DNS解決失敗",
   tls: "TLS/証明書エラー",
   connection: "接続拒否/リセット",

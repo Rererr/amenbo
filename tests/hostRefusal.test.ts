@@ -285,3 +285,26 @@ describe("PolitenessManager - robots.txt が 5xx を返したとき(RFC 9309)", 
     expect(set).not.toHaveBeenCalled();
   });
 });
+
+describe("PolitenessManager - robots.txt に接続できないとき", () => {
+  const ROBOTS = "http://example.com/robots.txt";
+
+  it("名前が解決できない(DNS)なら、robots.txt の拒否ではなく接続の失敗としてそのまま返す", async () => {
+    const { NetworkError } = await import("../src/errors.js");
+    httpGetMock.mockReset().mockRejectedValue(NetworkError.fromCause(ROBOTS, { code: "ENOTFOUND" }));
+    const pm = new PolitenessManager({ sleep: async () => {} });
+
+    const error = await pm.guard(PAGE).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ kind: "dns" });
+  });
+
+  it("TLS の失敗は全面拒否とし、理由に失敗の種類を入れる", async () => {
+    const { NetworkError } = await import("../src/errors.js");
+    httpGetMock.mockReset().mockRejectedValue(NetworkError.fromCause(ROBOTS, { code: "CERT_HAS_EXPIRED" }));
+    const pm = new PolitenessManager({ sleep: async () => {} });
+
+    await expect(pm.guard(PAGE)).rejects.toThrow("robots.txt に接続できず(TLS/証明書エラー)規則を確認できないため、全面拒否として扱います(RFC 9309)");
+  });
+});
