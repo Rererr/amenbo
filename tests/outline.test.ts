@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { diffMarkdown } from "../src/diff.js";
 import { buildOutline, extractSection, findSection, formatBreadcrumb } from "../src/extract/outline.js";
 
 const SAMPLE_MARKDOWN = [
@@ -200,5 +201,80 @@ describe("findSection / breadcrumb", () => {
     const child = findSection(markdown, "s2");
     expect(formatBreadcrumb(child!.ancestors)).toBe("Types of caches");
     expect(formatBreadcrumb(child!.ancestors)).not.toContain("(");
+  });
+});
+
+describe("最初の見出しより前の内容(冒頭の節 s0)", () => {
+  const BODY = ["## 節A", "", "本文A。", "", "## 節B", "", "本文B。"].join("\n");
+  const WITH_PREAMBLE = `導入の段落です。ページの要約が書かれています。\n\n${BODY}`;
+
+  it("冒頭に内容があれば s0 として先頭に出し、s1 以降の番号は冒頭の有無で変わらない", () => {
+    const withPreamble = buildOutline(WITH_PREAMBLE).sections;
+    const without = buildOutline(BODY).sections;
+    expect(withPreamble[0]).toMatchObject({ id: "s0", excerpt: "導入の段落です。" });
+    expect(withPreamble.slice(1).map((s) => [s.id, s.heading])).toEqual(without.map((s) => [s.id, s.heading]));
+  });
+
+  it("section: s0 で冒頭の本文だけを取れる", () => {
+    expect(extractSection(WITH_PREAMBLE, "s0")).toBe("導入の段落です。ページの要約が書かれています。");
+  });
+
+  it("冒頭が空白だけなら s0 を出さない", () => {
+    expect(buildOutline(`\n\n  \n${BODY}`).sections.map((s) => s.id)).toEqual(["s1", "s2"]);
+  });
+
+  it("冒頭と別の節が同時に変わると、差分に両方が出る", () => {
+    const changed = WITH_PREAMBLE.replace("導入の段落です。", "導入を書き換えました。").replace("本文B。", "本文Bを更新。");
+    const diff = diffMarkdown(WITH_PREAMBLE, changed);
+    expect(diff.sections.map((s) => [s.type, s.heading])).toEqual([
+      ["changed", "(冒頭)"],
+      ["changed", "節B"],
+    ]);
+    expect(diff.sections[0]?.content).toContain("導入を書き換えました。");
+  });
+});
+
+describe("抜粋の文末判定(言語によらない)", () => {
+  it("英語の節の抜粋は、子節でなく自節の最初の文になる", () => {
+    const markdown = [
+      "## Setup",
+      "",
+      "Install the package first. Then configure it.",
+      "",
+      "### Troubleshooting",
+      "",
+      "Did it fail? Check the logs.",
+    ].join("\n");
+    expect(buildOutline(markdown).sections.map((s) => s.excerpt)).toEqual(["Install the package first.", "Did it fail?"]);
+  });
+
+  it("数値・ドメイン・版数の中のピリオドは文末にしない", () => {
+    const markdown = ["## Release", "", "Version 2.5 moves the docs to example.com and drops v1.2 support. Upgrade soon."].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("Version 2.5 moves the docs to example.com and drops v1.2 support.");
+  });
+
+  it("語の間に空白を置かない日本語では、半角の!の直後にかな・漢字が続いても文末にする", () => {
+    const markdown = ["## 完了", "", "設定が終わりました!次の手順に進みます。"].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("設定が終わりました!");
+  });
+
+  it("行末のコロンは、後ろのコードを導く文の終わりとみなす", () => {
+    const markdown = ["## Syntax", "", "The simplest form looks like this:", "", "```python", "class A: pass", "```", "", "It must be executed first."].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("The simplest form looks like this:");
+  });
+
+  it("番号付きリストの番号の点は文末にしない", () => {
+    const markdown = ["## 手順", "", "1. 設定ファイルを開きます。", "2. 保存します。"].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("1. 設定ファイルを開きます。");
+  });
+
+  it("日本語の読点では切らない", () => {
+    const markdown = ["## 準備", "", "まず、パッケージを入れます。次に設定します。"].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("まず、パッケージを入れます。");
+  });
+
+  it("最初の段落に「。」の無い日本語の節でも、子節の文を拾わない", () => {
+    const markdown = ["## 手順", "", "- 準備", "- 実行", "", "### 補足", "", "補足の文です。"].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("- 準備");
   });
 });
