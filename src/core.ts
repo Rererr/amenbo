@@ -879,6 +879,63 @@ async function parsePdfDocument(url: string, source: PrefetchedPdf, notify: (mes
   };
 }
 
+// ---- handoff(HTML以外の応答)のキャッシュ ----
+
+/** ページのキャッシュと同じ表に置くので、URLの前に種別を付けて衝突させない。 */
+const handoffCacheKey = (url: string): string => `handoff:${url}`;
+
+/** handoffの取得結果を、ページと同じTTLで保存する(no-storeはcache.setが保存しない)。 */
+function storeHandoff(url: string, handoff: HandoffResult): void {
+  const { bytes, ...rest } = handoff;
+  cache.set({
+    url: handoffCacheKey(url),
+    etag: null,
+    lastModified: null,
+    markdown: JSON.stringify({ ...rest, bytes: Buffer.from(bytes).toString("base64") }),
+    metadata: {},
+    cacheControl: handoff.cacheControl,
+  });
+}
+
+function readCachedHandoff(url: string): HandoffResult | null {
+  const entry = cache.get(handoffCacheKey(url));
+  if (!entry || !cache.isFresh(entry)) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(entry.markdown);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const stringOrNull = (field: unknown): field is string | null => typeof field === "string" || field === null;
+  if (
+    typeof record.finalUrl !== "string" ||
+    typeof record.status !== "number" ||
+    typeof record.bytes !== "string" ||
+    typeof record.truncated !== "boolean" ||
+    !(typeof record.declaredSize === "number" || record.declaredSize === null) ||
+    !stringOrNull(record.contentType) ||
+    !stringOrNull(record.etag) ||
+    !stringOrNull(record.lastModified) ||
+    !stringOrNull(record.cacheControl)
+  ) {
+    return null;
+  }
+  return {
+    handoff: true,
+    finalUrl: record.finalUrl,
+    status: record.status,
+    contentType: record.contentType,
+    bytes: new Uint8Array(Buffer.from(record.bytes, "base64")),
+    declaredSize: record.declaredSize,
+    truncated: record.truncated,
+    etag: record.etag,
+    lastModified: record.lastModified,
+    cacheControl: record.cacheControl,
+  };
+}
+
 // ---- fetchツール ----
 
 export interface FetchToolInput {
@@ -940,6 +997,12 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
     return buildScreenshotContent({ title: null }, screenshot, null);
   }
 
+  // HTML以外の応答(handoff)を取ったばかりなら、page を変えて読むたびに同じファイル(最大256KB)を取り直さない。
+  const cachedHandoff = readCachedHandoff(documentUrl);
+  if (cachedHandoff) {
+    return [{ type: "text", text: formatHandoffResponse(cachedHandoff, maxTokens, page) }];
+  }
+
   const resolvedOrHandoff = await resolvePage(documentUrl, input.selector, input.onProgress);
 
   // 機能B: 非HTMLコンテンツはMarkdown抽出・キャッシュ・mode/selector/section等を適用せず、
@@ -963,6 +1026,7 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
         cacheControl: handoff.cacheControl,
       });
     }
+    storeHandoff(documentUrl, handoff);
     return [{ type: "text", text: formatHandoffResponse(handoff, maxTokens, page) }];
   }
   const resolved = resolvedOrHandoff;
