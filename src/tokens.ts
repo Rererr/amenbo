@@ -169,6 +169,59 @@ export function splitIntoBlocks(markdown: string): Block[] {
   return blocks;
 }
 
+const FENCE_OPEN_LINE = /^[ \t]*(`{3,}|~{3,})/;
+const FENCE_CLOSE_LINE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+
+/**
+ * 予算を超える1つのコードフェンスを、フェンスの中の空行で区切り、各片をフェンスで閉じ直して返す。
+ * 1つのpreに文書全体が入るページ(古いRFCの整形済みテキスト等)をページに分けられるようにする。
+ * フェンスでないブロックと予算に収まるブロックはそのまま返す。
+ */
+function splitOversizedFence(block: Block, budget: number): Block[] {
+  if (estimateTokens(block.text) <= budget) return [block];
+  const lines = block.text.split("\n");
+  const openLine = lines[0] ?? "";
+  const closeLine = lines[lines.length - 1] ?? "";
+  const open = FENCE_OPEN_LINE.exec(openLine)?.[1];
+  const close = FENCE_CLOSE_LINE.exec(closeLine)?.[1];
+  if (!open || !close || lines.length < 3 || close[0] !== open[0] || close.length < open.length) return [block];
+  const body = lines.slice(1, -1);
+  const closesEarly = body.some((line) => {
+    const inner = FENCE_CLOSE_LINE.exec(line)?.[1];
+    return inner !== undefined && inner[0] === open[0] && inner.length >= open.length;
+  });
+  if (closesEarly) return [block];
+
+  const pieces: Block[] = [];
+  const wrapperTokens = estimateTokens(`${openLine}\n${closeLine}`);
+  let current: string[] = [];
+  let currentTokens = 0;
+  let paragraph: string[] = [];
+  const emit = (): void => {
+    if (current.length > 0) pieces.push({ text: `${openLine}\n${current.join("\n")}\n${closeLine}`, isHeading: false });
+    current = [];
+    currentTokens = 0;
+  };
+  // 片ごとに全体を数え直すと、大きなフェンスで二次時間になるので、段落ごとの見積りを足していく。
+  const addParagraph = (): void => {
+    if (paragraph.length === 0) return;
+    const paragraphText = paragraph.join("\n");
+    const paragraphTokens = estimateTokens(paragraphText);
+    if (current.length > 0 && currentTokens + paragraphTokens + wrapperTokens > budget) emit();
+    if (current.length > 0) current.push("");
+    current.push(paragraphText);
+    currentTokens += paragraphTokens;
+    paragraph = [];
+  };
+  for (const line of body) {
+    if (line.trim() === "") addParagraph();
+    else paragraph.push(line);
+  }
+  addParagraph();
+  emit();
+  return pieces.length > 1 ? pieces : [block];
+}
+
 export interface PaginatedResult {
   /** 要求されたページ(範囲外の場合は最寄りの有効ページへ丸められる)の本文。 */
   content: string;
@@ -209,7 +262,7 @@ export function paginateMarkdown(markdown: string, maxTokens: number, page: numb
   let currentBlocks: string[] = [];
   let currentTokens = 0;
 
-  for (const block of blocks) {
+  for (const block of blocks.flatMap((b) => splitOversizedFence(b, budget))) {
     const blockTokens = estimateTokens(block.text);
     const wouldExceed = currentTokens + blockTokens > budget;
     const shouldBreakBeforeHeading =
