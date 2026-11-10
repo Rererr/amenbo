@@ -227,6 +227,12 @@ describe("見出しの中のパーマリンクとブロック要素", () => {
     expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["Setup の手順"]);
   });
 
+  it("見出しの中のページ内リンクがalt付きの画像だけを持つなら、画像は残す", () => {
+    const html = `<!DOCTYPE html><html><body><main><h2><a href="#logo"><img alt="製品ロゴ" src="https://docs.example.org/logo.png"></a> 製品紹介</h2>${paragraph}</main></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://docs.example.org/", selector: "main" });
+    expect(markdown).toContain("![製品ロゴ](https://docs.example.org/logo.png)");
+  });
+
   it("中身が空の見出しは`## `だけの行として出さない", () => {
     const html = `<!DOCTYPE html><html><body><main><h2> </h2>${paragraph}<h2><a href="#x">​</a></h2>${paragraph}<h2>次の節</h2>${paragraph}</main></body></html>`;
     const { markdown } = extractMarkdown(html, { url: "https://docs.example.org/", selector: "main" });
