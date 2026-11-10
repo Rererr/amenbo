@@ -238,6 +238,16 @@ describe("PolitenessManager - 取り消し", () => {
     }
   });
 
+  it("既に取り消された呼び出しの guard は、robots.txt も取りに行かずに取り消しとして返す", async () => {
+    mockRobots("");
+    const pm = new PolitenessManager({ sleep: async () => {} });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(runCancellableBy(controller.signal, () => pm.guard("http://example.com/a"))).rejects.toThrow(RequestCancelledError);
+    expect(httpGetMock).not.toHaveBeenCalled();
+  });
+
   it("取り消しの文脈の外(CLI等)では、今までどおり待って記録する", async () => {
     mockRobots("");
     const clock = createClock();
