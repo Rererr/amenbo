@@ -127,7 +127,8 @@ function escapeFenceLikeLines(text: string, startsAtLineStart: boolean): string 
 /** コード以外の地の文に対して 全半角の統一 + CJK隣接空白除去を適用する。 */
 function normalizeProse(text: string, startsAtLineStart: boolean): string {
   const normalized = unifyWidth(text)
-    .replace(CJK_ADJACENT_WHITESPACE, (run) => (HARD_LINE_BREAK.test(run) ? run : ""))
+    // 強制改行の後ろの字下げは、改行で区切った行の頭に残すと地の文の字下げに見えるので除く。
+    .replace(CJK_ADJACENT_WHITESPACE, (run) => (HARD_LINE_BREAK.test(run) ? run.replace(/[ \t]+$/, "") : ""))
     .replace(CJK_SPACE_BEFORE_MARKER, "")
     .replace(CJK_SPACE_AFTER_MARKER, "");
   return escapeFenceLikeLines(normalized, startsAtLineStart);

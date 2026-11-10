@@ -103,4 +103,9 @@ describe("normalizeCjkText", () => {
     });
     expect(markdown.split("\n").map((line) => line.trim())).toEqual(["住所:東京都千代田区丸の内", "電話番号:03-1234-5678", "営業時間:平日"]);
   });
+
+  it("<br>の後ろの行頭に全角空白の字下げを残さない", () => {
+    const { markdown } = extractMarkdown("<html><body><main><p>担当課<br>\u3000\u3000地域づくり推進室</p></main></body></html>", { selector: "main" });
+    expect(markdown.split("\n")[1]).toBe("地域づくり推進室");
+  });
 });
