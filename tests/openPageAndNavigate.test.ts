@@ -37,8 +37,15 @@ type GotoResult = { status(): number; statusText?(): string; headers?(): Record<
 function createFakePage(gotoImpl: (url: string) => Promise<GotoResult>, landedUrl?: string) {
   const mainFrameSentinel = { id: "main-frame" };
   let finalUrl = "";
+  // リダイレクトのホップを止めるCDPのFetchドメイン(このテストではホップを起こさないので受けるだけ)
+  const cdpSession = {
+    on: () => {},
+    send: async (method: string) => (method === "Page.getFrameTree" ? { frameTree: { frame: { id: "main-frame" } } } : {}),
+    detach: async () => {},
+  };
   return {
     mainFrame: () => mainFrameSentinel,
+    context: () => ({ newCDPSession: async () => cdpSession }),
     route: async () => {},
     unroute: async () => {},
     goto: async (url: string) => {

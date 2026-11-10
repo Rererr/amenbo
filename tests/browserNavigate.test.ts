@@ -7,11 +7,11 @@ import { navigateSafely } from "../src/fetcher/browser.js";
  * SSRF/スキーム検証(guardPublicAddress)を通す(初回遷移+各リダイレクトホップの再検証)。
  *
  * 実ブラウザを起動せずにこの振る舞いを検証するため、テストで使う分だけの最小限の
- * Playwright Page互換フェイクを用意する(route/unroute/mainFrame/goto)。goto()は
- * このフェイク内で「リダイレクトチェーン」を模倣し、page.route()相当のハンドラを
- * 各ホップに対して呼び出す(Playwright実機のroute interceptionと同じタイミングで
- * abort/continueされる)。IPリテラル(93.184.216.34, 127.0.0.1等)を使うことで
- * DNS解決を伴わずに完全にオフラインで再現できる。
+ * Playwright Page互換フェイクを用意する(route/unroute/mainFrame/goto/context().newCDPSession)。
+ * goto()はこのフェイク内で「リダイレクトチェーン」を実機と同じ形で模倣する:
+ * page.route()のハンドラは最初の要求(と、ページ内からの遷移)でしか呼ばれず、リダイレクトの
+ * ホップはCDPのFetch.requestPausedとしてだけ届く(実機で確認。tests/browserRedirectRobots.test.ts)。
+ * IPリテラル(93.184.216.34, 127.0.0.1等)を使うことでDNS解決を伴わずに完全にオフラインで再現できる。
  */
 
 type RouteHandler = (route: FakeRoute, request: FakeRequest) => Promise<void>;
@@ -27,8 +27,45 @@ interface FakeRequest {
   frame(): unknown;
 }
 
+type PausedListener = (event: { requestId: string; request: { url: string }; frameId: string; redirectedRequestId?: string }) => void;
+
+/** CDPSessionのうち、Fetchドメインでリダイレクトのホップを止める分だけのフェイク。 */
+class FakeCdpSession {
+  fetchEnabled = false;
+  private listener: PausedListener | null = null;
+  private readonly outcomes = new Map<string, (outcome: "continue" | "fail") => void>();
+
+  on(event: string, listener: PausedListener): void {
+    if (event === "Fetch.requestPaused") this.listener = listener;
+  }
+
+  async send(method: string, params?: { requestId?: string }): Promise<unknown> {
+    if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main-frame" } } };
+    if (method === "Fetch.enable") this.fetchEnabled = true;
+    if (method === "Fetch.continueRequest") this.outcomes.get(params!.requestId!)?.("continue");
+    if (method === "Fetch.failRequest") this.outcomes.get(params!.requestId!)?.("fail");
+    return {};
+  }
+
+  async detach(): Promise<void> {
+    this.fetchEnabled = false;
+  }
+
+  /** リダイレクトのホップを止めて、continue/failのどちらになるかを待つ。Fetchが無効なら素通りする。 */
+  pauseRedirect(url: string, hop: number): Promise<"continue" | "fail"> {
+    if (!this.fetchEnabled || !this.listener) return Promise.resolve("continue");
+    const requestId = `hop-${hop}`;
+    const outcome = new Promise<"continue" | "fail">((resolve) => this.outcomes.set(requestId, resolve));
+    this.listener({ requestId, request: { url }, frameId: "main-frame", redirectedRequestId: `hop-${hop - 1}` });
+    return outcome;
+  }
+}
+
 class FakePage {
   readonly redirects = new Map<string, string>();
+  /** 読み込みの後にページ内から遷移する先(location.href・meta refresh相当)。route handlerへ通す。 */
+  clientNavigation: string | null = null;
+  readonly cdp = new FakeCdpSession();
   /** ページ読み込み中に発生するサブフレーム/サブリソースのリクエスト(route handlerへ通す)。 */
   readonly subRequests: FakeRequest[] = [];
   /** 各サブリクエストがhandlerでcontinue/abortのどちらになったか。 */
@@ -39,6 +76,10 @@ class FakePage {
 
   mainFrame(): unknown {
     return this.mainFrameSentinel;
+  }
+
+  context(): { newCDPSession(page: unknown): Promise<FakeCdpSession> } {
+    return { newCDPSession: async () => this.cdp };
   }
 
   private async dispatchSubRequests(): Promise<void> {
@@ -66,36 +107,40 @@ class FakePage {
   async goto(startUrl: string, _opts: unknown): Promise<{ status(): number } | null> {
     let currentUrl = startUrl;
     for (let hop = 0; hop < 5; hop++) {
-      const request: FakeRequest = {
-        url: () => currentUrl,
-        isNavigationRequest: () => true,
-        frame: () => this.mainFrameSentinel,
-      };
-      let aborted = false;
-      const route: FakeRoute = {
-        abort: async () => {
-          aborted = true;
-        },
-        continue: async () => {},
-      };
-
-      if (this.handler) {
-        await this.handler(route, request);
-      }
-      if (aborted) {
+      if (hop === 0) {
         // Playwright実機でabortされたナビゲーションはgoto()の例外(net::ERR_FAILED等)になる
-        throw new Error(`net::ERR_FAILED at ${currentUrl}`);
+        if (await this.navigateThroughRoute(currentUrl)) throw new Error(`net::ERR_FAILED at ${currentUrl}`);
+      } else if ((await this.cdp.pauseRedirect(currentUrl, hop)) === "fail") {
+        throw new Error(`net::ERR_BLOCKED_BY_CLIENT at ${startUrl}`);
       }
 
       const next = this.redirects.get(currentUrl);
       if (!next) {
         this.finalUrl = currentUrl;
         await this.dispatchSubRequests();
+        // ページ内からの遷移が止められると、gotoは成功したままエラー画面に置き換わる(実機と同じ)
+        if (this.clientNavigation && (await this.navigateThroughRoute(this.clientNavigation))) {
+          this.finalUrl = "chrome-error://chromewebdata/";
+        }
         return { status: () => 200 };
       }
       currentUrl = next;
     }
     throw new Error("too many redirects (test fixture)");
+  }
+
+  /** メインフレームの新しい遷移をroute handlerへ通し、abortされたかを返す。 */
+  private async navigateThroughRoute(url: string): Promise<boolean> {
+    const request: FakeRequest = { url: () => url, isNavigationRequest: () => true, frame: () => this.mainFrameSentinel };
+    let aborted = false;
+    const route: FakeRoute = {
+      abort: async () => {
+        aborted = true;
+      },
+      continue: async () => {},
+    };
+    if (this.handler) await this.handler(route, request);
+    return aborted;
   }
 
   url(): string {
@@ -125,7 +170,7 @@ describe("navigateSafely", () => {
     );
   });
 
-  it("C2寄り: リダイレクト先がprivateアドレスの場合、route interceptorがそのホップを遮断しPrivateAddressErrorへ変換する", async () => {
+  it("C2寄り: リダイレクト先がprivateアドレスの場合、CDPで止めたそのホップを遮断しPrivateAddressErrorへ変換する", async () => {
     const page = new FakePage();
     page.redirects.set("http://93.184.216.34/", "http://127.0.0.1/admin");
 
