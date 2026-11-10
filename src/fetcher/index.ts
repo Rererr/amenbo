@@ -33,6 +33,8 @@ export interface NotModifiedResult {
   notModified: true;
   finalUrl: string;
   cacheControl: string | null;
+  etag: string | null;
+  lastModified: string | null;
 }
 
 /** 機能B: HTML/PDF以外のコンテンツタイプのハンドオフ応答用データ(メタデータ+プレビュー用バイト列)。 */
@@ -133,7 +135,13 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
   const routed = await httpGetRouted(url, options);
 
   if (routed.kind === "notModified") {
-    return { notModified: true, finalUrl: routed.finalUrl, cacheControl: routed.headers.get("cache-control") };
+    return {
+      notModified: true,
+      finalUrl: routed.finalUrl,
+      cacheControl: routed.headers.get("cache-control"),
+      etag: routed.headers.get("etag"),
+      lastModified: routed.headers.get("last-modified"),
+    };
   }
 
   if (routed.kind === "handoff") {

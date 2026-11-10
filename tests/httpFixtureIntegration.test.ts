@@ -168,6 +168,19 @@ describe("条件付きGET", () => {
     expect(server.hits.get("/etag.html")).toBe(2);
   }, 30_000);
 
+  it("304が新しいETagを返したら、次の再検証はその値を送る", async () => {
+    const url = `${server.origin}/etag-rotating.html`;
+    expect(await fetchText(url)).toContain("cache: miss");
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await fetchText(url)).toContain("cache: revalidated");
+    expect(server.lastIfNoneMatch).toBe('"rotating-v1"');
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await fetchText(url)).toContain("cache: revalidated");
+    expect(server.lastIfNoneMatch).toBe('"rotating-v2"');
+  }, 30_000);
+
   it("リダイレクト先が変わっていたら、304でもキャッシュ済みの本文を返さない", async () => {
     const url = `${server.origin}/moving`;
 

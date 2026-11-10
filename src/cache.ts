@@ -65,6 +65,12 @@ export interface CacheWriteInput {
   cacheControl?: string | null;
 }
 
+/** 条件付きGETに使う応答のバリデータ(応答に無ければnull)。 */
+export interface Validators {
+  etag: string | null;
+  lastModified: string | null;
+}
+
 export interface CacheControlDirectives {
   noStore: boolean;
   maxAgeMs: number | null;
@@ -378,7 +384,9 @@ export class PageCache {
            metadata = excluded.metadata,
            fetched_at = excluded.fetched_at`,
       ),
-      touchPage: this.db.prepare("UPDATE pages SET fetched_at = ?, metadata = ? WHERE url = ?"),
+      touchPage: this.db.prepare(
+        "UPDATE pages SET fetched_at = ?, metadata = ?, etag = COALESCE(?, etag), last_modified = COALESCE(?, last_modified) WHERE url = ?",
+      ),
       deletePage: this.db.prepare("DELETE FROM pages WHERE url = ?"),
       deleteDomainPagesByUrl: this.db.prepare("DELETE FROM domain_pages WHERE url = ?"),
       getScreenshot: this.db.prepare("SELECT * FROM screenshots WHERE cache_key = ?"),
@@ -594,8 +602,11 @@ export class PageCache {
     this.statements.deleteDomainPagesByUrl.run(url);
   }
 
-  /** 304再検証成功時: 本文は変えず取得時刻のみ更新する(再変換しない)。 */
-  touch(url: string, cacheControl: string | null = null): void {
+  /**
+   * 304再検証成功時: 本文は変えず取得時刻を更新する(再変換しない)。304が新しいETag/Last-Modifiedを
+   * 持っていればそれで置き換える(RFC 9111 4.3.4)。持っていない値は保存済みのものを残す。
+   */
+  touch(url: string, cacheControl: string | null = null, validators: Validators = { etag: null, lastModified: null }): void {
     if (parseCacheControl(cacheControl).noStore) {
       this.delete(url);
       return;
@@ -610,7 +621,7 @@ export class PageCache {
     const freshUntilAt = this.resolveFreshUntilAt(fetchedAt, cacheControl);
     if (freshUntilAt !== null) metadata["freshUntilAt"] = freshUntilAt;
 
-    this.statements.touchPage.run(fetchedAt, JSON.stringify(metadata), url);
+    this.statements.touchPage.run(fetchedAt, JSON.stringify(metadata), validators.etag, validators.lastModified, url);
   }
 
   /** Phase 4テンプレート学習: このページの(除去前・全)ブロックハッシュ集合をドメイン別に記録する。 */

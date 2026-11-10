@@ -11,7 +11,14 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { computeScreenshotCacheKey, PageCache, withoutDocumentFragment, type CacheStatus, type ScreenshotCacheStatus } from "./cache.js";
+import {
+  computeScreenshotCacheKey,
+  PageCache,
+  withoutDocumentFragment,
+  type CacheStatus,
+  type ScreenshotCacheStatus,
+  type Validators,
+} from "./cache.js";
 import { diffMarkdown } from "./diff.js";
 import { AmenboError, SectionNotFoundError } from "./errors.js";
 import { detectDataSources } from "./extract/dataSources.js";
@@ -173,7 +180,7 @@ interface ExtractedPage {
 }
 
 type FetchAndExtractResult =
-  | { status: "not_modified"; finalUrl: string; cacheControl: string | null }
+  | { status: "not_modified"; finalUrl: string; cacheControl: string | null; validators: Validators }
   | { status: "handoff"; handoff: HandoffResult }
   | ExtractedPage;
 
@@ -197,7 +204,12 @@ async function fetchAndExtract(
   const baseOptions = { onProgress, checkRobots, waitTurn, fullReadMaxBytes };
   const fetchResult = await fetchPage(url, conditionalHeaders ? { ...baseOptions, headers: conditionalHeaders } : baseOptions);
   if ("notModified" in fetchResult) {
-    return { status: "not_modified", finalUrl: fetchResult.finalUrl, cacheControl: fetchResult.cacheControl };
+    return {
+      status: "not_modified",
+      finalUrl: fetchResult.finalUrl,
+      cacheControl: fetchResult.cacheControl,
+      validators: { etag: fetchResult.etag, lastModified: fetchResult.lastModified },
+    };
   }
   // 機能B: HTML/PDF以外のコンテンツはハンドオフ応答(メタデータ+プレビュー+curl誘導)の対象。
   // Markdown抽出・品質判定・キャッシュ保存は行わない。
@@ -408,7 +420,7 @@ async function fetchAndResolvePage(
     // 応答なので、そのまま返すと古い本文を新しいURLの内容として渡してしまう。
     const cachedFinalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
     if (result.finalUrl === cachedFinalUrl) {
-      cache.touch(url, result.cacheControl);
+      cache.touch(url, result.cacheControl, result.validators);
       return pageFromCacheEntry(url, cached, "revalidated");
     }
     await politeness.guard(url, onProgress);
@@ -662,7 +674,10 @@ async function loadPdfDocument(url: string, notify: (message: string) => void, p
     // 着地先が一致するときだけキャッシュ済みの本文を使う(resolvePageのコメント参照)。
     const cachedFinalUrl = (cached.metadata.finalUrl as string | undefined) ?? url;
     if (binary.finalUrl === cachedFinalUrl) {
-      cache.touch(url, binary.headers.get("cache-control"));
+      cache.touch(url, binary.headers.get("cache-control"), {
+        etag: binary.headers.get("etag"),
+        lastModified: binary.headers.get("last-modified"),
+      });
       return { kind: "cached" };
     }
     await politeness.guard(url, notify);
