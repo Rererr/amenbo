@@ -486,8 +486,7 @@ export async function navigateSafely(
   } catch (cause) {
     // 先にCDPで止めている段を失敗させる。判定の途中で時間切れになった段を、後から送らせないため。
     await stopGuardingRedirects();
-    // 確認画面のときは止める handler を外さない。外すと、閉じるまでの間に確認画面のスクリプトの要求が先方へ届く(実測)。
-    if (!challengeSeen) await context.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
+    await context.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
     assertNotBlocked();
     if (cause instanceof AmenboError) throw cause;
     if (cause instanceof Error && /timeout/i.test(cause.message)) {
