@@ -251,6 +251,18 @@ describe("navigateSafely - リダイレクト時のrobots.txt確認", () => {
     expect(checkRobots.mock.calls.map((call) => call[0])).toEqual(["http://93.184.216.34/a", "http://93.184.216.34/b", "http://8.8.8.8/c"]);
   });
 
+  it("ページ内からの遷移(location.href等)がrobots.txtで拒否されたら、gotoが成功してもエラー画面を返さず失敗する", async () => {
+    const page = new FakePage();
+    page.clientNavigation = "http://93.184.216.34/private/js";
+    const checkRobots = vi.fn(async (url: string) => {
+      if (new URL(url).pathname.startsWith("/private/")) throw new RobotsDeniedError(url);
+    });
+
+    await expect(
+      navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/js", 5000, { checkRobots }),
+    ).rejects.toThrow(RobotsDeniedError);
+  });
+
   it("同一オリジンの転送先がrobots.txtで拒否された場合もナビゲーションが失敗する", async () => {
     const page = new FakePage();
     page.redirects.set("http://93.184.216.34/go", "http://93.184.216.34/private/secret");
