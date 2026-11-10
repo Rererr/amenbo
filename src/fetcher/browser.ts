@@ -157,8 +157,9 @@ function firstLine(cause: unknown): string {
   return message.split("\n").find((line) => line.trim() !== "")?.trim() ?? "原因不明";
 }
 
-/** 共有ブラウザインスタンスを終了する(プロセス終了時・テストのクリーンアップ用)。 */
+/** 共有ブラウザインスタンスを終了する(プロセス終了時・使われなくなったとき・テストのクリーンアップ用)。 */
 export async function closeBrowser(): Promise<void> {
+  clearIdleTimer();
   const promise = browserPromise;
   browserPromise = null;
   if (promise) {
@@ -170,7 +171,43 @@ export async function closeBrowser(): Promise<void> {
     }
   }
   // ブラウザを閉じた後にSSRF検証プロキシも停止する(開いているとプロセスが終了できずハングする)。
-  await closeSharedSsrfProxy();
+  // 閉じている間に次の取得が新しいブラウザを起動していたら、そのブラウザが使うので止めない。
+  if (browserPromise === null) await closeSharedSsrfProxy();
+}
+
+/**
+ * 最後にブラウザで開いてから、これだけ使わなければブラウザを閉じる。常駐のMCPサーバーでは、
+ * 一度起動したChromeがプロセスの寿命いっぱい(実環境で約4日、約200MB)残っていた。
+ * 次にブラウザを使うときは起動し直すので、その分の時間を払う。
+ */
+const BROWSER_IDLE_CLOSE_MS = 5 * 60_000;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearIdleTimer(): void {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = null;
+}
+
+function scheduleIdleClose(): void {
+  clearIdleTimer();
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    void closeIdleBrowser();
+  }, BROWSER_IDLE_CLOSE_MS);
+  // この待ちのためだけにプロセスを生かさない(stdinが閉じたら終われるようにする)。
+  idleTimer.unref();
+}
+
+async function closeIdleBrowser(): Promise<void> {
+  const promise = browserPromise;
+  const browser = await promise?.catch(() => null);
+  if (!browser || browserPromise !== promise) return;
+  // ページを開いたままの取得(撮影の途中など)があれば、閉じずに待ち直す。
+  if (browser.contexts().length > 0) {
+    scheduleIdleClose();
+    return;
+  }
+  await closeBrowser();
 }
 
 export interface BrowserFetchResult {
@@ -501,6 +538,7 @@ export async function openPageAndNavigate(
   navigationOptions: SafeNavigationOptions = {},
 ): Promise<BrowserNavigation> {
   const browser = await getBrowser();
+  scheduleIdleClose();
   // Service Workerはナビゲーションを横取りして、遷移の検証を通らない応答(robots.txtが拒否するページ等)を返せる。
   // 取得のためのブラウザには要らないので登録させない。
   const context = await browser.newContext({ ...contextOptions, serviceWorkers: "block" });

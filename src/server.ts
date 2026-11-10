@@ -19,7 +19,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/server";
 import type { ServerContext } from "@modelcontextprotocol/server";
-import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 import {
   handleFetchTool,
@@ -29,6 +29,7 @@ import {
   resolvePackageVersion,
 } from "./core.js";
 import { AmenboError } from "./errors.js";
+import { closeBrowser } from "./fetcher/browser.js";
 import { formatLinksResponse } from "./formatting.js";
 import { discoverLinks } from "./links.js";
 import { runCancellableBy } from "./politeness.js";
@@ -253,11 +254,25 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
   return server;
 }
 
+/**
+ * 接続が閉じたら(クライアントがstdinを閉じた・親が異常終了した)ブラウザを閉じる。ブラウザとSSRF検証
+ * プロキシが開いたままだと、シグナルを送らずstdinを閉じるだけのクライアントの下でプロセスが終われない。
+ * serveStdioが接続の後始末のために設定したoncloseは残したまま、その後に続ける。
+ */
+export function closeBrowserWhenTransportCloses(transport: { onclose?: (() => void) | undefined }): void {
+  const closeConnection = transport.onclose;
+  transport.onclose = () => {
+    closeConnection?.();
+    void closeBrowser();
+  };
+}
+
 /** MCP stdioサーバーを起動する。CLI(cli.ts)が引数なし/`serve`サブコマンド時に呼ぶ後方互換経路でもある。 */
 export async function runServer(): Promise<void> {
   // レビュー指摘対応: exit/SIGINT/SIGTERMハンドラ(core.ts)はサーバー常駐プロセスでのみ
   // 必要なため、importするだけで走るモジュールトップレベルではなくここで明示的に登録する。
   registerCoreShutdownHandlers();
+  const transport = new StdioServerTransport();
   serveStdio(
     (requestContext) => {
       // ファクトリの失敗をここで致命扱いにしているのは、serveStdioが同期関数で
@@ -271,6 +286,7 @@ export async function runServer(): Promise<void> {
       }
     },
     {
+      transport,
       // 既定値と同じだが明示する: 'reject'にすると initialize で口を開ける2025系クライアント
       // (現行のClaude Desktop/Cline等)が繋がらなくなるため、後方互換を捨てない判断をコードに残す。
       legacy: "serve",
@@ -283,6 +299,7 @@ export async function runServer(): Promise<void> {
       },
     },
   );
+  closeBrowserWhenTransportCloses(transport);
 }
 
 /**
