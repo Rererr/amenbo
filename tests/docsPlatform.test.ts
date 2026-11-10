@@ -63,6 +63,32 @@ describe("codeを子に持たないpre(Sphinx型)", () => {
     expect(markdown).toContain("```\ndef do_local():\n    # spam = local\n    return 1\n```");
     expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["Scopes"]);
   });
+
+  const preMarkdown = (inner: string): string =>
+    extractMarkdown(`<html><body><main><h2>例</h2>${inner}<h2>次</h2><p>後の段落です。</p></main></body></html>`, { selector: "main" }).markdown;
+
+  it.each([
+    ["codeの無いpreの<br>", "<pre>一行目<br>二行目</pre>", "一行目\n二行目"],
+    ["<pre><code>の<br>", "<pre><code>a = 1<br>b = 2</code></pre>", "a = 1\nb = 2"],
+    ["Prettifyのlinenums(行ごとの<li>)", '<pre class="prettyprint linenums"><ol><li>int a = 1;</li><li>int b = 2;</li></ol></pre>', "int a = 1;\nint b = 2;"],
+    ["行ごとの<div>", '<pre><code><div class="line">x = 1</div><div class="line">y = 2</div></code></pre>', "x = 1\ny = 2"],
+    ["行ごとの<p>", "<pre><p>first line</p><p>second line</p></pre>", "first line\nsecond line"],
+  ])("%sの改行を消さない", (_label, inner, code) => {
+    expect(preMarkdown(inner)).toContain(`\`\`\`\n${code}\n\`\`\``);
+  });
+
+  it.each([
+    ["codeの無いpre", '<div class="highlight"><pre><span></span>1. step\n   ```bash\n   npm i\n   ```\n</pre></div>'],
+    ["<pre><code>", "<pre><code>1. step\n   ```bash\n   npm i\n   ```\n</code></pre>"],
+  ])("%sの中の字下げした```で外側のフェンスが閉じず、後ろの見出しが残る", (_label, inner) => {
+    const markdown = preMarkdown(inner);
+    expect(markdown).toContain("````\n1. step");
+    expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["例", "次"]);
+  });
+
+  it("<pre><code>の言語の指定はフェンスに残す", () => {
+    expect(preMarkdown('<pre><code class="language-ts">const a = 1;</code></pre>')).toContain("```ts\nconst a = 1;\n```");
+  });
 });
 
 describe("コードブロックの容れ物とReadabilityの負の語", () => {

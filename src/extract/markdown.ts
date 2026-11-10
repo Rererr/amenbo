@@ -94,13 +94,18 @@ function createTurndownService(): TurndownService {
   });
   // turndownのフェンスの規則はpreの最初の子がcodeのときだけ働き、Sphinx等の`<pre><span>…`は
   // フェンスの無い地の文になる(コードの中の`# コメント`が見出しになり、正規化もかかる)。
-  service.addRule("preWithoutCode", {
-    filter: (node) => node.nodeName === "PRE" && node.firstChild?.nodeName !== "CODE",
+  // `<pre><code>`も、textContentで集めると<br>や行ごとの<li>(Prettifyのlinenums)の改行が消えるので、
+  // どちらも同じ集め方でフェンスに入れる。
+  service.addRule("preformattedCode", {
+    filter: "pre",
     replacement: (_content, node) => {
-      const code = (node.textContent ?? "").replace(/\n$/, "");
-      const longestRun = Array.from(code.matchAll(/^`{3,}/gm)).reduce((longest, match) => Math.max(longest, match[0].length), 0);
+      const codeElement = node.firstChild?.nodeName === "CODE" ? (node.firstChild as HTMLElement) : null;
+      const language = /language-(\S+)/.exec(codeElement?.getAttribute("class") ?? "")?.[1] ?? "";
+      const code = collectPreformattedText(codeElement ?? node).replace(/\n$/, "");
+      // フェンスの判定(markdownFence.ts)は字下げした行も数えるので、字下げした```も数える。
+      const longestRun = Array.from(code.matchAll(/^[ \t]*(`{3,})/gm)).reduce((longest, match) => Math.max(longest, match[1]?.length ?? 0), 0);
       const fence = "`".repeat(Math.max(3, longestRun + 1));
-      return `\n\n${fence}\n${code}\n${fence}\n\n`;
+      return `\n\n${fence}${language}\n${code}\n${fence}\n\n`;
     },
   });
   // turndownの既定は見出しの中身の改行をそのまま出すため、中にブロック要素(div等)がある
@@ -114,6 +119,35 @@ function createTurndownService(): TurndownService {
     },
   });
   return service;
+}
+
+// 整形済みの文字列の中で、終わりに改行を置く要素(行ごとに<li>や<div>で包む書き方)。
+const PREFORMATTED_LINE_TAGS = new Set(["LI", "DIV", "P"]);
+const TEXT_NODE_TYPE = 3;
+const ELEMENT_NODE_TYPE = 1;
+
+/** preの中の文字列を、<br>と行の要素の終わりを改行にして集める(入れ子が深くてもスタックを溢れさせない)。 */
+function collectPreformattedText(root: Node): string {
+  let text = "";
+  const pending: Array<Node | "lineEnd"> = Array.from(root.childNodes).reverse();
+  while (pending.length > 0) {
+    const item = pending.pop();
+    if (item === undefined) break;
+    if (item === "lineEnd") {
+      if (!text.endsWith("\n")) text += "\n";
+    } else if (item.nodeType === TEXT_NODE_TYPE) {
+      text += item.nodeValue ?? "";
+    } else if (item.nodeName === "BR") {
+      text += "\n";
+    } else if (item.nodeType === ELEMENT_NODE_TYPE) {
+      if (PREFORMATTED_LINE_TAGS.has(item.nodeName)) pending.push("lineEnd");
+      for (let k = item.childNodes.length - 1; k >= 0; k--) {
+        const child = item.childNodes[k];
+        if (child) pending.push(child);
+      }
+    }
+  }
+  return text;
 }
 
 function hasHeadingAncestor(node: Node): boolean {
