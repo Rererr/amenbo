@@ -109,3 +109,47 @@ describe("decodeHtmlBytes - 日本語以外の charset 宣言", () => {
     expect(result.text).toContain(SAMPLE_TEXT);
   });
 });
+
+describe("decodeHtmlBytes - 弱い宣言(Latin-1 系・BOM の無い UTF-16 系)の付いた日本語のページ", () => {
+  const page = (head: string) => `<html><head>${head}<title>t</title></head><body><p>${SAMPLE_TEXT}</p></body></html>`;
+
+  // サーバーやテンプレートの既定値がそのまま付いた日本語のページ。宣言に従うと化ける(以前は自動判定で読めていた)。
+  it.each([
+    ["Shift_JIS の本文 + ヘッダ ISO-8859-1 + meta なし", toBytes(page(""), "SJIS"), "text/html; charset=ISO-8859-1"],
+    ["UTF-8 の本文 + ヘッダ ISO-8859-1 + meta なし", toBytes(page(""), "UTF8"), "text/html; charset=ISO-8859-1"],
+    ["Shift_JIS の本文 + meta iso-8859-1", toBytes(page('<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">'), "SJIS"), "text/html"],
+    ["EUC-JP の本文 + meta windows-1252", toBytes(page('<meta charset="windows-1252">'), "EUCJP"), "text/html"],
+    ["text/plain の Shift_JIS + ヘッダ ISO-8859-1", toBytes(SAMPLE_TEXT, "SJIS"), "text/plain; charset=ISO-8859-1"],
+    ["UTF-8 の本文 + ヘッダ utf-16", toBytes(page(""), "UTF8"), "text/html; charset=utf-16"],
+    ["UTF-8 の本文 + ヘッダ unicode", toBytes(page(""), "UTF8"), "text/html; charset=unicode"],
+  ])("%s は日本語として読める", (_label, bytes, contentType) => {
+    expect(decodeHtmlBytes(bytes, contentType).text).toContain(SAMPLE_TEXT);
+  });
+
+  // 日本語の自動判定は、本物の Latin-1 の文を Shift_JIS と取り違えることがある(下の独語の文は実測で取り違えた)。
+  const LATIN1_SENTENCES = [
+    "Le café est fermé le dimanche, mais la pâtisserie reste ouverte jusqu'à midi.",
+    "Über die Öffnungszeiten informiert Sie unser Kundendienst täglich ab neun Uhr.",
+    "Größere Änderungen müssen vorher mit der Geschäftsführung abgestimmt werden.",
+    "¿Dónde está la biblioteca? Está al lado del ayuntamiento, en la plaza mayor.",
+    "Vi ses på søndag ved søen; husk at tage din frakke med, for det blæser meget.",
+  ];
+  const latin1 = (text: string) => Uint8Array.from(Array.from(text, (ch) => ch.codePointAt(0)!));
+
+  it.each(LATIN1_SENTENCES)("Latin-1 の実文は、ヘッダの宣言どおり windows-1252 で読む: %s", (sentence) => {
+    const result = decodeHtmlBytes(latin1(`<html><body><p>${sentence}</p></body></html>`), "text/html; charset=iso-8859-1");
+    expect(result.text).toContain(sentence);
+    expect(result.encoding).toBe("windows-1252");
+  });
+
+  it.each(LATIN1_SENTENCES)("Latin-1 の実文は、meta の宣言どおり windows-1252 で読む: %s", (sentence) => {
+    const result = decodeHtmlBytes(latin1(`<html><head><meta charset="windows-1252"></head><body><p>${sentence}</p></body></html>`), null);
+    expect(result.text).toContain(sentence);
+  });
+
+  it("BOM のある UTF-16 は宣言どおり UTF-16 で読む", () => {
+    const text = `<html><body><p>${SAMPLE_TEXT}</p></body></html>`;
+    const bytes = Uint8Array.from([0xff, 0xfe, ...Array.from(text).flatMap((ch) => [ch.charCodeAt(0) & 0xff, ch.charCodeAt(0) >> 8])]);
+    expect(decodeHtmlBytes(bytes, "text/html; charset=utf-16").text).toContain(SAMPLE_TEXT);
+  });
+});
