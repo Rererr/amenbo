@@ -238,7 +238,7 @@ export function formatHandoffResponse(handoff: HandoffResult, maxTokens: number,
     ? `${handoff.bytes.length}`
     : sizeKnown
       ? `${handoff.declaredSize}`
-      : `不明(先頭${handoff.bytes.length}バイトまで取得。全体の大きさをサーバーが示していません)`;
+      : `不明(先頭${handoff.bytes.length}バイトまで取得。サーバーが大きさを示さないか、圧縮後の大きさしか示していないため、展開後の全体の大きさは分かりません)`;
   const oversized = sizeKnown && (handoff.declaredSize as number) > resolveDefaultMaxBodyBytes();
 
   const preview = oversized ? null : buildHandoffPreview(handoff.bytes, handoff.contentType, maxTokens, handoff.truncated, page);

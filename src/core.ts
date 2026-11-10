@@ -28,7 +28,7 @@ import { extractMarkdown, type ExtractionMethod } from "./extract/markdown.js";
 import { buildOutline, findSection, formatBreadcrumb } from "./extract/outline.js";
 import { DEFAULT_PDF_MAX_BYTES, extractPdfText, looksLikePdf, markdownFromPdfText, renderPdfPages, type PdfPageImage } from "./extract/pdf.js";
 import { evaluateQuality } from "./extract/qualityScore.js";
-import { agentResourcesFromMetadata, type AgentResources } from "./fetcher/agentResources.js";
+import { agentResourcesFromMetadata, mergeAgentResources, type AgentResources } from "./fetcher/agentResources.js";
 import { closeBrowser } from "./fetcher/browser.js";
 import { fetchPage, type FetchTier, type HandoffResult } from "./fetcher/index.js";
 import { assertHttpScheme, httpGetBinary } from "./fetcher/http.js";
@@ -272,7 +272,8 @@ async function fetchAndExtract(
     adapterName: extracted.adapterName,
     extractionMethod: extracted.extractionMethod,
     dataSourceHints,
-    agentResources: finalFetchResult.agentResources,
+    // ジオメトリのためにブラウザで取り直すと応答ヘッダが無いので、HTTPの応答で知らされた在りかを残す。
+    agentResources: mergeAgentResources(fetchResult.agentResources, finalFetchResult.agentResources),
   };
 }
 

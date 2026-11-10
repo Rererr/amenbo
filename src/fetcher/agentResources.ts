@@ -145,6 +145,14 @@ export function findAgentResources(sources: AgentResourceSources): AgentResource
   };
 }
 
+/** 同じページを2つの経路で取ったときの在りかを合わせる(先に渡した方を優先する)。 */
+export function mergeAgentResources(primary: AgentResources, secondary: AgentResources): AgentResources {
+  return {
+    markdownAlternate: primary.markdownAlternate ?? secondary.markdownAlternate,
+    llmsTxt: primary.llmsTxt ?? secondary.llmsTxt,
+  };
+}
+
 /** キャッシュのメタデータから読み戻す(古いキャッシュには無いので、形が合わなければ無しとして扱う)。 */
 export function agentResourcesFromMetadata(value: unknown): AgentResources {
   if (typeof value !== "object" || value === null) return NO_AGENT_RESOURCES;

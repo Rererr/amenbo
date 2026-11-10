@@ -97,6 +97,8 @@ describe("handoff の size", () => {
     );
 
     expect(text).toMatch(/^size: 不明\(先頭100バイトまで取得/m);
+    // 圧縮した応答では圧縮後の Content-Length は示されているので、「示していない」と言い切らない。
+    expect(text).toContain("展開後の全体の大きさは分かりません");
   });
 });
 
