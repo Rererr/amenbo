@@ -45,7 +45,7 @@ export interface HandoffResult {
   contentType: string | null;
   /** 読み取ったボディ。既定はプレビュー(256KB上限)だが、fullReadMaxBytes該当時は全体。 */
   bytes: Uint8Array;
-  /** Content-Lengthヘッダ由来の宣言サイズ(無ければnull)。 */
+  /** Content-Lengthヘッダ由来の宣言サイズ(無いか、圧縮後の大きさしか分からなければnull)。 */
   declaredSize: number | null;
   /** プレビュー上限で本文を打ち切った場合true(ファイル全体は取得していない)。 */
   truncated: boolean;

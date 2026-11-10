@@ -214,7 +214,12 @@ export function shellQuoteSingle(value: string): string {
 export function formatHandoffResponse(handoff: HandoffResult, maxTokens: number, page: number = 1): string {
   const filename = guessFilename(handoff.finalUrl);
   const sizeKnown = handoff.declaredSize !== null;
-  const sizeLabel = sizeKnown ? `${handoff.declaredSize}` : `${handoff.bytes.length}(取得分。Content-Lengthヘッダ無し)`;
+  // 全体を読み切っていれば、受け取った本文の大きさがそのまま正確な値になる。
+  const sizeLabel = !handoff.truncated
+    ? `${handoff.bytes.length}`
+    : sizeKnown
+      ? `${handoff.declaredSize}`
+      : `不明(先頭${handoff.bytes.length}バイトまで取得。全体の大きさをサーバーが示していません)`;
   const oversized = sizeKnown && (handoff.declaredSize as number) > resolveDefaultMaxBodyBytes();
 
   const preview = oversized ? null : buildHandoffPreview(handoff.bytes, handoff.contentType, maxTokens, handoff.truncated, page);
