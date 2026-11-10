@@ -369,7 +369,7 @@ function guardRequestUrl(rawUrl: string, hostGuardCache: Map<string, Promise<voi
  * SSRF を塞ぐため。
  *
  *   3. メインフレームのリダイレクトの各ホップは、CDPのFetchドメインで送る前に止めて、1と同じ検証と
- *      robots.txtの確認をする(page.routeのhandlerはリダイレクトのホップでは呼ばれない。実測)。
+ *      robots.txtの確認をする(routeのhandlerはリダイレクトのホップでは呼ばれない。実測)。
  *
  * robots.txtで確かめるのはメインフレームの遷移だけで、サブフレーム(iframe)とサブリソースの遷移・リダイレクトは
  * 確かめない(ページ自体が許可されていれば、その部品として読み込むものとして扱う)。サブフレームとサブリソースの
