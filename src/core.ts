@@ -357,6 +357,12 @@ class SharedOperations<T> {
 /** selector指定時はキャッシュを使わず結果もselector毎に変わるため、まとめる対象にしない。 */
 const pageOperations = new SharedOperations<ResolvePageResult>();
 
+/**
+ * このプロセスが markdown の本文(outline でも section でもない応答。ページは問わない)を返したキャッシュキー。
+ * 差分応答の比較元を、このプロセスの呼び出し元が読んだ本文に限るために使う。
+ */
+const bodyServedKeys = new Set<string>();
+
 async function resolvePage(
   url: string,
   selector: string | undefined,
@@ -922,15 +928,19 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
   // §3-3 差分応答: selector無し・force_full無し・新規フェッチ(cacheStatus==='miss')かつ旧キャッシュがある場合のみ
   // 比較にはview(テンプレート除去後)を使う。定型ブロックの有無で誤って差分検知しないようにするため。
   // 2ページ目以降は差分にしない: 求めているのはそのページの中身で、前回どこで区切って見たかは分からない。
+  // このプロセスが本文を返していないキーも差分にしない: キャッシュは別のセッションやCLIと共有され、
+  // 失効した行は保持期間のあいだ残るので、比較元を読んだ呼び出し元がここにいるとは限らない。
   const diffEligible =
     !input.selector &&
     !input.force_full &&
     !input.disableDiff &&
     page === DEFAULT_PAGE &&
     resolved.cacheStatus === "miss" &&
-    view.previousMarkdown !== null;
+    view.previousMarkdown !== null &&
+    bodyServedKeys.has(documentUrl);
   if (diffEligible) {
-    const totalTokens = estimateTokens(view.markdown);
+    // 案内が勧めるforce_fullは定型ブロック除去も切るので、除く前の本文で数える。
+    const totalTokens = estimateTokens(resolved.markdown);
     if (view.previousMarkdown === view.markdown) {
       return [{ type: "text", text: formatUnchangedResponse(view, totalTokens) }];
     }
@@ -943,6 +953,7 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
     // 全節変更、差分検出不能、または差分がmax_tokensを超える場合は通常の全文応答へフォールバックする
   }
 
+  if (!input.selector) bodyServedKeys.add(documentUrl);
   const paginated = paginateMarkdown(view.markdown, maxTokens, page);
   return [{ type: "text", text: formatMarkdownResponse(view, paginated, null, templateRemovedCount) }];
 }

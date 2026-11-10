@@ -127,6 +127,8 @@ export interface FixtureServer {
   /**
    * テストが置くHTML(パス→本文)。ETagもLast-ModifiedもCache-Controlも返さないので、
    * TTL超過後の再取得は毎回200になり、旧キャッシュとの差分応答の経路に入る。
+   * `/v-etag/` で始まるパスだけは、取得のたびに違うETagを付けて200を返す(条件付きGETが
+   * 304にならず、バリデータ付きの行として失効後もキャッシュに残る状況の再現用)。
    */
   pages: Map<string, string>;
   close(): Promise<void>;
@@ -246,7 +248,8 @@ export async function startFixtureServer(): Promise<FixtureServer> {
       default: {
         const page = state.pages.get(path);
         if (page !== undefined) {
-          send(200, "text/html; charset=utf-8", page);
+          const etag = path.startsWith("/v-etag/") ? { ETag: `"rev-${state.hits.get(path)}"` } : undefined;
+          send(200, "text/html; charset=utf-8", page, etag);
           return;
         }
         send(404, "text/plain; charset=utf-8", "not found");
