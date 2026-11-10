@@ -16,7 +16,7 @@
  */
 import { gunzipSync } from "node:zlib";
 import { parseHTML } from "linkedom";
-import type { PageCache } from "./cache.js";
+import { withoutDocumentFragment, type PageCache } from "./cache.js";
 import {
   BotChallengeError,
   HostRefusedError,
@@ -27,6 +27,7 @@ import {
   UnsupportedContentError,
   WaitTooLongError,
 } from "./errors.js";
+import { agentResourcesFromMetadata } from "./fetcher/agentResources.js";
 import { fetchPage } from "./fetcher/index.js";
 import { assertHttpScheme, decodeHtmlBytes, httpGet, httpGetBinary, resolveDefaultMaxBodyBytes } from "./fetcher/http.js";
 import { currentCancellation, type PolitenessManager } from "./politeness.js";
@@ -406,6 +407,13 @@ async function loadPage(url: string, context: SourceContext): Promise<PageDocume
   return page ?? EMPTY_PAGE;
 }
 
+/** fetchツールが取ってキャッシュしたページ(新鮮なもの)が知らせていた llms.txt の在りか。 */
+function llmsTxtAnnouncedByFetchedPage(url: string, cache: LinkSourceCache | undefined): string | null {
+  const fetched = cache?.get(withoutDocumentFragment(url));
+  if (!fetched || !cache?.isFresh(fetched)) return null;
+  return agentResourcesFromMetadata(fetched.metadata.agentResources).llmsTxt;
+}
+
 /** ページ内の&lt;a href&gt;リンクを抽出する(機能C: extract/dataSources.tsからも再利用される)。 */
 export function extractPageLinks(html: string, baseUrl: string): LinkEntry[] {
   const { document } = parseHTML(html);
@@ -508,9 +516,15 @@ async function discoverLinksOnce(url: string, politeness: PolitenessManager, opt
     }
   }
 
-  // 2. ページを取得し、知らせている llms.txt、<link rel=alternate>が指すRSS/Atomフィードの順に試す
+  // 2. ページが知らせている llms.txt、<link rel=alternate>が指すRSS/Atomフィードの順に試す。
+  // fetchで取ったばかりのページなら、知らせている llms.txt はその記録から分かるので、ページを取り直さない。
+  const fetchedLlmsTxt = llmsTxtAnnouncedByFetchedPage(url, options.cache);
+  if (fetchedLlmsTxt) {
+    const links = await tryParseLlmsTxt(fetchedLlmsTxt, context).catch(skipWaitOnOtherHost);
+    if (links && links.length > 0) return finalize("llms.txt", links, options.filter, context.warnings);
+  }
   const page = await loadPage(url, context);
-  if (page.llmsTxt) {
+  if (page.llmsTxt && page.llmsTxt !== fetchedLlmsTxt) {
     const links = await tryParseLlmsTxt(page.llmsTxt, context).catch(skipWaitOnOtherHost);
     if (links && links.length > 0) return finalize("llms.txt", links, options.filter, context.warnings);
   }

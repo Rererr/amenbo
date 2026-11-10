@@ -229,6 +229,29 @@ describe("llms.txt", () => {
     expect(hits.get(llmsPath)).toBeUndefined();
   });
 
+  it("sitemap の無いサイトで、fetch 済みのページが llms.txt を知らせていれば、ページを取り直さずに llms.txt を使う", async () => {
+    const pagePath = fresh("/docs");
+    const llmsPath = fresh("/llms.txt");
+    site = {
+      robots: "User-agent: *\nAllow: /\n",
+      routes: {
+        [pagePath]: { headers: { "Content-Type": "text/html; charset=utf-8", Link: `<${llmsPath}>; rel="llms-txt"` }, body: page("") },
+        [llmsPath]: { headers: { "Content-Type": "text/markdown" }, body: LLMS_TXT },
+      },
+    };
+    const start = `${origin}${pagePath}`;
+    // fetch でそのページを取り、llms.txt の在りかがキャッシュに残った状態
+    cache.set({ url: start, etag: null, lastModified: null, markdown: "# 起点", metadata: { agentResources: { markdownAlternate: null, llmsTxt: `${origin}${llmsPath}` } } });
+
+    const result = await discoverLinks(`${start}#overview`, politeness, { cache });
+
+    expect(result.source).toBe("llms.txt");
+    // sitemap.xml が無いことは前のテストが同じオリジンで保存済みのことがあるので、多くても1回。
+    expect(hits.get("/sitemap.xml") ?? 0).toBeLessThanOrEqual(1);
+    expect(hits.get(pagePath)).toBeUndefined();
+    expect(hits.get(llmsPath)).toBe(1);
+  });
+
   it("形の合わないキャッシュの行は無いものとして取り直す", async () => {
     const sitemapPath = fresh("/sitemap.xml");
     site = { robots: `User-agent: *\nAllow: /\nSitemap: __ORIGIN__${sitemapPath}\n`, routes: { [sitemapPath]: { headers: { "Content-Type": "application/xml" }, body: SITEMAP } } };
