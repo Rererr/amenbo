@@ -147,6 +147,28 @@ export class HostRefusedError extends AmenboError {
   }
 }
 
+/** 同じホストへの自分の番が来るまでの待ちが上限を超えるため、待たずに中止した。 */
+export class WaitTooLongError extends AmenboError {
+  readonly code = "WAIT_TOO_LONG";
+
+  constructor(
+    readonly url: string,
+    readonly host: string,
+    reason: string,
+    readonly availableAt: number,
+    now: number,
+    limitMs: number,
+  ) {
+    // HostRefusedErrorと同じく、LLMが現在時刻を知らなくても判断できるよう残り時間も示す。
+    const minutesLeft = Math.max(1, Math.ceil((availableAt - now) / 60_000));
+    const at = new Date(availableAt).toLocaleString("ja-JP", { timeZoneName: "short" });
+    super(
+      `このサイト(${host})へは${reason}のため、次に取得できるのは約${minutesLeft}分後(${at}頃)です。` +
+        `amenbo は${limitMs / 1000}秒を超えて待たずに中止しました。その時刻以降に取り直してください: ${url}`,
+    );
+  }
+}
+
 /** Playwrightブラウザの起動・操作に失敗した。 */
 export class BrowserLaunchError extends AmenboError {
   readonly code = "BROWSER_LAUNCH_FAILED";
