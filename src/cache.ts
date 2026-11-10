@@ -39,6 +39,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { AmenboError } from "./errors.js";
 import { DEFAULT_ROBOTS_TTL_MS } from "./ttl.js";
 
 export type CacheStatus = "fresh" | "revalidated" | "miss";
@@ -90,15 +91,38 @@ const BUSY_TIMEOUT_MS = 5000;
 const WAL_RETRY_INTERVAL_MS = 20;
 const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
 const SQLITE_BUSY = 5;
+const SQLITE_CORRUPT = 11;
+const SQLITE_NOTADB = 26;
+const SQLITE_MESSAGES: ReadonlyArray<[string, number]> = [
+  ["database is locked", SQLITE_BUSY],
+  ["database disk image is malformed", SQLITE_CORRUPT],
+  ["file is not a database", SQLITE_NOTADB],
+];
 
 /** SQLiteの結果コード。errcodeを持たない版のNodeでも判別できるよう、SQLite固定の文言からも引く。 */
 function sqliteErrorCode(error: unknown): number | null {
   if (!(error instanceof Error)) return null;
   const errcode = (error as { errcode?: unknown }).errcode;
   if (typeof errcode === "number") return errcode & 0xff;
-  if (error.message.includes("database is locked")) return SQLITE_BUSY;
-  return null;
+  return SQLITE_MESSAGES.find(([message]) => error.message.includes(message))?.[1] ?? null;
 }
+
+/** cache.sqliteがSQLiteのデータベースとして読めない(別のファイルが置かれた、壊れた等)。 */
+export class CacheFileUnreadableError extends AmenboError {
+  readonly code = "CACHE_FILE_UNREADABLE";
+
+  constructor(
+    readonly path: string,
+    cause: Error,
+  ) {
+    super(
+      `キャッシュファイルを開けません: ${path} (${cause.message})。` +
+        "SQLiteのデータベースとして読めないため、このファイルを削除してください。次回の起動時に作り直されます(消えるのは取得済みページのキャッシュだけです)",
+      { cause },
+    );
+  }
+}
+
 /** meta テーブルに前回prune時刻を記録するキー。 */
 const META_LAST_PRUNED_AT = "last_pruned_at";
 
@@ -215,14 +239,26 @@ export class PageCache {
     if (!existsSync(this.cacheDir)) {
       mkdirSync(this.cacheDir, { recursive: true });
     }
-    this.db = new DatabaseSync(options.dbPath ?? join(this.cacheDir, "cache.sqlite"));
+    const dbPath = options.dbPath ?? join(this.cacheDir, "cache.sqlite");
+    this.db = new DatabaseSync(dbPath);
     // DatabaseSync の timeout オプションは Node 22.16 からで、engines(>=22.13.0)の下限では効かない。
     this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.robotsTtlMs = options.robotsTtlMs ?? DEFAULT_ROBOTS_TTL_MS;
     this.pruneIntervalMs = Math.min(this.ttlMs, this.robotsTtlMs);
     this.now = options.now ?? Date.now;
-    this.enableWal();
+    // ファイルの中身を最初に読むのはこの文なので、SQLiteとして読めないファイルはここで分かる。
+    // 自動で消さないのは、利用者が別の用途のファイルを置いた可能性を排除できないため。
+    try {
+      this.enableWal();
+    } catch (error) {
+      const code = sqliteErrorCode(error);
+      if (error instanceof Error && (code === SQLITE_NOTADB || code === SQLITE_CORRUPT)) {
+        this.db.close();
+        throw new CacheFileUnreadableError(dbPath, error);
+      }
+      throw error;
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS pages (
         url TEXT PRIMARY KEY,

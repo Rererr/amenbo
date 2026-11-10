@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { computeScreenshotCacheKey, PageCache } from "../src/cache.js";
+import { CacheFileUnreadableError, computeScreenshotCacheKey, PageCache } from "../src/cache.js";
 
 let dir: string;
 let dbPath: string;
@@ -105,6 +105,23 @@ describe("PageCache", () => {
     const entry = cache2.get("http://example.com/");
     expect(entry?.markdown).toBe("永続化テスト");
     cache2.close();
+  });
+
+  it("SQLiteでないファイルが置かれていると、場所と対処を書いたエラーにし、ファイルは消さない", () => {
+    const content = "これはSQLiteのデータベースではありません。".repeat(20);
+    writeFileSync(dbPath, content);
+
+    let thrown: unknown;
+    try {
+      new PageCache({ dbPath });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CacheFileUnreadableError);
+    expect((thrown as Error).message).toContain(dbPath);
+    expect((thrown as Error).message).toContain("削除");
+    expect(readFileSync(dbPath, "utf-8")).toBe(content);
   });
 });
 
