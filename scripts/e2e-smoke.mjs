@@ -53,10 +53,11 @@ const MODERN_META = {
   "io.modelcontextprotocol/clientCapabilities": {},
   "io.modelcontextprotocol/clientInfo": { name: "amenbo-ci-e2e", version: "0.0.1" },
 };
-// 実在しないTLD(RFC 2606の.invalid)へ同一ホスト2回投げる。1回目は間隔調整の対象が無く待機が
-// 発生しないため進捗は出ない(実測)。収集先サイトを使わないのは、通知配線の確認のために
-// 外部サイトへ追加の取得をかけたくないため。取得自体は必ず失敗するが、待機はその手前で起きる。
-const PROGRESS_URLS = ["https://amenbo-e2e-progress.invalid/", "https://amenbo-e2e-progress.invalid/x"];
+// 例示用に予約されたドメイン(RFC 2606のexample.com)へ同一ホスト2回投げる。robots.txtの取得が
+// 1要求に数えられるので、ページの取得の前に間隔の待機が起きて進捗が出る。収集先サイトを使わないのは、
+// 通知配線の確認のために収集先へ追加の取得をかけたくないため。.invalidは使えない: robots.txtの
+// 名前解決の失敗は取得の手前で接続の失敗として返り、待機まで進まない。
+const PROGRESS_URLS = ["https://example.com/", "https://example.com/?amenbo-e2e-progress"];
 
 function progressCount(s) {
   return s.notifications.filter(
