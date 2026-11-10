@@ -160,6 +160,20 @@ describe("同じURLへ相乗りした呼び出しの取り消し", () => {
     expect(site.arrivals.get("/shared-cli")).toBe(1);
   }, 15_000);
 
+  it("呼び出しの時点で既に取り消されていたら、先方へ送らずに取り消しとして返す", async () => {
+    const site = await startSite();
+    const controller = new AbortController();
+    controller.abort();
+
+    const error = await runCancellableBy(controller.signal, () => handleFetchTool({ url: `${site.origin}/pre`, force_full: true })).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(RequestCancelledError);
+    await sleep(1500); // 取り消せない取得になっていれば、robots.txt の後の間隔(1秒)を空けて届く時刻
+    expect(site.arrivals.get("/pre")).toBeUndefined();
+  }, 15_000);
+
   it("全員が取り消したら取得を止め、取り消しとして返す", async () => {
     const site = await startSite(5_000);
     const url = `${site.origin}/shared-all`;
