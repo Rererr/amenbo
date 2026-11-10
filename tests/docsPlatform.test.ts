@@ -94,10 +94,53 @@ describe("見出しから作ったidとReadabilityの「本文らしくない名
     expect(markdown).not.toContain("Sidebar links");
   });
 
+  it("表だけを包む要素のidが判定の語を含んでも、その節(見出し・段落・表)は元の位置に残る", () => {
+    // xml2rfc型: 節番号と節名を自己リンクにした見出し、段落末の¶、表を包むidだけのdiv。
+    const para = (id: string, text: string): string => `<p id="${id}">${text}<a href="#${id}" class="pilcrow">¶</a></p>`;
+    const rfcSection = (n: number, title: string): string =>
+      `<section id="section-${n}"><h2 id="name-${n}"><a href="#section-${n}" class="selfRef">${n}. </a><a href="#name-${n}" class="selfRef">${title}</a></h2>` +
+      Array.from({ length: 3 }, (_, i) => para(`section-${n}-${i}`, `Section ${n} paragraph ${i} defines how a cache stores, reuses, and validates responses for ${title}.`)).join("") +
+      "</section>";
+    const rows = ["Age", "Cache-Control", "Expires", "Pragma", "Warning"]
+      .map((name, i) => `<tr><td>${name}</td><td>permanent</td><td><a href="#field.${i}" class="xref">5.${i + 1}</a></td><td></td></tr>`)
+      .join("");
+    const table = `<table id="table-1"><caption><a href="#table-1" class="selfRef">Table 1</a></caption><thead><tr><th>Field Name</th><th>Status</th><th>Section</th><th>Comments</th></tr></thead><tbody>${rows}</tbody></table>`;
+    const iana =
+      `<section id="section-8"><h2 id="name-iana"><a href="#section-8" class="selfRef">8. </a><a href="#name-iana" class="selfRef">IANA Considerations</a></h2>` +
+      para("section-8-1", "The change controller for the following registrations is the task force.") +
+      `<div id="field.name.registration"><section id="section-8.1"><h3 id="name-fnr"><a href="#section-8.1" class="selfRef">8.1. </a><a href="#name-fnr" class="selfRef">Field Name Registration</a></h3>` +
+      para(
+        "section-8.1-1",
+        `IANA has updated the "Field Name Registry" at <span>&lt;<a href="https://registry.example.org/fields">https://registry.example.org/fields</a>&gt;</span>, as described in <span><a href="https://www.example.org/rfc/rfc0001#section-18" class="relref">Section 18</a> of [<a href="#HTTP" class="xref">HTTP</a>]</span>, with the field names listed in the table below:`,
+      ) +
+      `<div id="iana.header.registration.table">${table}</div></section></div>` +
+      `<div id="cache.directive.registration"><section id="section-8.2"><h3 id="name-cdr"><a href="#section-8.2" class="selfRef">8.2. </a><a href="#name-cdr" class="selfRef">Cache Directive Registration</a></h3>` +
+      para("section-8.2-1", "IANA has updated the cache directive registry with the registration procedure and the directives defined in this document.") +
+      "</section></div></section>";
+    const page = `<!DOCTYPE html><html><body><article>${rfcSection(1, "Introduction")}${rfcSection(2, "Overview")}${rfcSection(3, "Storing")}${iana}${rfcSection(9, "References")}</article></body></html>`;
+    const { markdown } = extractMarkdown(page, { url: "https://www.example.org/rfc/rfc0000.html" });
+    const headingAt = markdown.indexOf("Field Name Registration");
+    expect(headingAt).toBeGreaterThan(-1);
+    expect(markdown.indexOf("| Age |")).toBeGreaterThan(headingAt);
+    expect(markdown.indexOf("| Age |")).toBeLessThan(markdown.indexOf("Cache Directive Registration"));
+  });
+
+  it("idが判定の語に当たるコメント欄は、本文より長くても本文に混ざらない", () => {
+    const post = (i: number): string =>
+      `<li class="item"><p>読者${i}さんの投稿です。とても参考になりました。私も同じ問題で困っていたので、手順どおりに試してみたところ、うまく動きました。</p></li>`;
+    const article = Array.from({ length: 20 }, (_, i) => `<p>本文の段落${i}です。この記事では、日本語のブログで本文を抽出するときに、コメント欄が混ざらないかを確かめます。</p>`).join("");
+    const page = `<html><body><div id="wrap"><div id="main"><div class="entry"><h1>題名</h1>${article}</div></div><div id="comments"><h2>みんなの反応</h2><ul>${Array.from(
+      { length: 30 },
+      (_, i) => post(i),
+    ).join("")}</ul></div></div></body></html>`;
+    const { markdown } = extractMarkdown(page, { url: "https://blog.example.jp/entry/1" });
+    expect(markdown).toContain("本文の段落0");
+    expect(markdown).not.toContain("読者0さん");
+  });
+
   it("名前の判定はReadabilityの同じ版から借りている(版の更新で消えたらここで気づく)", () => {
     const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
     expect(regexps?.unlikelyCandidates).toBeInstanceOf(RegExp);
-    expect(regexps?.okMaybeItsACandidate).toBeInstanceOf(RegExp);
   });
 
   it("Readabilityの版が変わって名前の判定を借りられなくても、抽出は失敗しない", () => {

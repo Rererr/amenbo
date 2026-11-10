@@ -1024,7 +1024,9 @@ export function normalizeRetainedTables(contentHtml: string): string {
 }
 
 interface ClassElement {
+  tagName: string;
   textContent: string | null;
+  children: ArrayLike<ClassElement>;
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
@@ -1054,7 +1056,6 @@ function neutralizeUtilityClassTokens(root: ClassHostElement): void {
 
 interface ReadabilityNamePatterns {
   unlikelyCandidates: RegExp;
-  okMaybeItsACandidate: RegExp;
 }
 
 /**
@@ -1064,31 +1065,24 @@ interface ReadabilityNamePatterns {
 function readabilityNamePatterns(): ReadabilityNamePatterns | null {
   const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
   const unlikelyCandidates = regexps?.unlikelyCandidates;
-  const okMaybeItsACandidate = regexps?.okMaybeItsACandidate;
-  if (!(unlikelyCandidates instanceof RegExp) || !(okMaybeItsACandidate instanceof RegExp)) return null;
-  return { unlikelyCandidates, okMaybeItsACandidate };
+  if (!(unlikelyCandidates instanceof RegExp)) return null;
+  return { unlikelyCandidates };
 }
 
-const UNLIKELY_NAME_MIN_TEXT_SHARE = 0.1;
-
-function visibleLength(text: string | null): number {
-  return (text ?? "").replace(/\s+/g, "").length;
-}
+// 見出しから作ったidで章や表を包むだけの要素(xml2rfcの`<div id="header.field.definitions"><section>`)の中身。
+const ANCHOR_WRAPPED_TAGS = new Set(["SECTION", "TABLE"]);
 
 /**
- * idの部分一致で「本文らしくない」と判定される要素のうち、ページの文字の1割以上を持つものは
- * idを外してReadabilityに捨てさせない(見出しから作ったid`header.field.definitions`が当たる)。
- * classは外さない: 本文全体の容れ物がclassの語で捨てられるページはReadabilityの再試行で本文を
- * 取れており、外すと採点の起点が変わって記事の冒頭の説明文を落とす。
+ * idが「本文らしくない」語に当たっても、子が章か表の1つだけの要素は、
+ * idを外してReadabilityに捨てさせない。文字の割合では決めない: コメント欄やサイドバーも
+ * ページの文字の多くを持ちうる。classは外さない: 本文全体の容れ物がclassの語で捨てられるページは
+ * Readabilityの再試行で本文を取れており、外すと採点の起点が変わって記事の冒頭の説明文を落とす。
  */
-function dropUnlikelyIdsOfLargeBlocks(body: ClassHostElement, patterns: ReadabilityNamePatterns): void {
-  const total = visibleLength(body.textContent);
-  if (total === 0) return;
+function dropUnlikelyIdsOfAnchorWrappers(body: ClassHostElement, patterns: ReadabilityNamePatterns): void {
   for (const el of Array.from(body.querySelectorAll("[id]"))) {
-    const id = el.getAttribute("id") ?? "";
-    if (!patterns.unlikelyCandidates.test(id)) continue;
-    if (patterns.okMaybeItsACandidate.test(`${el.getAttribute("class") ?? ""} ${id}`)) continue;
-    if (visibleLength(el.textContent) / total < UNLIKELY_NAME_MIN_TEXT_SHARE) continue;
+    if (!patterns.unlikelyCandidates.test(el.getAttribute("id") ?? "")) continue;
+    const [only, ...rest] = Array.from(el.children);
+    if (!only || rest.length > 0 || !ANCHOR_WRAPPED_TAGS.has(only.tagName)) continue;
     el.removeAttribute("id");
   }
 }
@@ -1227,7 +1221,7 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
       if (document.body) {
         neutralizeUtilityClassTokens(document.body as unknown as ClassHostElement);
         const namePatterns = readabilityNamePatterns();
-        if (namePatterns) dropUnlikelyIdsOfLargeBlocks(document.body as unknown as ClassHostElement, namePatterns);
+        if (namePatterns) dropUnlikelyIdsOfAnchorWrappers(document.body as unknown as ClassHostElement, namePatterns);
       }
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;
