@@ -1023,6 +1023,32 @@ export function normalizeRetainedTables(contentHtml: string): string {
   return changed ? host.body.innerHTML : contentHtml;
 }
 
+interface ClassElement {
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+}
+interface ClassHostElement {
+  querySelectorAll(selector: string): ArrayLike<ClassElement>;
+}
+
+// CSSのプロパティ名を冠したユーティリティクラス(overflow-hidden・lg:overflow-y-scroll・scroll-mt-24)。
+const UTILITY_CLASS_TOKEN = /^(?:[^:\s]+:)*!?-?(?:overflow|scroll)-/;
+
+/**
+ * Readabilityはclass名を本文らしさの採点に部分一致で使い、`hidden`・`scroll`を負の語とする。
+ * ユーティリティクラスの`overflow-hidden`等がこれに当たり、本文の容れ物(手順・図・カード)を
+ * 採点で捨てていた。Readabilityに渡す前に、値がこれらの語と重なるユーティリティクラスだけを外す。
+ * 他のユーティリティクラスは外さない: `text-*`等は正の語(text・content)にも当たり、まとめて外すと
+ * 本文の容れ物の加点まで失って抽出量が減る(実測)。
+ */
+function neutralizeUtilityClassTokens(root: ClassHostElement): void {
+  for (const el of Array.from(root.querySelectorAll("[class]"))) {
+    const tokens = (el.getAttribute("class") ?? "").split(/\s+/);
+    const kept = tokens.filter((token) => !UTILITY_CLASS_TOKEN.test(token));
+    if (kept.length !== tokens.length) el.setAttribute("class", kept.join(" "));
+  }
+}
+
 /** removeStyleLeakElementsが除去対象を検索・除去できる最小限のDOM互換インターフェース。 */
 interface StyleLeakElement {
   closest(selector: string): unknown;
@@ -1154,6 +1180,7 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
       const dataTables = document.body ? collectDataTables(document.body as unknown as TableQueryHost) : [];
       const droppedHeadings = document.body ? collectHeadings(document.body as unknown as HeadingQueryHost) : [];
 
+      if (document.body) neutralizeUtilityClassTokens(document.body as unknown as ClassHostElement);
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;
 
