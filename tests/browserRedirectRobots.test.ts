@@ -75,6 +75,13 @@ describe("ブラウザ経路のrobots.txt確認(実Chromium)", () => {
     expect(arrivals).not.toContain("/private/secret");
   }, 30_000);
 
+  itWithBrowser("ページ内からの遷移でDisallowのパスへ誘導されたら、エラー画面を返さず拒否する", async () => {
+    arrivals.length = 0;
+
+    await expect(fetchWithBrowser(`${origin}/js`, 10_000, { checkRobots: checkRobots() })).rejects.toThrow(RobotsDeniedError);
+    expect(arrivals).not.toContain("/private/js");
+  }, 30_000);
+
   itWithBrowser("許可されたパスだけを通る複数段のリダイレクトは、最後まで辿って本文を返す", async () => {
     const result = await fetchWithBrowser(`${origin}/a`, 10_000, { checkRobots: checkRobots() });
 

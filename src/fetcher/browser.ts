@@ -377,6 +377,8 @@ export async function navigateSafely(
   await page.route(NAVIGATION_ROUTE_PATTERN, handler);
   try {
     const response = await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
+    // ページ内からの遷移(location.href・meta refresh)を止めると、gotoは成功したままエラー画面に置き換わる。
+    if (blockedError) throw blockedError as AmenboError;
     return response;
   } catch (cause) {
     if (blockedError) throw blockedError as AmenboError;
