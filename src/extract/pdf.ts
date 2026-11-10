@@ -14,6 +14,7 @@
 import { createCanvas } from "@napi-rs/canvas";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFPageProxy } from "pdfjs-dist";
+import type { TextItem, TextMarkedContent } from "pdfjs-dist/types/src/display/api.js";
 import { PayloadTooLargeError } from "../errors.js";
 
 export const DEFAULT_PDF_MAX_BYTES = 20 * 1024 * 1024; // 20MB
@@ -72,6 +73,32 @@ function toOwnedCopy(bytes: Uint8Array): Uint8Array {
   return new Uint8Array(bytes);
 }
 
+// 語の間に空白を置かない文字(漢字・かな・CJKの記号・全角形)で終わる/始まる。
+const SPACELESS_END = /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\u3000-\u303f\uff00-\uffef]$/u;
+const SPACELESS_START = /^[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\u3000-\u303f\uff00-\uffef]/u;
+
+/**
+ * pdf.jsの項目を行末の印(hasEOL)で改行してつなぐ。行の切れ目のどちらかが語の間に空白を
+ * 置かない文字なら改行を入れない: 日本語の段落を折り返した行は、改行を挟むと語の途中で
+ * 切れて検索できなくなる。
+ */
+function joinTextItems(items: ReadonlyArray<TextItem | TextMarkedContent>): string {
+  let text = "";
+  let pendingBreak = false;
+  for (const item of items) {
+    if (!("str" in item)) continue;
+    if (pendingBreak && item.str.length > 0) {
+      // 末尾の2単位だけを見る(サロゲートペアの1文字を含む)。全体に`$`付きで照合すると、ページの
+      // 文字数×行数の時間になる。
+      if (!SPACELESS_END.test(text.slice(-2)) && !SPACELESS_START.test(item.str)) text += "\n";
+      pendingBreak = false;
+    }
+    text += item.str;
+    if (item.hasEOL && text.length > 0) pendingBreak = true;
+  }
+  return text;
+}
+
 /** PDFバイト列からテキスト層を抽出する。実質的にテキストが無ければhasTextLayer=false。 */
 export async function extractPdfText(bytes: Uint8Array, options: ExtractPdfTextOptions = {}): Promise<PdfTextResult> {
   // verbosity: 0 (ERRORS)にしてpdf.jsの警告ログでstdout/stderrを汚さないようにする
@@ -86,7 +113,7 @@ export async function extractPdfText(bytes: Uint8Array, options: ExtractPdfTextO
     for (let i = 1; i <= extractedPageCount; i++) {
       const page = await doc.getPage(i);
       const content = await page.getTextContent();
-      const pageText = content.items.map((item) => ("str" in item ? item.str : "")).join("");
+      const pageText = joinTextItems(content.items);
       totalChars += pageText.trim().length;
       pages.push(pageText);
     }

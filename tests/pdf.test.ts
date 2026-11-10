@@ -56,6 +56,21 @@ describe("extractPdfText(fixtureベース)", () => {
     expect(result.pages.join("")).toContain("統計");
   });
 
+  it("英語の複数行のPDFは、行の終わりと次の行の語を連結しない", async () => {
+    const result = await extractPdfText(fixture("sample-multiline-en.pdf"));
+    expect(result.pages[0]?.split("\n")).toEqual([
+      "The relay daemon forwards queued",
+      "messages to every registered worker",
+      "in arrival order and waits for an",
+      "acknowledgement before removal.",
+    ]);
+  });
+
+  it("日本語の行の切れ目には改行を入れない(折り返した語を分けない)", async () => {
+    const result = await extractPdfText(fixture("sample-text.pdf"));
+    expect(result.pages[0]).toContain("政策評価広報課広報室長報道担当職員その他");
+  });
+
   it("markdownFromPdfTextはページ見出し付きのテキストを生成する", async () => {
     const bytes = fixture("sample-text.pdf");
     const result = await extractPdfText(bytes);
