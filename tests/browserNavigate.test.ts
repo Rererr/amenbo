@@ -74,6 +74,10 @@ class FakePage {
   private readonly mainFrameSentinel = { id: "main-frame" };
   private finalUrl = "";
 
+  on(): void {}
+
+  off(): void {}
+
   mainFrame(): unknown {
     return this.mainFrameSentinel;
   }

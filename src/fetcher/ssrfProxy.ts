@@ -24,24 +24,34 @@ export interface ResolvedTarget {
   family: number;
 }
 
-/** ホスト名(またはIPリテラル)を解決し、公開アドレスを1つ返す。全て予約/解決不能ならnull(=接続拒否)。 */
-export async function resolveSafeAddress(hostOrLiteral: string): Promise<ResolvedTarget | null> {
+/** 接続を拒否した理由。予約アドレスならその1つを持つ(ブラウザ側のエラー文に出す)。 */
+export type ProxyBlock = { blocked: "private"; address: string } | { blocked: "unresolvable" };
+
+/** ホスト名(またはIPリテラル)を解決し、公開アドレスを1つ返す。全て予約アドレスか解決できなければ、その理由を返す。 */
+export async function classifyTarget(hostOrLiteral: string): Promise<ResolvedTarget | ProxyBlock> {
   // 平文HTTP経路の呼び出し元はURL.hostnameを渡すため、IPv6リテラルは "[::1]" のように
   // 角括弧付きで来る。CONNECT経路(splitHostPort)は括弧を外して渡すので、ここで揃えないと
   // 同じアドレスがHTTPSでは通りHTTPでは名前解決失敗で403になる非対称が生まれる。
   const host = hostOrLiteral.replace(/^\[|\]$/g, "");
   const literalVersion = isIP(host);
   if (literalVersion) {
-    return isPrivateOrReservedIp(host) ? null : { address: host, family: literalVersion };
+    return isPrivateOrReservedIp(host) ? { blocked: "private", address: host } : { address: host, family: literalVersion };
   }
   let results: Array<{ address: string; family: number }>;
   try {
     results = await dnsLookup(host, { all: true });
   } catch {
-    return null;
+    return { blocked: "unresolvable" };
   }
   const safe = results.find((entry) => !isPrivateOrReservedIp(entry.address));
-  return safe ? { address: safe.address, family: safe.family } : null;
+  if (safe) return { address: safe.address, family: safe.family };
+  return results[0] ? { blocked: "private", address: results[0].address } : { blocked: "unresolvable" };
+}
+
+/** ホスト名(またはIPリテラル)を解決し、公開アドレスを1つ返す。全て予約/解決不能ならnull(=接続拒否)。 */
+export async function resolveSafeAddress(hostOrLiteral: string): Promise<ResolvedTarget | null> {
+  const target = await classifyTarget(hostOrLiteral);
+  return "blocked" in target ? null : target;
 }
 
 /** ポート表記を1〜65535の整数に限って読む(省略時はdefaultPort)。範囲外・非数値はnull(=要求を拒否)。 */
@@ -69,7 +79,7 @@ export interface SsrfProxyOptions {
   /** テスト用: ホスト解決を差し替える(既定はresolveSafeAddress = 実DNS + 予約IP判定)。 */
   resolve?: (host: string) => Promise<ResolvedTarget | null>;
   /** 接続先を拒否したときに呼ばれる(ブラウザ側が「サイトの403」や接続失敗と区別するため)。 */
-  onBlocked?: (host: string) => void;
+  onBlocked?: (host: string, block: ProxyBlock) => void;
 }
 
 /**
@@ -78,12 +88,14 @@ export interface SsrfProxyOptions {
  */
 export class SsrfProxy {
   private readonly server: Server;
-  private readonly resolve: (host: string) => Promise<ResolvedTarget | null>;
-  private readonly onBlocked: (host: string) => void;
+  private readonly resolve: (host: string) => Promise<ResolvedTarget | ProxyBlock>;
+  private readonly onBlocked: (host: string, block: ProxyBlock) => void;
   private started = false;
 
   constructor(options: SsrfProxyOptions = {}) {
-    this.resolve = options.resolve ?? resolveSafeAddress;
+    const injected = options.resolve;
+    // 差し替えた解決(テスト用)は拒否の理由を返さないので、予約アドレスとして扱う。
+    this.resolve = injected ? async (host) => (await injected(host)) ?? { blocked: "private", address: host } : classifyTarget;
     this.onBlocked = options.onBlocked ?? (() => {});
     // 要求の処理で投げられた例外はここで止める。漏れると未処理のrejectとしてプロセスごと落ち、
     // 同じMCPサーバーを使う全セッションの取得が止まる。
@@ -102,8 +114,8 @@ export class SsrfProxy {
           return;
         }
         const safe = await this.resolve(target.hostname);
-        if (!safe) {
-          this.onBlocked(target.hostname);
+        if ("blocked" in safe) {
+          this.onBlocked(target.hostname, safe);
           clientRes.writeHead(403).end("blocked by amenbo SSRF proxy");
           return;
         }
@@ -142,8 +154,8 @@ export class SsrfProxy {
           return;
         }
         const safe = await this.resolve(target.host);
-        if (!safe) {
-          this.onBlocked(target.host);
+        if ("blocked" in safe) {
+          this.onBlocked(target.host, safe);
           clientSocket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
           return;
         }
@@ -194,7 +206,7 @@ let sharedProxyUrlPromise: Promise<string> | null = null;
  * サイトの403と、HTTPSではトンネルの接続失敗(net::ERR_TUNNEL_CONNECTION_FAILED)と同じ形でしか
  * 伝えないため、ブラウザ側はこれを引いてSSRFの拒否と見分ける。
  */
-const recentBlocks = new Map<string, number>();
+const recentBlocks = new Map<string, { at: number; block: ProxyBlock }>();
 const RECENT_BLOCK_WINDOW_MS = 30_000;
 const MAX_RECENT_BLOCKS = 64;
 
@@ -202,22 +214,22 @@ function normalizeHost(host: string): string {
   return host.replace(/^\[|\]$/g, "").toLowerCase();
 }
 
-function rememberBlock(host: string): void {
+function rememberBlock(host: string, block: ProxyBlock): void {
   const key = normalizeHost(host);
   recentBlocks.delete(key);
-  recentBlocks.set(key, Date.now());
+  recentBlocks.set(key, { at: Date.now(), block });
   if (recentBlocks.size > MAX_RECENT_BLOCKS) {
     const oldest = recentBlocks.keys().next().value;
     if (oldest !== undefined) recentBlocks.delete(oldest);
   }
 }
 
-/** 共有プロキシが直前にこのホストへの接続を拒否していたか(引いた記録は消す)。 */
-export function takeRecentProxyBlock(host: string): boolean {
+/** 共有プロキシが直前にこのホストへの接続を拒否していたなら、その理由(引いた記録は消す)。 */
+export function takeRecentProxyBlock(host: string): ProxyBlock | null {
   const key = normalizeHost(host);
-  const blockedAt = recentBlocks.get(key);
+  const recent = recentBlocks.get(key);
   recentBlocks.delete(key);
-  return blockedAt !== undefined && Date.now() - blockedAt < RECENT_BLOCK_WINDOW_MS;
+  return recent !== undefined && Date.now() - recent.at < RECENT_BLOCK_WINDOW_MS ? recent.block : null;
 }
 
 /** browser tierが使うSSRF検証プロキシのURL(http://127.0.0.1:PORT)を遅延起動して返す。 */

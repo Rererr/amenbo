@@ -17,8 +17,8 @@ import {
 import { AmenboError, BrowserLaunchError, BrowserUnavailableError, FetchTimeoutError, InvalidUrlError, NetworkError, PrivateAddressError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { CONSENT_BANNER_RULES } from "../jp/consentBanner.js";
-import { assertUsableResponse, guardPublicAddress, USER_AGENT } from "./http.js";
-import { closeSharedSsrfProxy, getSharedSsrfProxyUrl, takeRecentProxyBlock } from "./ssrfProxy.js";
+import { assertUsableResponse, detectBotChallenge, guardPublicAddress, USER_AGENT } from "./http.js";
+import { closeSharedSsrfProxy, getSharedSsrfProxyUrl, takeRecentProxyBlock, type ProxyBlock } from "./ssrfProxy.js";
 
 export type { PageGeometrySnapshot } from "../extract/geometry.js";
 
@@ -389,13 +389,32 @@ export async function navigateSafely(
 
   let blockedError: AmenboError | null = null;
   let lastMainFrameUrl = url;
+  let challengeSeen = false;
   const hostGuardCache = new Map<string, Promise<void>>();
+  const isMainFrame = (request: Request): boolean => request.isNavigationRequest() && request.frame() === page.mainFrame();
+  // routeのhandlerは転送の最初のURLでしか呼ばれない(実測)ので、転送のたびに発火するrequestで着地先を追う。
+  const onRequest = (request: Request): void => {
+    if (isMainFrame(request)) lastMainFrameUrl = request.url();
+  };
+  // 確認画面の応答を見たら、以後の要求(スクリプトのfetch・sendBeacon・画像・解いた後の遷移)をすべて止める。
+  // 応答ヘッダの時点で旗を立てるので、HTMLの解析が始まって出る要求より先に立つ(実測で、これらは先方へ届かなかった)。
+  // WebSocketはrouteを通らないので止められない(実測で、確認画面のスクリプトが開いたWebSocketの接続要求は届いた)。
+  // routeWebSocketで止める案は、通常のページのWebSocketまでPlaywright経由の中継に変え、その接続がSSRF検証
+  // プロキシを通るかを確かめていないため入れていない。
+  const onResponse = (response: PlaywrightResponse): void => {
+    if (!isMainFrame(response.request())) return;
+    const headers = response.headers();
+    if (detectBotChallenge((name) => headers[name])) challengeSeen = true;
+  };
   const handler = async (route: Route, request: Request): Promise<void> => {
+    if (challengeSeen) {
+      await route.abort();
+      return;
+    }
     const requestUrl = request.url();
-    const isMainFrameNavigation = request.isNavigationRequest() && request.frame() === page.mainFrame();
+    const isMainFrameNavigation = isMainFrame(request);
     try {
       if (isMainFrameNavigation) {
-        lastMainFrameUrl = requestUrl;
         await guardPublicAddress(requestUrl);
         // ページ内からの遷移も、同一オリジンを含めて確かめる。レート制御の待機はタイムアウト予算を消費するため、ここでは行わない。
         if (options.checkRobots) {
@@ -403,6 +422,11 @@ export async function navigateSafely(
         }
       } else {
         await guardRequestUrl(requestUrl, hostGuardCache);
+      }
+      // 検証を待つ間に確認画面と分かった場合も、先方へ送らない。
+      if (challengeSeen) {
+        await route.abort();
+        return;
       }
       await route.continue();
     } catch (error) {
@@ -416,9 +440,14 @@ export async function navigateSafely(
     }
   };
 
-  const stopGuardingRedirects = await guardMainFrameRedirects(page, options.checkRobots, (error) => {
-    blockedError = error;
-  });
+  const stopGuardingRedirects = await guardMainFrameRedirects(
+    page,
+    options.checkRobots,
+    (error) => {
+      blockedError = error;
+    },
+    () => challengeSeen,
+  );
   await page.route(NAVIGATION_ROUTE_PATTERN, handler);
   // ページ内からの遷移(location.href・meta refresh)を止めると、gotoは成功したままエラー画面に置き換わる。
   const assertNotBlocked = (): void => {
@@ -426,15 +455,21 @@ export async function navigateSafely(
   };
   const deadline = Date.now() + timeoutMs;
   const remainingMs = (): number => Math.max(1, deadline - Date.now());
+  let responded = false;
+  page.on("request", onRequest);
+  page.on("response", onResponse);
   try {
-    // 応答ヘッダが届いた時点で一度止まり、エラーと bot 対策の確認画面を読み込みの前に弾く
-    // (loadまで待つと、確認画面のスクリプトがブラウザで走ってしまう)。
+    // 応答ヘッダが届いた時点(commit)で止まり、エラーと bot 対策の確認画面を読み込みを待たずに弾く。
+    // commitの時点でもHTMLの解析とインラインのスクリプトは始まりうる(実測)。先方へ要求が出ないのは、
+    // 上のonResponseが以後の要求を止めるためで、ここでの判定は失敗として返すためのもの。
     const response = await page.goto(url, { waitUntil: "commit", timeout: timeoutMs });
+    responded = true;
     assertNotBlocked();
     if (response) {
       const headers = response.headers();
       const status = response.status();
-      if (status === 403 && takeRecentProxyBlock(new URL(page.url()).hostname)) throw proxyBlockedError(page.url());
+      const proxyBlock = status === 403 ? takeRecentProxyBlock(new URL(page.url()).hostname) : null;
+      if (proxyBlock) throw proxyBlockedError(page.url(), proxyBlock);
       // HTTP経路(httpGet)と同じく、400以上と bot 対策の確認画面は失敗にする(取得成功として返さないため)。
       assertUsableResponse(page.url(), { status, statusText: response.statusText(), ok: status < 400 }, (name) => headers[name]);
     }
@@ -448,22 +483,26 @@ export async function navigateSafely(
   } catch (cause) {
     // 先にCDPで止めている段を失敗させる。判定の途中で時間切れになった段を、後から送らせないため。
     await stopGuardingRedirects();
-    await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
+    // 確認画面のときは止める handler を外さない。外すと、閉じるまでの間に確認画面のスクリプトの要求が先方へ届く(実測)。
+    if (!challengeSeen) await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
     assertNotBlocked();
     if (cause instanceof AmenboError) throw cause;
     if (cause instanceof Error && /timeout/i.test(cause.message)) {
-      throw new FetchTimeoutError(url, timeoutMs, "browser");
+      throw new FetchTimeoutError(url, timeoutMs, responded ? "browser" : "browser-response");
     }
-    if (cause instanceof Error && cause.message.includes("ERR_TUNNEL_CONNECTION_FAILED") && takeRecentProxyBlock(new URL(lastMainFrameUrl).hostname)) {
-      throw proxyBlockedError(lastMainFrameUrl);
-    }
+    const proxyBlock =
+      cause instanceof Error && cause.message.includes("ERR_TUNNEL_CONNECTION_FAILED") ? takeRecentProxyBlock(new URL(lastMainFrameUrl).hostname) : null;
+    if (proxyBlock) throw proxyBlockedError(lastMainFrameUrl, proxyBlock);
     throw NetworkError.fromBrowserNavigation(lastMainFrameUrl, cause) ?? cause;
   }
 }
 
-/** 事前検証を通った後、ブラウザの接続時の再解決(SSRF検証プロキシ)で予約アドレスへの接続を拒否した。 */
-function proxyBlockedError(url: string): PrivateAddressError {
-  return new PrivateAddressError(url, "接続時の名前解決で予約アドレス、または解決できないホストと判定");
+/**
+ * 事前検証を通った後、ブラウザの接続時の再解決(SSRF検証プロキシ)で接続を拒否した。
+ * 予約アドレスならSSRFの拒否、名前解決できなければHTTP経路と同じDNSの失敗にする。
+ */
+function proxyBlockedError(url: string, block: ProxyBlock): AmenboError {
+  return block.blocked === "private" ? new PrivateAddressError(url, block.address) : NetworkError.dnsFailure(url);
 }
 
 export interface SafeNavigation {
@@ -484,6 +523,8 @@ async function guardMainFrameRedirects(
   page: Page,
   checkRobots: ((url: string) => Promise<void>) | undefined,
   onBlocked: (error: AmenboError) => void,
+  /** trueを返す間は、止めた文書の要求をすべて送らずに失敗させる(bot 対策の確認画面の後)。 */
+  isStopped: () => boolean,
 ): Promise<() => Promise<void>> {
   const session = await page.context().newCDPSession(page);
   const { frameTree } = await session.send("Page.getFrameTree");
@@ -493,6 +534,10 @@ async function guardMainFrameRedirects(
   const fail = (requestId: string) => session.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }).catch(() => {});
   session.on("Fetch.requestPaused", (event) => {
     void (async () => {
+      if (isStopped()) {
+        await fail(event.requestId);
+        return;
+      }
       const hopUrl = event.request.url;
       if (event.frameId === mainFrameId && event.redirectedRequestId !== undefined) {
         checking.add(event.requestId);
@@ -506,6 +551,10 @@ async function guardMainFrameRedirects(
         } finally {
           checking.delete(event.requestId);
         }
+      }
+      if (isStopped()) {
+        await fail(event.requestId);
+        return;
       }
       await session.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {});
     })();
