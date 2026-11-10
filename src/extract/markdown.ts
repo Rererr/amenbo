@@ -91,6 +91,17 @@ function createTurndownService(): TurndownService {
     filter: (node) => node.nodeName === "A" && (node.getAttribute("href") ?? "").startsWith("#") && hasHeadingAncestor(node),
     replacement: (content, node) => (/[\p{L}\p{N}]/u.test(node.textContent ?? "") ? content : ""),
   });
+  // turndownのフェンスの規則はpreの最初の子がcodeのときだけ働き、Sphinx等の`<pre><span>…`は
+  // フェンスの無い地の文になる(コードの中の`# コメント`が見出しになり、正規化もかかる)。
+  service.addRule("preWithoutCode", {
+    filter: (node) => node.nodeName === "PRE" && node.firstChild?.nodeName !== "CODE",
+    replacement: (_content, node) => {
+      const code = (node.textContent ?? "").replace(/\n$/, "");
+      const longestRun = Array.from(code.matchAll(/^`{3,}/gm)).reduce((longest, match) => Math.max(longest, match[0].length), 0);
+      const fence = "`".repeat(Math.max(3, longestRun + 1));
+      return `\n\n${fence}\n${code}\n${fence}\n\n`;
+    },
+  });
   // turndownの既定は見出しの中身の改行をそのまま出すため、中にブロック要素(div等)がある
   // 見出しは`## `だけの行と次の行の文字列に分かれる。中身を1行に畳み、空なら見出しを出さない。
   service.addRule("headingSingleLine", {

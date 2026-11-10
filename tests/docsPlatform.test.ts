@@ -55,6 +55,16 @@ describe("ユーティリティクラスの値とReadabilityのclass名の採点
   });
 });
 
+describe("codeを子に持たないpre(Sphinx型)", () => {
+  it("フェンスで囲み、中の# コメントを見出しにせず、記号もエスケープしない", () => {
+    const pre = '<div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">do_local</span>():\n    <span class="c1"># spam = local</span>\n    return 1\n</pre></div>';
+    const html = `<!DOCTYPE html><html><body><main><h2>Scopes</h2><p>This is an example:</p>${pre}<p>Done.</p></main></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://docs.example.org/classes.html", selector: "main" });
+    expect(markdown).toContain("```\ndef do_local():\n    # spam = local\n    return 1\n```");
+    expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["Scopes"]);
+  });
+});
+
 describe("コードブロックの容れ物とReadabilityの負の語", () => {
   it("スクロール領域の部品名(scroll)を持つ容れ物の中のコードブロックがフェンスで残る", () => {
     // Mintlify型のコードグループ。スクロール領域の部品名がclassに残る(言語のタブの側と本体の側)。
