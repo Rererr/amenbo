@@ -1,5 +1,6 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it } from "vitest";
+import { extractMarkdown } from "../src/extract/markdown.js";
 import { normalizeCjkText, stripRubyAnnotations } from "../src/jp/normalize.js";
 
 describe("stripRubyAnnotations", () => {
@@ -70,5 +71,12 @@ describe("normalizeCjkText", () => {
     it("装飾記号の外側がASCII同士なら空白を保持する(誤除去しない)", () => {
       expect(normalizeCjkText("This is **bold** text.")).toBe("This is **bold** text.");
     });
+  });
+
+  it("CJK文字に挟まれた<br>の改行は消さず、行を連結しない", () => {
+    const { markdown } = extractMarkdown("<html><body><main><p>住所:東京都千代田区丸の内<br>電話番号:03-1234-5678<br>営業時間:平日</p></main></body></html>", {
+      selector: "main",
+    });
+    expect(markdown.split("\n").map((line) => line.trim())).toEqual(["住所:東京都千代田区丸の内", "電話番号:03-1234-5678", "営業時間:平日"]);
   });
 });
