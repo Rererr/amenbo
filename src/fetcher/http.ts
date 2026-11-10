@@ -360,19 +360,66 @@ function decodeWithEncoding(bytes: Uint8Array, encoding: "UTF8" | JapaneseEncodi
   return Encoding.codeToString(codes);
 }
 
+/** TextDecoderが正規化した名前のうち、日本語の3系統とUTF-8は従来どおりencoding-japanese側で扱う。 */
+const WHATWG_TO_JAPANESE: Record<string, { encoding: "UTF8" | JapaneseEncodingLabel; displayName: string }> = {
+  "utf-8": { encoding: "UTF8", displayName: "UTF-8" },
+  shift_jis: { encoding: "SJIS", displayName: "Shift_JIS" },
+  "euc-jp": { encoding: "EUCJP", displayName: "EUC-JP" },
+  "iso-2022-jp": { encoding: "JIS", displayName: "ISO-2022-JP" },
+};
+
+type DeclaredDecoding =
+  | { kind: "japanese"; encoding: "UTF8" | JapaneseEncodingLabel; displayName: string }
+  | { kind: "whatwg"; decoder: TextDecoder };
+
+/** 宣言されたcharsetのラベルを、デコードの方法へ解決する。TextDecoderも知らないラベルならnull(自動判定へ回す)。 */
+function resolveDeclaredCharset(label: string | null, source: "header" | "meta"): DeclaredDecoding | null {
+  if (!label) return null;
+  const japanese = CHARSET_ALIASES[label.toLowerCase()];
+  if (japanese) return { kind: "japanese", ...japanese };
+  let decoder: TextDecoder;
+  try {
+    decoder = new TextDecoder(label);
+  } catch {
+    return null;
+  }
+  const viaJapanese = WHATWG_TO_JAPANESE[decoder.encoding];
+  if (viaJapanese) return { kind: "japanese", ...viaJapanese };
+  // HTML仕様: metaでUTF-16と宣言されていても、metaを読めた時点でASCII互換の符号化なのでUTF-8として扱う。
+  if (source === "meta" && decoder.encoding.startsWith("utf-16")) return { kind: "japanese", ...WHATWG_TO_JAPANESE["utf-8"]! };
+  return { kind: "whatwg", decoder };
+}
+
+/**
+ * Latin-1系(iso-8859-1・us-ascii等はWHATWGでwindows-1252に正規化される)のヘッダ宣言は、サーバーの
+ * 既定値がそのまま付いていることが多いため、文書内のmeta宣言があればそちらを優先する。
+ */
+function isWeakHeaderDeclaration(declared: DeclaredDecoding): boolean {
+  return declared.kind === "whatwg" && declared.decoder.encoding === "windows-1252";
+}
+
 export interface DecodedHtml {
   text: string;
-  /** 表示用のエンコーディング名(例: "UTF-8" / "Shift_JIS")。 */
+  /** 表示用のエンコーディング名(例: "UTF-8" / "Shift_JIS" / "windows-1252")。 */
   encoding: string;
 }
 
-/** J1: Content-Typeヘッダ→metaタグ→encoding-japanese自動判定の順でHTMLをデコードする。 */
+/**
+ * J1: Content-Typeヘッダ→metaタグ→encoding-japanese自動判定の順でHTMLをデコードする。
+ * 宣言されたラベルはTextDecoderが知るものなら全て従う(日本語以外の旧来の符号化を、
+ * 自動判定がEUC-JP等と取り違えて化けさせないため)。自動判定は宣言が無いか未知のときだけ。
+ */
 export function decodeHtmlBytes(bytes: Uint8Array, contentTypeHeader: string | null): DecodedHtml {
-  const declaredCharset = charsetFromContentType(contentTypeHeader) ?? charsetFromMetaTag(bytes);
-  const declared = declaredCharset ? CHARSET_ALIASES[declaredCharset.toLowerCase()] : undefined;
+  let declared = resolveDeclaredCharset(charsetFromContentType(contentTypeHeader), "header");
+  if (!declared || isWeakHeaderDeclaration(declared)) {
+    declared = resolveDeclaredCharset(charsetFromMetaTag(bytes), "meta") ?? declared;
+  }
 
-  if (declared) {
+  if (declared?.kind === "japanese") {
     return { text: decodeWithEncoding(bytes, declared.encoding), encoding: declared.displayName };
+  }
+  if (declared?.kind === "whatwg") {
+    return { text: declared.decoder.decode(bytes), encoding: declared.decoder.encoding };
   }
 
   const detected = Encoding.detect(bytes);
