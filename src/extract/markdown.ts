@@ -1024,10 +1024,13 @@ export function normalizeRetainedTables(contentHtml: string): string {
 }
 
 interface ClassElement {
+  textContent: string | null;
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
 }
 interface ClassHostElement {
+  textContent: string | null;
   querySelectorAll(selector: string): ArrayLike<ClassElement>;
 }
 
@@ -1046,6 +1049,36 @@ function neutralizeUtilityClassTokens(root: ClassHostElement): void {
     const tokens = (el.getAttribute("class") ?? "").split(/\s+/);
     const kept = tokens.filter((token) => !UTILITY_CLASS_TOKEN.test(token));
     if (kept.length !== tokens.length) el.setAttribute("class", kept.join(" "));
+  }
+}
+
+// Readabilityが採点の前に要素ごと捨てる「本文らしくない名前」の判定。同じ版の正規表現を使うため本体から借りる。
+const READABILITY_NAME_PATTERNS = (Readability.prototype as unknown as { REGEXPS: { unlikelyCandidates: RegExp; okMaybeItsACandidate: RegExp } })
+  .REGEXPS;
+const UNLIKELY_NAME_MIN_TEXT_SHARE = 0.1;
+
+function visibleLength(text: string | null): number {
+  return (text ?? "").replace(/\s+/g, "").length;
+}
+
+/**
+ * idの部分一致で「本文らしくない」と判定される要素のうち、ページの文字の1割以上を持つものは
+ * idを外してReadabilityに捨てさせない。見出しから作ったid(`header.field.definitions`)が判定の語に
+ * 当たり、章を丸ごと捨てていた。ナビ・ヘッダ・フッタはpruningがタグで先に除いており、残る名前の
+ * 当たる部品(サイドバー等)は保存済みのページで本文の4%以下だった。
+ * classは外さない: 本文全体の容れ物がユーティリティクラスの値(`--banner-height`)で捨てられる
+ * ページは、Readabilityの再試行で本文を取れている。外すと採点の起点が変わり、記事の冒頭の
+ * 説明文を落とした(mintlify.comのquickstartで実測)。
+ */
+function dropUnlikelyIdsOfLargeBlocks(body: ClassHostElement): void {
+  const total = visibleLength(body.textContent);
+  if (total === 0) return;
+  for (const el of Array.from(body.querySelectorAll("[id]"))) {
+    const id = el.getAttribute("id") ?? "";
+    if (!READABILITY_NAME_PATTERNS.unlikelyCandidates.test(id)) continue;
+    if (READABILITY_NAME_PATTERNS.okMaybeItsACandidate.test(`${el.getAttribute("class") ?? ""} ${id}`)) continue;
+    if (visibleLength(el.textContent) / total < UNLIKELY_NAME_MIN_TEXT_SHARE) continue;
+    el.removeAttribute("id");
   }
 }
 
@@ -1180,7 +1213,10 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
       const dataTables = document.body ? collectDataTables(document.body as unknown as TableQueryHost) : [];
       const droppedHeadings = document.body ? collectHeadings(document.body as unknown as HeadingQueryHost) : [];
 
-      if (document.body) neutralizeUtilityClassTokens(document.body as unknown as ClassHostElement);
+      if (document.body) {
+        neutralizeUtilityClassTokens(document.body as unknown as ClassHostElement);
+        dropUnlikelyIdsOfLargeBlocks(document.body as unknown as ClassHostElement);
+      }
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;
 
