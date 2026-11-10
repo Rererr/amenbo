@@ -123,4 +123,17 @@ describe("diffMarkdown", () => {
     expect(result.sections.some((s) => s.content.includes("お知らせ3です。"))).toBe(false);
     expect(result.allSectionsChanged).toBe(false);
   });
+
+  it("変わらないのが冒頭(s0)だけなら、全節が変わったとみなす", () => {
+    const page = (a: string, b: string) => ["ホーム › お知らせ", "", "## 節A", "", a, "", "## 節B", "", b].join("\n");
+    const result = diffMarkdown(page("本文Aです。", "本文Bです。"), page("本文Aを書き換えました。", "本文Bを書き換えました。"));
+    expect(result.allSectionsChanged).toBe(true);
+  });
+
+  it("冒頭が変わり他の節が変わらなければ、冒頭だけの差分になる", () => {
+    const page = (lead: string) => [lead, "", "## 節A", "", "本文Aです。"].join("\n");
+    const result = diffMarkdown(page("2026年4月1日更新"), page("2026年4月2日更新"));
+    expect(result.sections.map((s) => [s.type, s.heading])).toEqual([["changed", "(冒頭)"]]);
+    expect(result.allSectionsChanged).toBe(false);
+  });
 });
