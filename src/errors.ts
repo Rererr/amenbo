@@ -164,7 +164,7 @@ export class WaitTooLongError extends AmenboError {
     const at = new Date(availableAt).toLocaleString("ja-JP", { timeZoneName: "short" });
     super(
       `このサイト(${host})へは${reason}のため、次に取得できるのは約${minutesLeft}分後(${at}頃)です。` +
-        `amenbo は${limitMs / 1000}秒を超えて待たずに中止しました。その時刻以降に取り直してください: ${url}`,
+        `amenbo は${limitMs < 120_000 ? `${limitMs / 1000}秒` : `${limitMs / 60_000}分`}を超えて待たずに中止しました。その時刻以降に取り直してください: ${url}`,
     );
   }
 }

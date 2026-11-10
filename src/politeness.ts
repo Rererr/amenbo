@@ -4,7 +4,8 @@
  * - robots.txt尊重(robots-parser)。取得結果はプロセス内でキャッシュ(TTL付き)し、
  *   robotsStore注入時はプロセス間でも共有する(CLI併設対応)。利用者が個別に許可した
  *   1回の取得(runIgnoringRobotsFor)の間だけ、許可したページと同じオリジンへの拒否を適用しない
- * - Crawl-Delay尊重。自分の番までの待ちが上限(MAX_WAIT_MS)を超えるときは、待たずに次に取得できる時刻を返す
+ * - Crawl-Delay尊重。1回の呼び出しの最初の要求で、自分の番までの待ちが上限(MAX_WAIT_MS)を超えるときは、
+ *   待たずに次に取得できる時刻を返す
  * - ドメイン毎の直列キュー + 既定最小間隔1秒
  * - 取得を断られた(429 / Retry-After)ホストへは、期限までアクセスしない
  */
@@ -34,6 +35,9 @@ const robotsOverrideScope = new AsyncLocalStorage<ReadonlySet<string>>();
 export function runIgnoringRobotsFor<T>(approvedUrls: readonly string[], fn: () => Promise<T>): Promise<T> {
   return robotsOverrideScope.run(new Set(approvedUrls.map((url) => new URL(url).origin)), fn);
 }
+
+/** 1回の呼び出し(rememberRefusalsの範囲)。最初の要求を送ったかを持つ。 */
+const callScope = new AsyncLocalStorage<{ sentFirstRequest: boolean }>();
 
 /** 呼び出し元(MCPのツール呼び出し)の取り消し。 */
 const cancellationScope = new AsyncLocalStorage<AbortSignal>();
@@ -99,8 +103,17 @@ export const DEFAULT_REFUSAL_COOLDOWN_MS = 30 * 60_000;
 /** Retry-After が長すぎる値でも、止めるのはこの時間まで。 */
 export const MAX_REFUSAL_COOLDOWN_MS = 24 * 60 * 60_000;
 const ROBOTS_FETCH_TIMEOUT_MS = 5000;
-/** 自分の番を待つ時間の上限。超えるなら待たずに、次に取得できる時刻を返す(待つかどうかは呼び出し側が決める)。 */
+/**
+ * 1回の呼び出しで最初の要求を送る前に、自分の番を待つ時間の上限。超えるなら待たずに、次に取得できる時刻を
+ * 返す(待つかどうかは呼び出し側が決める)。
+ */
 export const MAX_WAIT_MS = 60_000;
+/**
+ * 呼び出しの途中(ブラウザへの昇格・linksのフォールバック等、2回目以降の要求)の待ちの上限。途中で断ると、
+ * 取り直すたびに最初の要求だけが先方へ届いて完了しない。MCP stdioの既定の打ち切り(30分)を超える待ちは、
+ * 待っても応答を返せないので断る(setTimeoutの上限もこれより長い)。
+ */
+export const MAX_FOLLOW_UP_WAIT_MS = 30 * 60_000;
 
 interface RobotsCacheEntry {
   robots: Robot;
@@ -214,10 +227,11 @@ export class PolitenessManager {
   /**
    * fnがサイトに断られて失敗したら(HttpStatusError.isRefusal)、そのホストを期限まで止めてから投げ直す。
    * LLMが同じサイトへ取得を繰り返しても、2回目以降は相手に届かない。
+   * fnを1回の呼び出しとして扱い、待ちの上限(MAX_WAIT_MS)を最初の要求にだけ当てる(ツールの入口はすべてこれを通る)。
    */
   async rememberRefusals<T>(fn: () => Promise<T>): Promise<T> {
     try {
-      return await fn();
+      return await (callScope.getStore() ? fn() : callScope.run({ sentFirstRequest: false }, fn));
     } catch (error) {
       this.noteRefusal(error);
       throw error;
@@ -302,8 +316,9 @@ export class PolitenessManager {
     const crawlDelayMs = await this.getCrawlDelayMs(url);
     const intervalMs = Math.max(this.minIntervalMs, crawlDelayMs);
     const signal = cancellationScope.getStore();
+    const call = callScope.getStore();
 
-    const pace = { url, host, intervalMs, crawlDelayMs };
+    const pace = { url, host, intervalMs, crawlDelayMs, limitMs: call?.sentFirstRequest ? MAX_FOLLOW_UP_WAIT_MS : MAX_WAIT_MS };
     // 番が来てから断ると、そこまで待たせてしまう。先に並んでいる件数から目安を出し、並ぶ前に断る。
     const ahead = this.queued.get(host) ?? 0;
     const expectedWaitMs = Math.max(0, this.lastRequestAtOf(host) + intervalMs - this.now()) + ahead * intervalMs;
@@ -333,6 +348,7 @@ export class PolitenessManager {
       // 待っている間に、先に並んでいた同じホストへの取得が断られていることがある。
       this.assertNotRefused(url);
       this.noteRequest(host, this.now());
+      if (call) call.sentFirstRequest = true;
     } finally {
       release();
       entry.settled = true;
@@ -351,13 +367,17 @@ export class PolitenessManager {
   }
 
   /** 待ちが上限を超えるなら、待たずに次に取得できる時刻を添えて断る(setTimeoutの上限を超える待ちもここで止まる)。 */
-  private assertWaitWithinLimit(pace: { url: string; host: string; intervalMs: number; crawlDelayMs: number }, waitMs: number, ahead: number): void {
-    if (waitMs <= MAX_WAIT_MS) return;
+  private assertWaitWithinLimit(
+    pace: { url: string; host: string; intervalMs: number; crawlDelayMs: number; limitMs: number },
+    waitMs: number,
+    ahead: number,
+  ): void {
+    if (waitMs <= pace.limitMs) return;
     const pacing =
       pace.crawlDelayMs > this.minIntervalMs ? `robots.txt の Crawl-delay(${pace.crawlDelayMs / 1000}秒)` : `アクセス間隔(${pace.intervalMs / 1000}秒)`;
     const reason = ahead > 0 ? `${pacing}と、先に並んでいる${ahead}件の取得` : pacing;
     const now = this.now();
-    throw new WaitTooLongError(pace.url, pace.host, reason, now + waitMs, now, MAX_WAIT_MS);
+    throw new WaitTooLongError(pace.url, pace.host, reason, now + waitMs, now, pace.limitMs);
   }
 
   /** ホストへ1リクエスト発行したことを記録する(インメモリ + プロセス間共有ストア)。 */
