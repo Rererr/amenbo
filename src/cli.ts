@@ -20,18 +20,8 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
-import { resolveCacheDir } from "./cache.js";
-import {
-  cache,
-  handleFetchTool,
-  handleScreenshotTool,
-  politeness,
-  resolvePackageVersion,
-  type FetchToolInput,
-  type ImageBlock,
-  type ScreenshotToolInput,
-  type TextBlock,
-} from "./core.js";
+import { CacheFileUnreadableError, resolveCacheDir } from "./cache.js";
+import type { FetchToolInput, ImageBlock, ScreenshotToolInput, TextBlock } from "./core.js";
 import { AmenboError } from "./errors.js";
 import { closeBrowser } from "./fetcher/browser.js";
 import { formatLinksResponse } from "./formatting.js";
@@ -39,7 +29,8 @@ import { installBrowser } from "./installBrowser.js";
 import { discoverLinks } from "./links.js";
 import { runWithTerminalRobotsConsent } from "./terminalRobotsConsent.js";
 import { MAX_SCALE, MIN_SCALE } from "./screenshot.js";
-import { runServer } from "./server.js";
+
+type Core = typeof import("./core.js");
 
 // ---- 引数パース(純関数。ユニットテスト対象) ----
 
@@ -373,7 +364,7 @@ export function writeBlocks(blocks: Array<TextBlock | ImageBlock>, url: string, 
 
 // ---- 実行 ----
 
-async function dispatch(command: ParsedFetchCommand | ParsedLinksCommand | ParsedScreenshotCommand): Promise<void> {
+async function dispatch(core: Core, command: ParsedFetchCommand | ParsedLinksCommand | ParsedScreenshotCommand): Promise<void> {
   if (command.kind === "fetch") {
     const input: FetchToolInput = {
       url: command.url,
@@ -385,13 +376,13 @@ async function dispatch(command: ParsedFetchCommand | ParsedLinksCommand | Parse
       ...(command.maxTokens !== undefined ? { max_tokens: command.maxTokens } : {}),
       ...(command.forceFull !== undefined ? { force_full: command.forceFull } : {}),
     };
-    const blocks = await runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => handleFetchTool(input));
+    const blocks = await runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => core.handleFetchTool(input));
     writeBlocks(blocks, command.url, command.outDir ?? resolveFetchScreenshotDir());
     return;
   }
 
   if (command.kind === "links") {
-    const result = await discoverLinks(command.url, politeness, command.filter !== undefined ? { filter: command.filter } : {});
+    const result = await discoverLinks(command.url, core.politeness, command.filter !== undefined ? { filter: command.filter } : {});
     process.stdout.write(`${formatLinksResponse(command.url, result)}\n`);
     return;
   }
@@ -402,7 +393,7 @@ async function dispatch(command: ParsedFetchCommand | ParsedLinksCommand | Parse
     ...(command.width !== undefined ? { width: command.width } : {}),
     ...(command.scale !== undefined ? { scale: command.scale } : {}),
   };
-  const blocks = await runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => handleScreenshotTool(input));
+  const blocks = await runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => core.handleScreenshotTool(input));
   writeBlocks(blocks, command.url, command.outDir ?? process.cwd());
 }
 
@@ -423,13 +414,28 @@ export async function run(argv: string[]): Promise<number> {
     process.stdout.write(`${helpText(command.topic)}\n`);
     return 0;
   }
+
+  // core.tsは読み込んだ時点でキャッシュを開く。静的にimportすると、開けないキャッシュの案内が
+  // 捕捉されないスタックトレースとして出るため、ここで読み込んで文言だけを出す。
+  let core: Core;
+  try {
+    core = await import("./core.js");
+  } catch (error) {
+    if (error instanceof CacheFileUnreadableError) {
+      process.stderr.write(`${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+
   if (command.kind === "version") {
-    process.stdout.write(`${resolvePackageVersion()}\n`);
+    process.stdout.write(`${core.resolvePackageVersion()}\n`);
     return 0;
   }
   if (command.kind === "serve") {
     // MCPサーバーはstdioで待受け続けるプロセスのため、closeBrowser/cache.closeは呼ばない
     // (呼ぶとサーバー起動直後にキャッシュ/ブラウザが使えなくなる)。
+    const { runServer } = await import("./server.js");
     await runServer();
     return 0;
   }
@@ -438,7 +444,7 @@ export async function run(argv: string[]): Promise<number> {
     if (command.kind === "install-browser") {
       return await installBrowser();
     }
-    await dispatch(command);
+    await dispatch(core, command);
     return 0;
   } catch (error) {
     if (error instanceof AmenboError) {
@@ -451,7 +457,7 @@ export async function run(argv: string[]): Promise<number> {
     // playwrightのブラウザが開いたままだとプロセスがハングするため、サブコマンド完了後は
     // 確実にクローズしてから終了する(1実行=1プロセスのCLIではプロセス終了時のcloseに頼れない)。
     await closeBrowser();
-    cache.close();
+    core.cache.close();
   }
 }
 
