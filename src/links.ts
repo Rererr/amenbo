@@ -7,8 +7,13 @@
  *
  * 優先順位: robots.txt宣言のsitemap(→慣例パス`/sitemap.xml`) → ページの<link rel=alternate>
  * が指すRSS/Atomフィード → 最終手段としてページ内の<a>リンク抽出。
+ *
+ * 取得した sitemap・フィード・ページは、ページと同じTTLでキャッシュする。filter を
+ * 変えて呼び直すたびに同じ索引を取り直さないため(先方への要求を増やさない)。
  */
+import { gunzipSync } from "node:zlib";
 import { parseHTML } from "linkedom";
+import type { PageCache } from "./cache.js";
 import {
   BotChallengeError,
   HostRefusedError,
@@ -20,7 +25,7 @@ import {
   WaitTooLongError,
 } from "./errors.js";
 import { fetchPage } from "./fetcher/index.js";
-import { assertHttpScheme, httpGet } from "./fetcher/http.js";
+import { assertHttpScheme, decodeHtmlBytes, httpGetBinary, resolveDefaultMaxBodyBytes } from "./fetcher/http.js";
 import { currentCancellation, type PolitenessManager } from "./politeness.js";
 
 /**
@@ -67,6 +72,8 @@ export interface LinksResult {
    * 0より大きければ「filterに一致しなかった」と原因を切り分けられる(呼び出し側でのみ使う)。
    */
   preFilterCount: number;
+  /** 取得したが読めなかった出典の注記(gzipの sitemap を展開できなかった等)。無ければ省略。 */
+  warnings?: string[];
 }
 
 const MAX_LINKS = 200;
@@ -106,16 +113,79 @@ interface XmlLikeDocument {
   querySelector(selector: string): XmlLikeElement | null;
 }
 
+/** links が使うキャッシュ(PageCacheの一部。呼び出し側とテストが差し替えられるよう構造で受ける)。 */
+export type LinkSourceCache = Pick<PageCache, "get" | "isFresh" | "set">;
+
+/**
+ * 出典ごとの取得結果をキャッシュから返すか、取得してキャッシュする。ページのキャッシュ
+ * (fetchツール)と同じ表に置くため、キーはURLの前に種別を付けて衝突させない。
+ * loadがnullを返したら(一時的な失敗)保存しない。
+ */
+async function cachedSource<T>(
+  cache: LinkSourceCache | undefined,
+  key: string,
+  load: () => Promise<{ value: T; cacheControl: string | null } | null>,
+): Promise<T | null> {
+  const entry = cache?.get(key);
+  if (entry && cache?.isFresh(entry)) {
+    try {
+      return JSON.parse(entry.markdown) as T;
+    } catch {
+      // 形の壊れた行は無いものとして取り直す。
+    }
+  }
+  const loaded = await load();
+  if (!loaded) return null;
+  cache?.set({ url: key, etag: null, lastModified: null, markdown: JSON.stringify(loaded.value), metadata: {}, cacheControl: loaded.cacheControl });
+  return loaded.value;
+}
+
+/** 取得はできたが中身を読めなかった(gzipを展開できない等)。理由は応答の注記に出す。 */
+class UnreadableSourceError extends Error {}
+
+/** gzipの先頭2バイト(RFC 1952)。Content-Encodingで送られた圧縮はundiciが展開済みなので、ここに来るのは .gz のファイルそのもの。 */
+function isGzip(bytes: Uint8Array): boolean {
+  return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
+/** gzipを、本文の取得と同じ上限(展開後のバイト数)で展開する(gzip爆弾でメモリを使い切らないため)。 */
+function gunzipWithinLimit(bytes: Uint8Array): Uint8Array {
+  const limit = resolveDefaultMaxBodyBytes();
+  try {
+    return gunzipSync(bytes, { maxOutputLength: limit });
+  } catch (error) {
+    const tooLarge = error instanceof RangeError || (error as NodeJS.ErrnoException | null)?.code === "ERR_BUFFER_TOO_LARGE";
+    const reason = tooLarge ? `gzipの展開後の大きさが上限(${limit}バイト)を超えました` : `gzipを展開できませんでした(${(error as Error).message})`;
+    throw new UnreadableSourceError(reason);
+  }
+}
+
 async function fetchXml(
   url: string,
   timeoutMs: number,
   politeness: PolitenessManager,
   rewrite?: (xml: string) => string,
-): Promise<XmlLikeDocument> {
+): Promise<{ document: XmlLikeDocument; cacheControl: string | null }> {
   // リダイレクトの転送先ごとにrobots.txtも確認する(fetcher/http.tsのHttpGetOptions.checkRobots参照)。
-  const result = await httpGet(url, { timeoutMs, checkRobots: (targetUrl) => politeness.checkRedirectTarget(targetUrl) });
-  const { document } = parseHTML(rewrite ? rewrite(result.html) : result.html);
-  return document as unknown as XmlLikeDocument;
+  const result = await httpGetBinary(url, { timeoutMs, checkRobots: (targetUrl) => politeness.checkRedirectTarget(targetUrl) });
+  const gzipped = isGzip(result.bytes);
+  // 展開した中身には、gzipファイルとしてのContent-Typeのcharsetが当てはまらない。
+  const text = decodeHtmlBytes(gzipped ? gunzipWithinLimit(result.bytes) : result.bytes, gzipped ? null : result.contentType).text;
+  const { document } = parseHTML(rewrite ? rewrite(text) : text);
+  return { document: document as unknown as XmlLikeDocument, cacheControl: result.headers.get("cache-control") };
+}
+
+/**
+ * 出典の取得の失敗を振り分ける。拒否の印は投げ直し、出典が無いだけ(4xx)は「無し」として
+ * キャッシュしてよい結果に、それ以外(タイムアウト・5xx等の一時的な失敗)はnull(保存しない)にする。
+ */
+function absentOrTransient<T>(error: unknown, absent: T, label: string, url: string): { value: T; cacheControl: string | null } | null {
+  if (isFallbackBlockingError(error)) throw error;
+  if (error instanceof HttpStatusError) return error.status < 500 ? { value: absent, cacheControl: null } : null;
+  // sitemap.xml等が存在しない(404等)のは大半のサイトで起きる通常のフォールバック経路なので
+  // ログを出さない。それ以外(タイムアウト等の予期しない失敗)のみ診断用にログする。
+  console.error(`${label}の取得に失敗しました: ${url}`, error);
+  return null;
 }
 
 /**
@@ -128,66 +198,60 @@ function escapeRssLinkTag(xml: string): string {
   return xml.replace(/<link>([\s\S]*?)<\/link>/gi, "<rss-link>$1</rss-link>");
 }
 
-async function tryParseSitemap(
-  sitemapUrl: string,
-  politeness: PolitenessManager,
-  timeoutMs: number,
-  depth = 0,
-  onProgress?: ((message: string) => void) | undefined,
-): Promise<LinkEntry[] | null> {
-  let document: XmlLikeDocument;
-  try {
-    await politeness.guard(sitemapUrl, onProgress);
-    document = await fetchXml(sitemapUrl, timeoutMs, politeness);
-  } catch (error) {
-    if (isFallbackBlockingError(error)) throw error;
-    // sitemap.xmlが存在しない(404等)のは大半のサイトで起きる通常のフォールバック経路なので
-    // ログを出さない。それ以外(タイムアウト等の予期しない失敗)のみ診断用にログする。
-    if (!(error instanceof HttpStatusError)) {
-      console.error(`sitemapの取得に失敗しました: ${sitemapUrl}`, error);
-    }
-    return null;
-  }
-
-  // sitemapindex(子sitemapへの参照一覧)の場合、先頭数件のみ辿って合算する
-  const childLocs = Array.from(document.querySelectorAll("sitemapindex > sitemap > loc"));
-  if (childLocs.length > 0 && depth === 0) {
-    const results: LinkEntry[] = [];
-    for (const loc of childLocs.slice(0, MAX_SITEMAP_CHILDREN)) {
-      const childUrl = loc.textContent.trim();
-      if (!childUrl) continue;
-      const childLinks = await tryParseSitemap(childUrl, politeness, timeoutMs, depth + 1, onProgress);
-      // push(...childLinks)は引数展開のため、子sitemapが約15万件を超えるとスタックが溢れる。
-      if (childLinks) for (const link of childLinks) results.push(link);
-      if (results.length >= MAX_LINKS) break;
-    }
-    return results.length > 0 ? results : null;
-  }
-
-  const urlLocs = Array.from(document.querySelectorAll("urlset > url > loc"));
-  if (urlLocs.length === 0) return null;
-  return urlLocs.map((loc) => ({ url: loc.textContent.trim(), title: null })).filter((entry) => entry.url.length > 0);
+interface SourceContext {
+  politeness: PolitenessManager;
+  timeoutMs: number;
+  onProgress: ((message: string) => void) | undefined;
+  cache: LinkSourceCache | undefined;
+  /** 読めなかった出典の注記(応答に出す)。 */
+  warnings: string[];
 }
 
-async function tryParseFeed(
-  feedUrl: string,
-  politeness: PolitenessManager,
-  timeoutMs: number,
-  onProgress?: ((message: string) => void) | undefined,
-): Promise<LinkEntry[] | null> {
-  let document: XmlLikeDocument;
-  try {
-    await politeness.guard(feedUrl, onProgress);
-    // RSS 2.0の<link>はHTMLパーサにvoid要素として扱われるためリネームして回避する(下記コメント参照)
-    document = await fetchXml(feedUrl, timeoutMs, politeness, escapeRssLinkTag);
-  } catch (error) {
-    if (isFallbackBlockingError(error)) throw error;
-    if (!(error instanceof HttpStatusError)) {
-      console.error(`フィードの取得に失敗しました: ${feedUrl}`, error);
+type SitemapDocument = { kind: "urlset"; links: LinkEntry[] } | { kind: "index"; children: string[] } | { kind: "none"; warning?: string };
+
+function loadSitemap(sitemapUrl: string, context: SourceContext): Promise<SitemapDocument | null> {
+  return cachedSource<SitemapDocument>(context.cache, `links-sitemap:${sitemapUrl}`, async () => {
+    try {
+      await context.politeness.guard(sitemapUrl, context.onProgress);
+      const { document, cacheControl } = await fetchXml(sitemapUrl, context.timeoutMs, context.politeness);
+      const children = Array.from(document.querySelectorAll("sitemapindex > sitemap > loc"))
+        .map((loc) => loc.textContent.trim())
+        .filter((loc) => loc.length > 0);
+      if (children.length > 0) return { value: { kind: "index", children }, cacheControl };
+      const links = Array.from(document.querySelectorAll("urlset > url > loc"))
+        .map((loc) => ({ url: loc.textContent.trim(), title: null }))
+        .filter((entry) => entry.url.length > 0);
+      return { value: links.length > 0 ? { kind: "urlset", links } : { kind: "none" }, cacheControl };
+    } catch (error) {
+      if (error instanceof UnreadableSourceError) {
+        return { value: { kind: "none", warning: `sitemapを読めませんでした: ${sitemapUrl} (${error.message})` }, cacheControl: null };
+      }
+      return absentOrTransient<SitemapDocument>(error, { kind: "none" }, "sitemap", sitemapUrl);
     }
+  });
+}
+
+async function tryParseSitemap(sitemapUrl: string, context: SourceContext, depth = 0): Promise<LinkEntry[] | null> {
+  const sitemap = await loadSitemap(sitemapUrl, context);
+  if (!sitemap) return null;
+  if (sitemap.kind === "none") {
+    if (sitemap.warning) context.warnings.push(sitemap.warning);
     return null;
   }
+  if (sitemap.kind === "urlset") return sitemap.links;
+  // sitemapindex(子sitemapへの参照一覧)の場合、先頭数件のみ辿って合算する
+  if (depth > 0) return null;
+  const results: LinkEntry[] = [];
+  for (const childUrl of sitemap.children.slice(0, MAX_SITEMAP_CHILDREN)) {
+    const childLinks = await tryParseSitemap(childUrl, context, depth + 1);
+    // push(...childLinks)は引数展開のため、子sitemapが約15万件を超えるとスタックが溢れる。
+    if (childLinks) for (const link of childLinks) results.push(link);
+    if (results.length >= MAX_LINKS) break;
+  }
+  return results.length > 0 ? results : null;
+}
 
+function feedEntries(document: XmlLikeDocument): LinkEntry[] {
   // RSS 2.0
   const items = Array.from(document.querySelectorAll("item"));
   if (items.length > 0) {
@@ -214,7 +278,61 @@ async function tryParseFeed(
     if (entries.length > 0) return entries;
   }
 
-  return null;
+  return [];
+}
+
+function tryParseFeed(feedUrl: string, context: SourceContext): Promise<LinkEntry[] | null> {
+  return cachedSource<LinkEntry[]>(context.cache, `links-feed:${feedUrl}`, async () => {
+    try {
+      await context.politeness.guard(feedUrl, context.onProgress);
+      // RSS 2.0の<link>はHTMLパーサにvoid要素として扱われるためリネームして回避する(escapeRssLinkTag参照)
+      const { document, cacheControl } = await fetchXml(feedUrl, context.timeoutMs, context.politeness, escapeRssLinkTag);
+      return { value: feedEntries(document), cacheControl };
+    } catch (error) {
+      if (error instanceof UnreadableSourceError) return { value: [], cacheControl: null };
+      return absentOrTransient<LinkEntry[]>(error, [], "フィード", feedUrl);
+    }
+  });
+}
+
+interface PageDocument {
+  feedUrl: string | null;
+  links: LinkEntry[];
+}
+
+const EMPTY_PAGE: PageDocument = { feedUrl: null, links: [] };
+
+async function loadPage(url: string, context: SourceContext): Promise<PageDocument> {
+  const page = await cachedSource<PageDocument>(context.cache, `links-page:${url}`, async () => {
+    await context.politeness.guard(url, context.onProgress);
+    const pageResult = await fetchPage(url, {
+      timeoutMs: context.timeoutMs,
+      checkRobots: (targetUrl) => context.politeness.checkRedirectTarget(targetUrl),
+      waitTurn: (targetUrl) => context.politeness.waitTurn(targetUrl, context.onProgress),
+    });
+    if ("notModified" in pageResult) {
+      return { value: EMPTY_PAGE, cacheControl: null };
+    }
+    // 機能B: 非HTMLコンテンツはハンドオフ応答(fetchツール向け)の対象であり、linksツールでは
+    // DOMが無くリンク抽出できない。以前のfetchPage(HTML以外はUnsupportedContentError)と
+    // 同じ挙動を維持する(linksツールの応答形式は変えない)。
+    if ("handoff" in pageResult) {
+      throw new UnsupportedContentError(pageResult.finalUrl, pageResult.contentType ?? "(不明)");
+    }
+    const { document } = parseHTML(pageResult.html);
+    const feedHref = document
+      .querySelector('link[rel="alternate"][type="application/rss+xml"], link[rel="alternate"][type="application/atom+xml"]')
+      ?.getAttribute("href");
+    return {
+      value: {
+        feedUrl: feedHref ? new URL(feedHref, pageResult.finalUrl).toString() : null,
+        links: extractPageLinks(pageResult.html, pageResult.finalUrl),
+      },
+      cacheControl: pageResult.cacheControl,
+    };
+  });
+  // loadは一時的な失敗でもnullを返さず投げるので、ここには来ない。
+  return page ?? EMPTY_PAGE;
 }
 
 /** ページ内の&lt;a href&gt;リンクを抽出する(機能C: extract/dataSources.tsからも再利用される)。 */
@@ -256,7 +374,7 @@ function dedupeByUrl(links: LinkEntry[]): LinkEntry[] {
   return result;
 }
 
-function finalize(source: LinkSource, links: LinkEntry[], filter: string | undefined): LinksResult {
+function finalize(source: LinkSource, links: LinkEntry[], filter: string | undefined, warnings: string[]): LinksResult {
   const deduped = dedupeByUrl(links);
   const filtered = deduped.filter((link) => matchesFilter(link.url, filter) || matchesFilter(link.title ?? "", filter));
   return {
@@ -264,6 +382,7 @@ function finalize(source: LinkSource, links: LinkEntry[], filter: string | undef
     links: filtered.slice(0, MAX_LINKS),
     truncated: filtered.length > MAX_LINKS,
     preFilterCount: deduped.length,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 
@@ -276,6 +395,8 @@ export interface DiscoverLinksOptions {
    * server.tsがprogressToken有無に応じて組み立てて渡す(CLIは渡さない=未指定で後方互換)。
    */
   onProgress?: ((message: string) => void) | undefined;
+  /** 出典の取得結果を保存するキャッシュ(省略時は保存しない)。 */
+  cache?: LinkSourceCache | undefined;
 }
 
 /** URLからリンク一覧を発見する。sitemap → RSS/Atom → ページ内リンクの優先順で試す。 */
@@ -292,7 +413,13 @@ async function discoverLinksOnce(url: string, politeness: PolitenessManager, opt
   politeness.assertNotRefused(url);
   // 同じ理由で、取り消し済みならrobots.txtを取りに行く前に抜ける(robots.txtの取得は取り消せない)。
   if (currentCancellation()?.aborted) throw new RequestCancelledError(url);
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const context: SourceContext = {
+    politeness,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    onProgress: options.onProgress,
+    cache: options.cache,
+    warnings: [],
+  };
   const origin = new URL(url).origin;
   const pageHost = new URL(url).host;
   const skipWaitOnOtherHost = (error: unknown): null => {
@@ -304,42 +431,21 @@ async function discoverLinksOnce(url: string, politeness: PolitenessManager, opt
   const declaredSitemaps = await politeness.getSitemaps(url);
   const candidateSitemaps = declaredSitemaps.length > 0 ? declaredSitemaps : [`${origin}/sitemap.xml`];
   for (const sitemapUrl of candidateSitemaps) {
-    const links = await tryParseSitemap(sitemapUrl, politeness, timeoutMs, 0, options.onProgress).catch(skipWaitOnOtherHost);
+    const links = await tryParseSitemap(sitemapUrl, context).catch(skipWaitOnOtherHost);
     if (links && links.length > 0) {
-      return finalize("sitemap", links, options.filter);
+      return finalize("sitemap", links, options.filter, context.warnings);
     }
   }
 
   // 2. ページを取得し、<link rel=alternate>が指すRSS/Atomフィードを試す
-  await politeness.guard(url, options.onProgress);
-  const pageResult = await fetchPage(url, {
-    timeoutMs,
-    checkRobots: (targetUrl) => politeness.checkRedirectTarget(targetUrl),
-    waitTurn: (targetUrl) => politeness.waitTurn(targetUrl, options.onProgress),
-  });
-  if ("notModified" in pageResult) {
-    return finalize("page", [], options.filter);
-  }
-  // 機能B: 非HTMLコンテンツはハンドオフ応答(fetchツール向け)の対象であり、linksツールでは
-  // DOMが無くリンク抽出できない。以前のfetchPage(HTML以外はUnsupportedContentError)と
-  // 同じ挙動を維持する(linksツールの応答形式は変えない)。
-  if ("handoff" in pageResult) {
-    throw new UnsupportedContentError(pageResult.finalUrl, pageResult.contentType ?? "(不明)");
-  }
-
-  const { document } = parseHTML(pageResult.html);
-  const feedLinkEl = document.querySelector(
-    'link[rel="alternate"][type="application/rss+xml"], link[rel="alternate"][type="application/atom+xml"]',
-  );
-  const feedHref = feedLinkEl?.getAttribute("href");
-  if (feedHref) {
-    const feedUrl = new URL(feedHref, pageResult.finalUrl).toString();
-    const feedLinks = await tryParseFeed(feedUrl, politeness, timeoutMs, options.onProgress).catch(skipWaitOnOtherHost);
+  const page = await loadPage(url, context);
+  if (page.feedUrl) {
+    const feedLinks = await tryParseFeed(page.feedUrl, context).catch(skipWaitOnOtherHost);
     if (feedLinks && feedLinks.length > 0) {
-      return finalize("rss", feedLinks, options.filter);
+      return finalize("rss", feedLinks, options.filter, context.warnings);
     }
   }
 
   // 3. 最終手段: ページ内リンク抽出
-  return finalize("page", extractPageLinks(pageResult.html, pageResult.finalUrl), options.filter);
+  return finalize("page", page.links, options.filter, context.warnings);
 }

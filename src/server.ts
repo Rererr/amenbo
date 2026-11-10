@@ -22,6 +22,7 @@ import type { ServerContext } from "@modelcontextprotocol/server";
 import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 import {
+  cache,
   handleFetchTool,
   handleScreenshotTool,
   politeness,
@@ -184,7 +185,7 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
     async ({ url, filter }, ctx) => {
       try {
         const onProgress = buildProgressNotifier(ctx);
-        const result = await runCancellableBy(ctx.mcpReq.signal, () => discoverLinks(url, politeness, { ...(filter ? { filter } : {}), onProgress }));
+        const result = await runCancellableBy(ctx.mcpReq.signal, () => discoverLinks(url, politeness, { ...(filter ? { filter } : {}), onProgress, cache }));
         return { content: [{ type: "text" as const, text: formatLinksResponse(url, result) }] };
       } catch (error) {
         const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
