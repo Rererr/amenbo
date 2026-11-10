@@ -20,7 +20,7 @@ This is sufficient for Markdown fetching (`fetch` / `links`). Browser-based fetc
 npx -y amenbo install-browser
 ```
 
-This downloads Chromium (~170MB) once. Tell the user about the download and get their confirmation before running it. Skip it by default: when a page actually requires the browser, amenbo returns a clear error message containing this exact instruction.
+This downloads Chromium once (about 300MB to download and about 570MB on disk, measured on macOS arm64; other environments differ). Tell the user about the download and get their confirmation before running it. Skip it by default: when a page actually requires the browser, amenbo returns a clear error message containing this exact instruction.
 
 ## Configure
 
@@ -45,6 +45,12 @@ Add to `cline_mcp_settings.json` (MCP Servers → Configure MCP Servers):
 claude mcp add --scope user amenbo -- amenbo
 ```
 
+### Codex CLI
+
+```bash
+codex mcp add amenbo -- amenbo
+```
+
 ### Other MCP clients
 
 Register the command `amenbo` (no args) as a stdio server. To avoid a global install, use command `npx` with args `["-y", "amenbo"]` instead.
@@ -61,12 +67,12 @@ codex mcp remove amenbo    # Codex CLI
 npm uninstall -g amenbo
 ```
 
-For other clients, delete the `amenbo` entry from the client's MCP settings. Optional leftovers (delete by hand if wanted): the cache at `~/.cache/amenbo` (or `AMENBO_CACHE_DIR`), Chromium from `install-browser` in Playwright's browser directory (`~/Library/Caches/ms-playwright` on macOS, `~/.cache/ms-playwright` on Linux; shared with other Playwright uses), and the usage prompt pasted into `CLAUDE.md` / `AGENTS.md`.
+For other clients, delete the `amenbo` entry from the client's MCP settings. Optional leftovers (delete by hand if wanted): the cache at `~/.cache/amenbo` (or `AMENBO_CACHE_DIR`), Chromium from `install-browser`: `chromium-*`, `chromium_headless_shell-*` and `ffmpeg-*` in Playwright's browser directory (`~/Library/Caches/ms-playwright` on macOS, `~/.cache/ms-playwright` on Linux, `%USERPROFILE%\AppData\Local\ms-playwright` on Windows by Playwright's default, not checked here; shared with other Playwright uses; deleting only `chromium-*` leaves about 200MB), the npx cache if registered as `npx -y amenbo` (`_npx` under `npm config get cache`), and the usage prompt pasted into `CLAUDE.md` / `AGENTS.md`.
 
 ## Notes
 
-- Fetch failures due to robots.txt denial or anti-bot measures are **by design** (amenbo implements no circumvention). Report them to the user as-is; they are not installation errors. This includes Cloudflare / AWS WAF challenge pages (`BOT_CHALLENGE`). If the user explicitly asks for a robots.txt-denied page anyway, call again with `ask_robots_override: true`; amenbo then asks the user to confirm in the client UI. Never set it on your own. If amenbo says it has paused access to a site, or that the next request to a site can only be sent at a later time, do not retry before the time shown.
+- Fetch failures due to robots.txt denial or anti-bot measures are **by design** (amenbo implements no circumvention). Report them to the user as-is; they are not installation errors. This includes Cloudflare / AWS WAF challenge pages (the error says "bot 対策の確認画面が返りました"). If the user explicitly asks for a robots.txt-denied page anyway, call again with `ask_robots_override: true`; amenbo then asks the user to confirm in the client UI. Never set it on your own. If amenbo says it has paused access to a site, or that the next request to a site can only be sent at a later time, do not retry before the time shown.
 - `unchanged` / `diff` replies compare against amenbo's cache and appear only when this server process already returned the page's Markdown body, the 15-minute cache has expired, and the site resent the whole page; if the whole content was not read, refetch with `force_full: true`.
-- Do not modify settings files beyond what the registration command changes.
+- Do not modify settings files or other files beyond what the steps above write (the global npm install, the entry in the MCP client's settings, Playwright's browser directory for `install-browser`).
 - HTTP proxy environments (`HTTP_PROXY` / `HTTPS_PROXY`) are not supported — see "Known limitations" in the README.
 - After setup, load the usage conventions via the MCP prompt `usage` (in Claude Code: `/mcp__amenbo__usage`), or copy the recommended prompt from the README into the agent instructions (`CLAUDE.md` / `AGENTS.md`).

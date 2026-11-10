@@ -33,15 +33,15 @@ amenbo(アメンボ / water strider)は、Claude Code や Codex のようなコ�
 
 ## 収集先への低負荷
 
-- **二段フェッチ**：まず素の HTTP GET。JS 描画が必要なページだけ headless ブラウザに昇格するので、大半の取得でブラウザを起動しません
-- **礼儀正しいクローラ**：robots.txt と Crawl-Delay を尊重し、同じホストへの送信の開始を既定で 1 秒以上あけます（robots.txt の取得もこの1リクエストとして数えます）。あけるのは送信の開始の間隔で、応答待ちまで直列にはしないので、前の応答が返る前に次を送ることがあります。リンク列挙は sitemap を最優先し、ページを舐めません
+- **二段フェッチ**：まず素の HTTP GET。JS 描画が必要なページだけ headless ブラウザに昇格するので、大半の取得でブラウザを起動しません。ブラウザは load を待った後、networkidle(500ms の無通信)を最大 5 秒だけ待ち、来なくてもそのまま進みます
+- **礼儀正しいクローラ**：robots.txt と Crawl-Delay を尊重し、同じホストへの送信の開始を既定で 1 秒以上あけます（robots.txt の取得もこの1リクエストとして数えます）。あけるのは送信の開始の間隔で、応答待ちまで直列にはしないので、前の応答が返る前に次を送ることがあります。間隔をあけるのは待ち行列(guard)を通る要求だけで、リダイレクトの各段、転送先のオリジンの robots.txt の取得、ブラウザのサブリソースの要求は間隔をあけずに送ります。リンク列挙は sitemap を最優先し、ページを舐めません
 - **待ちすぎない**：呼び出しの最初の要求までの待ちが 60 秒を超えるときは、待たずに「次に取得できるのは約N分後(日時頃)」を理由つきで返します。呼び出しの途中の待ち(ブラウザへの昇格、`links` のフォールバック)は 30 分まで待ち、超えるなら送らずに理由を返します。そのため、これまで自動で待って取れていたページで、もう一度呼び出す必要が出ることがあります
-- **robots.txt を読めないとき**：5xx のほか、タイムアウト・接続断・TLS の失敗で規則を確認できないときも、RFC 9309 に従い全面拒否として扱います(5 分後に取り直します。プロセス間では共有しません)。名前解決の失敗は robots.txt の拒否ではなく「接続に失敗しました(DNS解決失敗)」です。リダイレクトは転送先ごとに robots.txt を確かめます(同一オリジン内の転送も含みます。ブラウザ経由ではメインフレームの転送の各段とページ内の遷移を、送る前に確かめます。iframe とサブリソースは robots.txt では確かめません)。Crawl-Delay の長いホストでは robots.txt を「1 時間 + Crawl-Delay」(24 時間まで)保持します
+- **robots.txt を読めないとき**：5xx(`Retry-After` が付いているときは全面拒否ではなく、上の「断られた」扱いでホストを止めます)のほか、タイムアウト・接続断・TLS の失敗で規則を確認できないときも、RFC 9309 に従い全面拒否として扱います(5 分後に取り直します。プロセス間では共有しません)。名前解決の失敗は robots.txt の拒否ではなく「接続に失敗しました(DNS解決失敗)」です。リダイレクトは転送先ごとに robots.txt を確かめます(同一オリジン内の転送も含みます。ブラウザ経由ではメインフレームの転送の各段とページ内の遷移を、送る前に確かめます。iframe とサブリソースは robots.txt では確かめません)。Crawl-Delay の長いホストでは robots.txt を「1 時間 + Crawl-Delay」(24 時間まで)保持します
 - **取り消しに応じる**：MCP の呼び出しが取り消されたら、順番待ちの要求は先方へ送らず、送信中の HTTP 取得は中止します。同じ URL に相乗りした取得は、全員が取り消したときだけ止まります
 - **robots.txt の例外は利用者が1件ずつ許可したときだけ**：robots.txt が拒否したページでも、利用者がそれでも見たいときは、`fetch` / `screenshot` に `ask_robots_override: true`（CLI は `--ask-robots-override`）を付けると、amenbo が利用者に確認します。MCP ではクライアントの画面(elicitation)で、CLI では端末で確認し、許可されたその1回の呼び出しに限って、確認画面に出したページと同じオリジン(スキーム・ホスト・ポートが同じ範囲)への robots.txt の拒否を適用しません。別のオリジンへの転送先(http→https や www の付け外しを含む)は、その URL を示して改めて確認します(1回の呼び出しで 3 オリジンまで)。引数だけでは回避しません(引数は LLM が書けるため)。アクセス間隔と Crawl-Delay はこのときも守ります。許可して取得した内容は通常どおりキャッシュに入り、有効期限内は確認なしで再利用されます(先方へのアクセスは発生しません)。bot 対策もしている大手(Google・Amazon・X・Facebook・Instagram・LinkedIn)は、許可しても bot 対策で断られるだけなので、確認を出さずに例外の対象外とします
-- **断られたら引く**：サイトが 429 か `Retry-After` 付きの応答で取得を断ったら、そのホストへのアクセスを `Retry-After` の時間(無ければ 30 分、最長 24 時間)止めます。止めている間は相手にアクセスせず、理由と再開の時刻を示して失敗します。期限はキャッシュに残すので、MCP サーバーと CLI の間でも共有します。ブラウザ経由の取得でも、400 以上の応答は HTTP の取得と同じく失敗として返します(bot 対策の画面を取得成功として返さないため)。Cloudflare の `cf-mitigated: challenge` や AWS WAF の `x-amzn-waf-action` が付いた bot 対策の確認画面も、ステータスに関係なく失敗(`BOT_CHALLENGE`)として返し、ブラウザへは昇格しません。ブラウザ経由では確認画面の本文をレンダラーへ渡さないので、確認画面のスクリプトは走りません
+- **断られたら引く**：サイトが 429 か `Retry-After` 付きの応答で取得を断ったら、そのホストへのアクセスを `Retry-After` の時間(無ければ 30 分、最長 24 時間)止めます。止めている間は相手にアクセスせず、理由と再開の時刻を示して失敗します。期限はキャッシュに残すので、MCP サーバーと CLI の間でも共有します。ブラウザ経由の取得でも、400 以上の応答は HTTP の取得と同じく失敗として返します(bot 対策の画面を取得成功として返さないため)。Cloudflare の `cf-mitigated: challenge` や AWS WAF の `x-amzn-waf-action` が付いた bot 対策の確認画面も、「bot 対策の確認画面が返りました」という失敗として返し(429 と `Retry-After` 付きの応答は、確認画面の印があっても上の「断られた」扱いが先で、ホストを止めます。それ以外はステータスに関係なく失敗です)、ブラウザへは昇格しません。ブラウザ経由では確認画面の本文をレンダラーへ渡さないので、確認画面のスクリプトは走りません
 - **正直な User-Agent**：ボットであることを明示します。**anti-bot 回避は実装しません**
-- **キャッシュ**：ETag / If-Modified-Since で再検証し、無駄な再取得を避けます。新鮮さの期限は既定 15 分（`AMENBO_CACHE_TTL_MS`）で、`Cache-Control` は**延長方向のみ**採用します（`max-age` が 15 分より長ければそちらを使い、上限 24 時間。`no-store` は保存しません）。`max-age=0` や `no-cache` で期限を縮めることはしません — これらを付けるサイトでは、従うとツール呼び出しの度に取得しに行くことになり、低負荷という前提が崩れるためです。ETag / Last-Modified を持つ行は期限が切れても 3 日残し、取り直しを 304 で済ませます。`#見出し` だけが違う URL は同じ文書として 1 回だけ取ります(`#/` と `#!` は SPA のルートなので別の文書です)
+- **キャッシュ**：ETag / If-Modified-Since で再検証し、無駄な再取得を避けます。新鮮さの期限は既定 15 分（`AMENBO_CACHE_TTL_MS`）で、`Cache-Control` は**延長方向のみ**採用します（`max-age` が 15 分より長ければそちらを使い、上限 24 時間。`no-store` は保存しません）。`max-age=0` や `no-cache` で期限を縮めることはしません — これらを付けるサイトでは、従うとツール呼び出しの度に取得しに行くことになり、低負荷という前提が崩れるためです。ETag / Last-Modified を持つ行は、取得から 3 日残し(新鮮さの期限が切れた後も使えます)、取り直しを 304 で済ませます。`#見出し` だけが違う URL は同じ文書として 1 回だけ取ります(`#/` と `#!` は SPA のルートなので別の文書です)
 
 ## インストール
 
@@ -51,7 +51,7 @@ amenbo(アメンボ / water strider)は、Claude Code や Codex のようなコ�
 npm install -g amenbo
 ```
 
-Markdown 取得(通常の `fetch` / `links`)はこれだけで動きます。JS 描画が必要な SPA への昇格やスクリーンショットなど、ブラウザ経由の取得にはインストール済みの Google Chrome を使います。Chrome が無い環境でブラウザ経由の取得を使う場合のみ、初回に一度だけ実行してください(Chromium を約 170MB ダウンロードします):
+Markdown 取得(通常の `fetch` / `links`)はこれだけで動きます。JS 描画が必要な SPA への昇格やスクリーンショットなど、ブラウザ経由の取得にはインストール済みの Google Chrome を使います。Chrome が無い環境でブラウザ経由の取得を使う場合のみ、初回に一度だけ実行してください(Chromium のダウンロードは約 300MB、展開後のディスク使用は約 570MB です(macOS arm64 で実測。ほかの OS や Playwright の版では異なります)):
 
 ```bash
 npx -y amenbo install-browser
@@ -112,10 +112,10 @@ amenbo(Web 取得の MCP サーバー)をこの環境に導入してください
 1. 前提の確認: `node -v` が v22.13.0 以上であること。満たさなければ導入を止めて、Node の更新を私に頼む(自分で Node を入れ替えない)。
 2. `npm install -g amenbo` を実行する。権限エラーになっても sudo は使わず、止めて私に知らせる(代わりに MCP の登録を `npx -y amenbo` 方式にする案を示す)。
 3. 使っている MCP クライアントに登録する。Claude Code は `claude mcp add --scope user amenbo -- amenbo`、Codex CLI は `codex mcp add amenbo -- amenbo`。ほかのクライアントは、README の「MCP クライアントへの登録」の JSON を、そのクライアントの MCP 設定に追加する。
-4. ブラウザ経由の取得(スクリーンショット、SPA)が必要で、Google Chrome が入っていないときだけ、Chromium(約 170MB)のダウンロードになることを私に伝えて確認を取ってから `npx -y amenbo install-browser` を実行する。
+4. ブラウザ経由の取得(スクリーンショット、SPA)が必要で、Google Chrome が入っていないときだけ、Chromium(ダウンロード約 300MB、ディスク約 570MB)のダウンロードになることを私に伝えて確認を取ってから `npx -y amenbo install-browser` を実行する。
 5. 動作確認: クライアントが新しいサーバーを認識したら、`fetch` を `{"url": "https://example.com/"}` で呼び、Markdown が返ることを確かめる。クライアントの再起動や承認が要る場合は、その操作を私に案内する(あなたには操作できない)。
 
-守ること: sudo を使わない。MCP の登録コマンド以外で、設定ファイルやこのプロジェクト以外のファイルを書き換えない。robots.txt の拒否や bot 対策による取得失敗はインストールの不具合ではなく仕様なので、そのまま私に報告する。
+守ること: sudo を使わない。上の手順が書き込む場所(`npm install -g` の置き場、MCP クライアントの設定への登録、`install-browser` のブラウザ置き場)のほかは、設定ファイルやこのプロジェクト以外のファイルを書き換えない。robots.txt の拒否や bot 対策による取得失敗はインストールの不具合ではなく仕様なので、そのまま私に報告する。
 ```
 
 ### アンインストール
@@ -129,7 +129,8 @@ npm uninstall -g amenbo
 VS Code や Cursor、Cline に登録した場合は、各クライアントの MCP 設定から `amenbo` のエントリを消してください。そのほかに残るものは次のとおりです。必要なら手で削除します。
 
 - キャッシュ：`~/.cache/amenbo`(`AMENBO_CACHE_DIR` を設定していればそのディレクトリ)。消すと、取得済みのページと画面写真の控え、robots.txt の控え、サイトごとの取得間隔の記録、断られたサイトへのアクセスを止めている期限が失われます
-- Chromium：`amenbo install-browser` で入れた場合は、Playwright の既定のブラウザ置き場(macOS は `~/Library/Caches/ms-playwright`、Linux は `~/.cache/ms-playwright`)の `chromium-*`。ほかの Playwright の利用と共有なので、不要と分かっているときだけ消してください
+- Chromium：`amenbo install-browser` で入れた場合は、Playwright のブラウザ置き場(既定は macOS が `~/Library/Caches/ms-playwright`、Linux が `~/.cache/ms-playwright`、Windows が `%USERPROFILE%\AppData\Local\ms-playwright`。Windows は Playwright の既定の場所を書いたもので、この README のために確かめてはいません。`PLAYWRIGHT_BROWSERS_PATH` で変えられます)にできる `chromium-*`、`chromium_headless_shell-*`、`ffmpeg-*` の3つです(headless では `chromium_headless_shell-*` が動くので、`chromium-*` だけを消すと約 200MB が残ります)。ほかの Playwright の利用と共有なので、不要と分かっているときだけ消してください
+- npx のキャッシュ：`npx -y amenbo` で登録した場合は、npm のキャッシュ(`npm config get cache` の場所の `_npx` 配下)に amenbo と依存パッケージが残ります
 - `CLAUDE.md` や `AGENTS.md` に貼った推奨プロンプト
 
 ### エージェントに使い方を教える(推奨プロンプト)
@@ -213,7 +214,7 @@ amenbo screenshot https://example.com/ --viewport-only --scale 0.5 --out-dir ./s
 | `force_full` | true で差分応答・定型ブロック除去を無効化する(`max_tokens` によるページ分割は従来通り働く)。`unchanged` / `diff` が返って本文を全部は見ていないときの取り直しに使う |
 | `ask_robots_override` | ユーザーが robots.txt の拒否を承知で取得を明示的に頼んだときだけ true。amenbo がクライアントの画面で確認し、許可されたときだけ取得する |
 
-応答の見出し行には、ページが知らせていれば `markdown_alternate:`(Markdown 版の在りか)と `llms_txt:` が付きます。amenbo は自分では取りに行きません。HTML と PDF 以外の応答(CSV、JSON、`text/markdown` など)は、メタデータ・本文のプレビュー(`page: N of M`)・全体を取る `curl` の案内を返す handoff 応答になります。`size:` は、読み切った応答なら受け取った本文の大きさ、途中までなら「不明(…)」です。
+応答の見出し行には、ページが知らせていれば `markdown_alternate:`(Markdown 版の在りか)と `llms_txt:` が付きます。amenbo は自分では取りに行きません。HTML と PDF 以外の応答(CSV、JSON、`text/markdown` など)は、メタデータ・本文のプレビュー(`page: N of M`)・全体を取る `curl` の案内を返す handoff 応答になります。`page: N of M` は複数ページに分かれるときだけ出ます。`size:` は、読み切った応答なら受け取った本文の大きさ、途中までなら `Content-Length` があればその値、無ければ「不明(…)」です。
 
 ### `links` でリンクを列挙
 | パラメータ | 説明 |
@@ -223,8 +224,8 @@ amenbo screenshot https://example.com/ --viewport-only --scale 0.5 --out-dir ./s
 
 sitemap → ページが知らせる llms.txt → RSS/Atom → ページ内リンクの順で探索します。順はキャッシュの状態に依りません。sitemap があればページも llms.txt も取りません。sitemap が無く、fetch 済みのページが llms.txt を知らせていれば、ページを取り直さずにそれを使います(llms.txt の場所は推測して探しません)。
 
-- 結果は最大 200 件で、超えると `count:` に `(truncated)` が付きます。sitemap index は先頭 3 つの子 sitemap までです
-- 取得した sitemap・フィード・ページ・llms.txt は 15 分キャッシュします(`no-store` は除く。4xx は「無い」として保存)。`filter` を変えて呼び直しても先方へ取りに行きません
+- 結果は最大 200 件で、超えると `count:` に `(truncated)` が付きます。sitemap index は先頭 3 つの子 sitemap までで、先頭の子から順に読み、合計が 200 件に達したら残りの子は読みません。`filter` はその後にかけるので、読まなかった子 sitemap にだけある URL は、`filter` を指定しても拾えません
+- 取得した sitemap・フィード・ページ・llms.txt は、ページと同じ期限(既定 15 分。`AMENBO_CACHE_TTL_MS` に従い、`Cache-Control: max-age` があれば最長 24 時間まで延びます)でキャッシュします(`no-store` は除く。4xx は「無い」として保存)。`filter` を変えて呼び直しても先方へ取りに行きません
 - gzip の sitemap は `AMENBO_MAX_BODY_BYTES`(既定 20MB)を上限に展開します。読めなければ `warning:` の行で知らせます
 - `source: llms.txt` の各行は `- 名前: 説明 — URL` です
 
