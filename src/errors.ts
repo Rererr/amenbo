@@ -240,6 +240,19 @@ export class ExtractionError extends AmenboError {
   }
 }
 
+/** PDFとして取得した応答をPDFとして読めなかった(PDFでない応答・パスワード付き・壊れたPDF)。 */
+export class PdfUnreadableError extends AmenboError {
+  readonly code = "PDF_UNREADABLE";
+
+  constructor(
+    readonly url: string,
+    reason: string,
+    options?: { cause?: unknown },
+  ) {
+    super(`PDFとして読めませんでした: ${url} (${reason})`, options);
+  }
+}
+
 /** outlineモードで得られたsection IDが、対象ページの見出し構成上に見つからなかった。 */
 export class SectionNotFoundError extends AmenboError {
   readonly code = "SECTION_NOT_FOUND";
