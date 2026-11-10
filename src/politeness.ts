@@ -10,7 +10,7 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import robotsParserImport from "robots-parser";
-import { HostRefusedError, HttpStatusError, PrivateAddressError, RobotsDeniedError } from "./errors.js";
+import { FetchTimeoutError, HostRefusedError, HttpStatusError, NetworkError, PrivateAddressError, RobotsDeniedError } from "./errors.js";
 import { httpGet, USER_AGENT } from "./fetcher/http.js";
 import { DEFAULT_ROBOTS_TTL_MS } from "./ttl.js";
 
@@ -66,7 +66,7 @@ interface RobotsCacheEntry {
   ttlMs?: number;
 }
 
-/** robots.txt が 5xx だったときの全面拒否を持つ時間。一時的な障害で長く止めず、1回の呼び出しの中では取り直さない長さ。 */
+/** robots.txt に届かなかった(5xx・タイムアウト・接続断)ときの全面拒否を持つ時間。一時的な障害で長く止めず、1回の呼び出しの中では取り直さない長さ。 */
 export const UNREACHABLE_ROBOTS_TTL_MS = 5 * 60_000;
 
 /**
@@ -122,6 +122,14 @@ export interface PolitenessOptions {
   refusalStore?: RefusalStore;
 }
 
+/** robots.txt の取得失敗が「届かない」(RFC 9309 2.3.1.4)に当たるなら、その理由を返す。当たらなければ null。 */
+function describeUnreachableRobots(error: unknown): string | null {
+  if (error instanceof HttpStatusError && error.status >= 500) return `robots.txt が ${error.status} を返し規則を確認できない`;
+  if (error instanceof FetchTimeoutError) return `robots.txt が ${error.timeoutMs / 1000} 秒以内に応答せず規則を確認できない`;
+  if (error instanceof NetworkError) return "robots.txt に接続できず規則を確認できない";
+  return null;
+}
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -137,8 +145,8 @@ export class PolitenessManager {
   private readonly refusedUntil = new Map<string, number>();
 
   private readonly robotsCache = new Map<string, RobotsCacheEntry>();
-  /** robots.txt が 5xx を返して規則を確認できなかったオリジンと、そのステータス(全面拒否の理由に添える)。 */
-  private readonly robotsUnreachable = new Map<string, number>();
+  /** robots.txt に届かず規則を確認できなかったオリジンと、その理由(全面拒否の理由に添える)。 */
+  private readonly robotsUnreachable = new Map<string, string>();
   // N8: settledを持たせるのは、pruneStaleHostStateがまだ完了していない(=キューに並んでいる
   // 呼び出しがある)ロックを誤って消してしまうと直列化が壊れる(同一ホストへの同時呼び出しが
   // 追い越してしまう)ため。「完了済み」かつ「最終アクセスから十分時間が経っている」ロックのみ
@@ -209,11 +217,8 @@ export class PolitenessManager {
   async checkRobotsAllowed(url: string): Promise<void> {
     const robots = await this.getRobots(url);
     if (robots && robots.isAllowed(url, USER_AGENT) === false) {
-      const unreachableStatus = this.robotsUnreachable.get(new URL(url).origin);
-      throw new RobotsDeniedError(
-        url,
-        unreachableStatus === undefined ? undefined : `robots.txt が ${unreachableStatus} を返し規則を確認できないため、全面拒否として扱います(RFC 9309)`,
-      );
+      const unreachableReason = this.robotsUnreachable.get(new URL(url).origin);
+      throw new RobotsDeniedError(url, unreachableReason === undefined ? undefined : `${unreachableReason}ため、全面拒否として扱います(RFC 9309)`);
     }
   }
 
@@ -374,12 +379,13 @@ export class PolitenessManager {
       if (error instanceof PrivateAddressError) throw error;
       // robots.txt への応答で断られたら、規則が読めないまま取りに行かず、ページの取得と同じく引く。
       if (error instanceof HttpStatusError && error.isRefusal) throw error;
-      // RFC 9309: 5xx で robots.txt に届かないときは全面拒否とみなす。一時的な障害で長く止めないよう短く持ち、
-      // プロセス間のストアにも残さない。
-      if (error instanceof HttpStatusError && error.status >= 500) {
+      // RFC 9309: サーバーかネットワークのエラーで robots.txt に届かないときは全面拒否とみなす。一時的な障害で
+      // 長く止めないよう短く持ち、プロセス間のストアにも残さない。
+      const unreachableReason = describeUnreachableRobots(error);
+      if (unreachableReason !== null) {
         const robots = robotsParser(robotsUrl, "User-agent: *\nDisallow: /\n");
         const fetchedAt = this.now();
-        this.robotsUnreachable.set(origin, error.status);
+        this.robotsUnreachable.set(origin, unreachableReason);
         this.robotsCache.set(origin, { robots, fetchedAt, ttlMs: UNREACHABLE_ROBOTS_TTL_MS });
         this.noteRequest(new URL(robotsUrl).host, fetchedAt);
         return robots;

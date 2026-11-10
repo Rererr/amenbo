@@ -168,7 +168,7 @@ describe("PolitenessManager - checkRobotsAllowed / guard", () => {
     await expect(pm.checkRobotsAllowed("http://example.com/admin/secret")).rejects.toThrow(RobotsDeniedError);
   });
 
-  it("robots.txtが取得できない場合は許可されているものとして扱う", async () => {
+  it("robots.txtの取得が、届かない(5xx・タイムアウト・接続断)以外の予期しないエラーで失敗した場合は許可されているものとして扱う", async () => {
     httpGetMock.mockRejectedValue(new Error("network error"));
     const pm = new PolitenessManager({ sleep: async () => {} });
     await expect(pm.checkRobotsAllowed("http://example.com/anything")).resolves.toBeUndefined();
