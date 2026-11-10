@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Readability } from "@mozilla/readability";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { extractMarkdown } from "../src/extract/markdown.js";
 import { buildOutline } from "../src/extract/outline.js";
 
@@ -261,7 +261,8 @@ describe("見出しから作ったidとReadabilityの「本文らしくない名
     expect(regexps?.negative).toBeInstanceOf(RegExp);
   });
 
-  it("Readabilityの版が変わって名前の判定を借りられなくても、抽出は失敗しない", () => {
+  it("Readabilityの版が変わって名前の判定を借りられなくても、抽出は失敗せず、警告を一度だけ出す", () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const prototype = Readability.prototype as unknown as { REGEXPS?: unknown };
     const saved = prototype.REGEXPS;
     // 本体はインスタンス経由で同じ表を引くので、プロトタイプから直接引いたときだけ無いことにする。
@@ -273,8 +274,11 @@ describe("見出しから作ったidとReadabilityの「本文らしくない名
     });
     try {
       expect(extractMarkdown(html, { url: "https://www.example.org/rfc/rfc0000.html" }).markdown).toContain("Section 1 paragraph 0");
+      extractMarkdown(html, { url: "https://www.example.org/rfc/rfc0001.html" });
+      expect(warn.mock.calls.filter(([message]) => String(message).includes("REGEXPS"))).toHaveLength(1);
     } finally {
       Object.defineProperty(prototype, "REGEXPS", { configurable: true, writable: true, value: saved });
+      warn.mockRestore();
     }
   });
 });
