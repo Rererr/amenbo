@@ -5,7 +5,7 @@
  * Crawl4AIの40+CMP対応の国内版に相当するが、Phase 3では個別CMPのSDK名を列挙するのではなく、
  * 「よくある実装パターン」の汎用ヒューリスティックでカバーする:
  *   - id/class名にcookie/consent/cmp/gdpr/app-banner/interstitial等が含まれる
- *   - 「同意して閉じる」「アプリで開く」等の日本語頻出文言を含む
+ *   - 「同意して閉じる」「アプリで開く」等の日本語頻出文言か、英語のCookie同意の定型文言を含む
  *   - (fixed overlay判定はDOM抽出時は不可。ブラウザレンダリング時はfetcher/browser.tsの
  *     hideConsentBanners が実際のcomputed styleで判定する)
  * のうち複数シグナルが揃った場合のみ除去することで、誤除去(本文の一部を消してしまう)を防ぐ。
@@ -21,6 +21,11 @@ const BANNER_TEXT_PATTERNS = [
   /アプリ内で開く/,
   /ストアで見る/,
   /App Store|Google Play.{0,10}(で|から)開く/i,
+  // 英語のCookie同意バナー。単独の"cookie"や"accept"は本文にも現れるので、バナーに固有の言い回しに限る。
+  // 末尾に語境界を置かないのは、textContentがボタンの文字列を空白なしにつなぐため(「cookiesReject」)。
+  /\bwe use cookies/i,
+  /\b(this|our) (web)?site uses cookies/i,
+  /\b(accept|allow|reject|decline) (all )?cookies/i,
 ];
 
 const BANNER_ID_CLASS_PATTERN = /cookie|consent|cmp[-_]|gdpr|app[-_]?banner|interstitial|smart-?banner/i;
