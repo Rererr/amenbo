@@ -144,9 +144,12 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
     async ({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull, ask_robots_override: askOverride }, ctx) => {
       try {
         const onProgress = buildProgressNotifier(ctx);
+        // 確認の後の取り直しも同じ1回の呼び出しとして扱う(待ちの上限を最初の要求にだけ当てるため)。
         const result = await runCancellableBy(ctx.mcpReq.signal, () =>
-          runWithRobotsConsent(robotsConsentContext(ctx, url, askOverride), () =>
-            handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull, onProgress }),
+          politeness.rememberRefusals(() =>
+            runWithRobotsConsent(robotsConsentContext(ctx, url, askOverride), () =>
+              handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull, onProgress }),
+            ),
           ),
         );
         return Array.isArray(result) ? { content: result } : result;
@@ -221,7 +224,9 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
       try {
         const onProgress = buildProgressNotifier(ctx);
         const result = await runCancellableBy(ctx.mcpReq.signal, () =>
-          runWithRobotsConsent(robotsConsentContext(ctx, url, askOverride), () => handleScreenshotTool({ url, fullPage, width, scale, onProgress })),
+          politeness.rememberRefusals(() =>
+            runWithRobotsConsent(robotsConsentContext(ctx, url, askOverride), () => handleScreenshotTool({ url, fullPage, width, scale, onProgress })),
+          ),
         );
         return Array.isArray(result) ? { content: result } : result;
       } catch (error) {
