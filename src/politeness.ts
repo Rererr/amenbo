@@ -170,7 +170,7 @@ export interface PolitenessOptions {
   /** テスト用の時刻取得関数差し替え。 */
   now?: () => number;
   /** テスト用のsleep関数差し替え。 */
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** 未指定時は従来通りインメモリのみでレート制御する(完全後方互換)。 */
   store?: PolitenessStore;
   /** 未指定時は従来通りインメモリのみでrobots.txtをキャッシュする(完全後方互換)。 */
@@ -190,15 +190,23 @@ function describeUnreachableRobots(error: unknown): string | null {
   return null;
 }
 
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** 取り消されたらタイマーを止める。そのときは解決しない(待ち終わりと区別できず要求を送ってしまうため)。 */
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    const stop = (): void => clearTimeout(timer);
+    signal?.addEventListener("abort", stop, { once: true });
+  });
 }
 
 export class PolitenessManager {
   private readonly minIntervalMs: number;
   private readonly robotsTtlMs: number;
   private readonly now: () => number;
-  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly store: PolitenessStore | undefined;
   private readonly robotsStore: RobotsStore | undefined;
   private readonly refusalStore: RefusalStore | undefined;
@@ -347,7 +355,7 @@ export class PolitenessManager {
         // 並んでいる間に別プロセスが同じホストへの要求を記録していると、目安より長くなりうる。
         this.assertWaitWithinLimit(pace, intervalMs - elapsed, 0);
         onProgress?.("アクセス間隔を確保するため待機しています…");
-        await unlessCancelled(this.sleep(intervalMs - elapsed), url, signal);
+        await unlessCancelled(this.sleep(intervalMs - elapsed, signal), url, signal);
       }
       // 待っている間に、先に並んでいた同じホストへの取得が断られていることがある。
       this.assertNotRefused(url);

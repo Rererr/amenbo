@@ -86,7 +86,7 @@ describe("PolitenessManager - 待ちの上限", () => {
 
     await pm.guard("http://example.com/a");
 
-    expect(sleep).toHaveBeenCalledWith(60_000);
+    expect(sleep).toHaveBeenCalledWith(60_000, undefined);
   });
 
   it("Crawl-delay が上限を超えるなら、待たずに次に取得できる時刻を理由つきで返す", async () => {
@@ -217,6 +217,25 @@ describe("PolitenessManager - 取り消し", () => {
 
     expect(await call).toBeInstanceOf(RequestCancelledError);
     expect(recorded).toHaveLength(1); // robots.txt だけ
+  });
+
+  it("既定のsleepは、取り消されたら間隔の待機のタイマーを止める(取り消し後に最大60秒残さない)", async () => {
+    vi.useFakeTimers();
+    try {
+      mockRobots("");
+      const pm = new PolitenessManager({ minIntervalMs: 30_000 });
+      const controller = new AbortController();
+
+      const call = runCancellableBy(controller.signal, () => pm.waitTurn("http://example.com/a")).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(1); // 間隔の待機
+
+      controller.abort();
+      expect(await call).toBeInstanceOf(RequestCancelledError);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("取り消しの文脈の外(CLI等)では、今までどおり待って記録する", async () => {

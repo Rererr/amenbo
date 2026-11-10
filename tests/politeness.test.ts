@@ -53,7 +53,7 @@ describe("PolitenessManager - waitTurn(ドメイン毎の直列キュー+最小�
     sleepSpy.mockClear();
 
     await pm.waitTurn("http://example.com/b");
-    expect(sleepSpy).toHaveBeenCalledWith(1000);
+    expect(sleepSpy).toHaveBeenCalledWith(1000, undefined);
   });
 
   it("robots.txtの取得も1リクエストとして数え、直後の取得は最小間隔だけ待つ", async () => {
@@ -65,7 +65,7 @@ describe("PolitenessManager - waitTurn(ドメイン毎の直列キュー+最小�
     await pm.guard("http://example.com/a");
 
     expect(httpGetMock).toHaveBeenCalledWith("http://example.com/robots.txt", expect.anything());
-    expect(sleepSpy).toHaveBeenCalledWith(1000);
+    expect(sleepSpy).toHaveBeenCalledWith(1000, undefined);
   });
 
   it("同一ホストへの同時呼び出しは直列に処理される(順序が保たれる)", async () => {
@@ -108,7 +108,7 @@ describe("PolitenessManager - waitTurn(ドメイン毎の直列キュー+最小�
     await pm.waitTurn("http://example.com/a");
     await pm.waitTurn("http://example.com/b");
 
-    expect(sleepSpy).toHaveBeenCalledWith(3000);
+    expect(sleepSpy).toHaveBeenCalledWith(3000, undefined);
   });
 });
 
@@ -281,7 +281,7 @@ describe("runIgnoringRobotsFor(利用者が個別に許可した1回の取得)",
       sleepSpy.mockClear();
       await pm.guard("http://example.com/b");
     });
-    expect(sleepSpy).toHaveBeenCalledWith(5000);
+    expect(sleepSpy).toHaveBeenCalledWith(5000, undefined);
   });
 });
 
@@ -393,7 +393,7 @@ describe("PolitenessManager - store注入時のプロセス間レート制御共
 
     // インメモリのlastRequestAt(未記録=-Infinity)ではなくstore値(-300)を基準にするため、
     // 1000 - 300 = 700ms待機するはず
-    expect(sleepSpy).toHaveBeenCalledWith(700);
+    expect(sleepSpy).toHaveBeenCalledWith(700, undefined);
   });
 
   it("リクエスト時刻の記録時にstoreへも書き込まれる", async () => {
@@ -417,7 +417,7 @@ describe("PolitenessManager - store注入時のプロセス間レート制御共
     await pm.waitTurn("http://example.com/a");
     sleepSpy.mockClear(); // 初回のrobots.txt取得分の待機を除いて比較する
     await pm.waitTurn("http://example.com/b");
-    expect(sleepSpy).toHaveBeenCalledWith(1000);
+    expect(sleepSpy).toHaveBeenCalledWith(1000, undefined);
   });
 });
 
