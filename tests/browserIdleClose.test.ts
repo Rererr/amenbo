@@ -41,6 +41,8 @@ function createFakeBrowser() {
               detach: async () => {},
             }),
           }),
+          on: () => {},
+          off: () => {},
           route: async () => {},
           unroute: async () => {},
           waitForLoadState: async () => {},

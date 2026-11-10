@@ -28,11 +28,15 @@ const SCREENSHOT_RETRY_HINT =
  * - response: HTTP応答(ヘッダ)が1バイトも届かないまま期限切れ。ボット対策で応答を保留する
  *   サイト(接続は受け付けるが返さない)がここに落ちるため、ブラウザ経由の再試行を案内する
  * - body: ヘッダ受信後、本文読み取り中に期限切れ
- * - browser: ブラウザ経由の取得が期限切れ
+ * - browser-response: ブラウザで開いたが、応答が届かないまま期限切れ
+ * - browser: ブラウザで応答は届いたが、読み込み(loadイベント)が終わらないまま期限切れ
  */
-export type FetchTimeoutStage = "response" | "body" | "browser";
+export type FetchTimeoutStage = "response" | "body" | "browser-response" | "browser";
 
 function describeTimeout(url: string, timeoutMs: number, stage: FetchTimeoutStage): string {
+  if (stage === "browser-response") {
+    return `ブラウザで開いたページの応答が${timeoutMs}ms以内に届きませんでした: ${url}`;
+  }
   if (stage === "browser") {
     return `ブラウザで開いたページの読み込みが${timeoutMs}ms以内に終わりませんでした(loadイベントが来ない): ${url}`;
   }
@@ -420,6 +424,11 @@ export class NetworkError extends AmenboError {
       .find((message): message is string => typeof message === "string");
     const rawMessage = deepestMessage ?? String(cause);
     return new NetworkError(url, "unknown", buildNetworkErrorMessage(url, "unknown", rawMessage), { cause });
+  }
+
+  /** 名前解決できなかった(HTTP経路でENOTFOUNDになるのと同じ扱い。原因の例外が無い経路用)。 */
+  static dnsFailure(url: string): NetworkError {
+    return new NetworkError(url, "dns", buildNetworkErrorMessage(url, "dns", ""));
   }
 
   /**

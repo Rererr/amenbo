@@ -43,7 +43,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - run: npx vitest run tests/consentBannerBrowser.test.ts tests/browserRedirectRobots.test.ts
+      - run: npx vitest run tests/consentBannerBrowser.test.ts tests/browserRedirectRobots.test.ts tests/botChallengeBrowser.test.ts
 
   pnpm:
     runs-on: ubuntu-latest

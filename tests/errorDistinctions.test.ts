@@ -82,6 +82,8 @@ function fakePage(goto: () => Promise<unknown>, landedUrl: string) {
   return {
     mainFrame: () => ({}),
     context: () => ({ newCDPSession: async () => fakeCdpSession }),
+    on: () => {},
+    off: () => {},
     route: async () => {},
     unroute: async () => {},
     waitForLoadState: async () => {},
@@ -128,5 +130,76 @@ describe("ブラウザ経路での SSRF 検証プロキシの拒否", () => {
     const page = fakePage(async () => ({ status: () => 403, statusText: () => "Forbidden", headers: () => ({}) }), "http://93.184.216.34/");
 
     await expect(navigateSafely(page, "http://93.184.216.34/", 5000)).rejects.toThrow(HttpStatusError);
+  });
+
+  /**
+   * 実物どおりに転送を模す Page: route の handler は転送の最初の URL でしか呼ばれず、
+   * request イベントは転送のたびに発火する。最後の転送先への接続がトンネルの失敗になる。
+   */
+  function redirectingPage(chain: string[]) {
+    const listeners = new Map<string, Set<(value: unknown) => void>>();
+    const mainFrame = {};
+    let handler: ((route: unknown, request: unknown) => Promise<void>) | null = null;
+    const request = (url: string) => ({ url: () => url, isNavigationRequest: () => true, frame: () => mainFrame });
+    return {
+      mainFrame: () => mainFrame,
+      context: () => ({ newCDPSession: async () => fakeCdpSession }),
+      on: (event: string, listener: (value: unknown) => void) => {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)!.add(listener);
+      },
+      off: (event: string, listener: (value: unknown) => void) => listeners.get(event)?.delete(listener),
+      route: async (_pattern: string, routeHandler: typeof handler) => {
+        handler = routeHandler;
+      },
+      unroute: async () => {
+        handler = null;
+      },
+      waitForLoadState: async () => {},
+      goto: async () => {
+        await handler?.({ continue: async () => {}, abort: async () => {} }, request(chain[0]!));
+        for (const url of chain) for (const listener of listeners.get("request") ?? []) listener(request(url));
+        throw new Error(`page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at ${chain.at(-1)}`);
+      },
+      url: () => chain[0]!,
+    } as unknown as import("playwright").Page;
+  }
+
+  it("HTTPS の転送先でプロキシが拒否したら、転送先の予約アドレスの拒否として返す", async () => {
+    setAddressPolicyForTests(() => false);
+    await sendThroughSharedProxy("CONNECT 169.254.170.2:443 HTTP/1.1\r\nHost: 169.254.170.2:443\r\n\r\n");
+    const page = redirectingPage(["https://93.184.216.34/start", "https://169.254.170.2/v2/credentials"]);
+
+    const error = await navigateSafely(page, "https://93.184.216.34/start", 5000).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PrivateAddressError);
+    expect(error).toMatchObject({ url: "https://169.254.170.2/v2/credentials", address: "169.254.170.2" });
+  });
+
+  it("プロキシが名前解決できなかったホストは、SSRF の拒否でなく DNS の失敗として返す", async () => {
+    setAddressPolicyForTests(() => false);
+    await sendThroughSharedProxy("CONNECT no-such-host.invalid:443 HTTP/1.1\r\nHost: no-such-host.invalid:443\r\n\r\n");
+    const page = redirectingPage(["https://93.184.216.34/start", "https://no-such-host.invalid/"]);
+
+    const error = await navigateSafely(page, "https://93.184.216.34/start", 5000).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).toMatchObject({ kind: "dns" });
+    expect((error as Error).message).not.toContain("プライベート");
+  });
+});
+
+describe("ブラウザの時間切れの段", () => {
+  it("応答が届かないまま時間切れなら、load の文言でなく応答が届かなかったと書く", async () => {
+    setAddressPolicyForTests(() => false);
+    const page = fakePage(async () => {
+      throw new Error("page.goto: Timeout 5000ms exceeded.");
+    }, "");
+
+    const error = await navigateSafely(page, "http://93.184.216.34/", 5000).catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ stage: "browser-response" });
+    expect((error as Error).message).toContain("応答が5000ms以内に届きませんでした");
+    expect((error as Error).message).not.toContain("load");
   });
 });
