@@ -332,6 +332,10 @@ function guardRequestUrl(rawUrl: string, hostGuardCache: Map<string, Promise<voi
  *   3. メインフレームのリダイレクトの各ホップは、CDPのFetchドメインで送る前に止めて、1と同じ検証と
  *      robots.txtの確認をする(page.routeのhandlerはリダイレクトのホップでは呼ばれない。実測)。
  *
+ * robots.txtで確かめるのはメインフレームの遷移だけで、サブフレーム(iframe)とサブリソースの遷移・リダイレクトは
+ * 確かめない(ページ自体が許可されていれば、その部品として読み込むものとして扱う)。サブフレームとサブリソースの
+ * リダイレクト先のSSRFは、全通信を通す検証プロキシ(ssrfProxy.ts)が塞ぐ。
+ *
  * 完全なTOCTOU対策(fetcher/http.tsのssrfSafeLookupのような接続時点での検証)は
  * Playwright側では現実的に組み込めないため、遷移前検証+リクエスト時の再検証という
  * 「可能な範囲」の対策にとどめる。
