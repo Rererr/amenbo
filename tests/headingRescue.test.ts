@@ -263,6 +263,7 @@ describe("extractMarkdown 見出し救出(Readability経路)", () => {
     expect(result.extractionMethod).toBe("readability");
     const sections = buildOutline(result.markdown).sections;
     expect(sections.map((s) => [s.level, s.heading])).toEqual([
+      [1, "(冒頭)"],
       [2, "概要"],
       [2, "歴史"],
       [3, "近代史"],

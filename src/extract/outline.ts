@@ -95,6 +95,7 @@ interface OpenSection extends MarkdownSection {
 /**
  * 見出し行を境界に、ネストを考慮した節データを構築する。
  * 見出しが1つも無いページは、全文を単一のsection "s1" として扱う。
+ * 最初の見出しより前に内容があれば、それを冒頭の節 "s0" として先頭に置く。
  * diff.ts(§3-3 差分応答)からも再利用される共通処理。
  */
 export function splitSections(markdown: string): MarkdownSection[] {
@@ -153,7 +154,7 @@ export function splitSections(markdown: string): MarkdownSection[] {
     }
   }
 
-  return emitted.map((section) => ({
+  const sections = emitted.map((section) => ({
     id: section.id,
     level: section.level,
     heading: section.heading,
@@ -163,6 +164,13 @@ export function splitSections(markdown: string): MarkdownSection[] {
     // (前後の節の増減で「次の見出しの直前の空行の数」が変わるだけの見かけ上の差分を防ぐ)
     ownContent: section.ownLines.join("\n").trim(),
   }));
+
+  const preamble = lines.slice(0, headings[0]?.lineIndex ?? 0).join("\n").trim();
+  // 冒頭を"s1"にしないのは、冒頭の有無で既存の節の番号がずれないようにするため。
+  if (preamble.length > 0) {
+    sections.unshift({ id: "s0", level: 1, heading: "(冒頭)", ancestors: [], content: preamble, ownContent: preamble });
+  }
+  return sections;
 }
 
 /**
@@ -260,19 +268,58 @@ function stripMarkdownLinks(text: string): string {
   return replaceLinksWithLabel(replaceLinksWithLabel(text, "!["), "[");
 }
 
-/** 節の内容から、見出し行を除いた本文の冒頭1文を抜き出す。 */
-function extractExcerpt(content: string): string {
-  const bodyLines = content.split("\n").filter((line) => matchHeading(line) === null);
+const LETTER = /\p{L}/u;
+// Terminal_Punctuationは読点やコンマも含み文の途中で切れるため、文末はSentence_Terminalで判定する。
+const SENTENCE_TERMINAL = /\p{Sentence_Terminal}/u;
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+const SPACELESS_SCRIPT = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}]/u;
+
+/**
+ * 半角の文末記号の直後に語の文字が続くなら、語の中の記号とみなす(`3.14`・`example.com`・`v1.2`)。
+ * 語の間に空白を置かない日本語・中国語の文字が続く場合は文末とする(「完了!次に」)。
+ */
+function continuesWord(mark: string, next: string | undefined): boolean {
+  return mark < "\u0080" && next !== undefined && WORD_CHAR.test(next) && !SPACELESS_SCRIPT.test(next);
+}
+
+function endsSentence(ch: string, next: string | undefined): boolean {
+  if (SENTENCE_TERMINAL.test(ch)) return !continuesWord(ch, next);
+  // 行末のコロンは、後ろのコードやリストを導く文の終わり(「looks like this:」「次のとおり:」)。
+  return (ch === ":" || ch === "：") && (next === undefined || next === "\n");
+}
+
+/**
+ * 最初の文末の直後の位置を返す(無ければ-1)。行頭から文字(\p{L})が1つも無いうちの記号は
+ * 文末にしない(番号付きリストの`1.`、節番号の`9.3.`)。
+ */
+function findSentenceEnd(text: string): number {
+  let sawLetter = false;
+  const charAt = (index: number): string | undefined => {
+    const codePoint = text.codePointAt(index);
+    return codePoint === undefined ? undefined : String.fromCodePoint(codePoint);
+  };
+  for (let i = 0; i < text.length; ) {
+    const ch = charAt(i) ?? "";
+    i += ch.length;
+    if (ch === "\n") sawLetter = false;
+    else if (LETTER.test(ch)) sawLetter = true;
+    else if (sawLetter && endsSentence(ch, charAt(i))) return i;
+  }
+  return -1;
+}
+
+/** 節の自分の内容(子節を含まない)から、見出し行を除いた本文の冒頭1文を抜き出す。 */
+function extractExcerpt(ownContent: string): string {
+  const bodyLines = ownContent.split("\n").filter((line) => matchHeading(line) === null);
   const body = stripMarkdownLinks(bodyLines.join("\n")).trim();
   if (body.length === 0) return "";
 
-  // 最初の文末記号を含む行の、行頭から文末記号までを1文とする。`/[^。!?\n]*[。!?]/u`で書くと
-  // 文末記号の無い行で開始位置ごとに行末まで走査し直し、長い行で二次時間になる。
-  const sentenceEnd = body.search(/[。!?]/u);
+  // 最初の文末記号を含む行の、行頭から文末記号までを1文とする。
+  const sentenceEnd = findSentenceEnd(body);
   const raw =
     sentenceEnd === -1
       ? (body.split("\n").find((l) => l.trim().length > 0) ?? "")
-      : body.slice(body.lastIndexOf("\n", sentenceEnd) + 1, sentenceEnd + 1);
+      : body.slice(body.lastIndexOf("\n", sentenceEnd - 1) + 1, sentenceEnd);
   return raw.trim().slice(0, EXCERPT_MAX_LENGTH);
 }
 
@@ -284,7 +331,7 @@ export function buildOutline(markdown: string): OutlineResult {
       id: section.id,
       level: section.level,
       heading: section.heading,
-      excerpt: extractExcerpt(section.content),
+      excerpt: extractExcerpt(section.ownContent),
       tokens: estimateTokens(section.content),
     })),
     totalTokens: estimateTokens(markdown),

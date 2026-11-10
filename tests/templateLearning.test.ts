@@ -71,7 +71,7 @@ describe("removeTemplateBlocks", () => {
       const fourth = page("名古屋");
       const { markdown } = removeTemplateBlocks(fourth, cache.getTemplateBlockHashes("ja.example.org"));
 
-      expect(buildOutline(markdown).sections.map((s) => s.heading)).toEqual(["歴史", "脚注", "関連項目"]);
+      expect(buildOutline(markdown).sections.map((s) => s.heading)).toEqual(["(冒頭)", "歴史", "脚注", "関連項目"]);
       // 見出しの下の定型文は今までどおり消える
       expect(markdown).not.toContain("脚注は本文中の番号に対応します。");
     } finally {
