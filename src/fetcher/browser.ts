@@ -318,7 +318,7 @@ function guardRequestUrl(rawUrl: string, hostGuardCache: Map<string, Promise<voi
  * 対応:
  *   1. page.goto()の前にguardPublicAddressで初回遷移先を検証する
  *   2. context.route()で全リクエストを横取りし、以下を検証する:
- *      - メインフレームのナビゲーション(初回遷移・各リダイレクトホップ): guardPublicAddressで
+ *      - メインフレームのナビゲーション(初回遷移・ページ内からの遷移): guardPublicAddressで
  *        再検証し、private/予約アドレスやhttp(s)以外のスキームは実接続前にabort。型付きエラー
  *        (PrivateAddressError/InvalidUrlError)へ変換してgoto()の失敗を報告する。
  *      - サブフレーム(iframe)のナビゲーション・サブリソース(img/xhr/fetch等): 同様にSSRF検証し、
@@ -328,6 +328,9 @@ function guardRequestUrl(rawUrl: string, hostGuardCache: Map<string, Promise<voi
  * を埋め込んでスクリーンショットに内部情報を写し込む(同一オリジンポリシーを迂回した情報窃取)、
  * あるいは no-cors fetch で内部サービスへ副作用付きリクエストを送る、といった browser tier 経由の
  * SSRF を塞ぐため。
+ *
+ *   3. メインフレームのリダイレクトの各ホップは、CDPのFetchドメインで送る前に止めて、1と同じ検証と
+ *      robots.txtの確認をする(page.routeのhandlerはリダイレクトのホップでは呼ばれない。実測)。
  *
  * 完全なTOCTOU対策(fetcher/http.tsのssrfSafeLookupのような接続時点での検証)は
  * Playwright側では現実的に組み込めないため、遷移前検証+リクエスト時の再検証という
@@ -349,7 +352,7 @@ export async function navigateSafely(
     try {
       if (isMainFrameNavigation) {
         await guardPublicAddress(requestUrl);
-        // HTTP層と同じく、同一オリジンの転送先も確かめる。レート制御の待機はタイムアウト予算を消費するため、ここでは行わない。
+        // ページ内からの遷移も、同一オリジンを含めて確かめる。レート制御の待機はタイムアウト予算を消費するため、ここでは行わない。
         if (options.checkRobots) {
           await options.checkRobots(requestUrl);
         }
@@ -368,9 +371,13 @@ export async function navigateSafely(
     }
   };
 
+  const stopGuardingRedirects = await guardMainFrameRedirects(page, options.checkRobots, (error) => {
+    blockedError = error;
+  });
   await page.route(NAVIGATION_ROUTE_PATTERN, handler);
   try {
-    return await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
+    const response = await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
+    return response;
   } catch (cause) {
     if (blockedError) throw blockedError as AmenboError;
     if (cause instanceof Error && /timeout/i.test(cause.message)) {
@@ -379,7 +386,43 @@ export async function navigateSafely(
     throw cause;
   } finally {
     await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
+    await stopGuardingRedirects();
   }
+}
+
+/**
+ * メインフレームのリダイレクトの各ホップを、送る前にSSRF検証とrobots.txtの確認にかける。
+ * 拒否したホップは送らずに失敗させ、onBlockedで理由を渡す。戻り値は止めるのをやめる関数。
+ */
+async function guardMainFrameRedirects(
+  page: Page,
+  checkRobots: ((url: string) => Promise<void>) | undefined,
+  onBlocked: (error: AmenboError) => void,
+): Promise<() => Promise<void>> {
+  const session = await page.context().newCDPSession(page);
+  const { frameTree } = await session.send("Page.getFrameTree");
+  const mainFrameId = frameTree.frame.id;
+  session.on("Fetch.requestPaused", (event) => {
+    void (async () => {
+      const hopUrl = event.request.url;
+      if (event.frameId === mainFrameId && event.redirectedRequestId !== undefined) {
+        try {
+          await guardPublicAddress(hopUrl);
+          await checkRobots?.(hopUrl);
+        } catch (error) {
+          onBlocked(error instanceof AmenboError ? error : new InvalidUrlError(hopUrl, "リダイレクト先の検証に失敗しました"));
+          await session.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" }).catch(() => {});
+          return;
+        }
+      }
+      // 送る前にページが閉じられていれば続ける先が無いので、失敗は無視してよい。
+      await session.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {});
+    })();
+  });
+  await session.send("Fetch.enable", { patterns: [{ resourceType: "Document", requestStage: "Request" }] });
+  return async () => {
+    await session.detach().catch(() => {});
+  };
 }
 
 export interface BrowserNavigation {
@@ -390,7 +433,7 @@ export interface BrowserNavigation {
 
 export interface SafeNavigationOptions {
   /**
-   * メインフレームの遷移(初回とリダイレクトの各ホップ)ごとに呼ばれるrobots.txt確認
+   * メインフレームの遷移(初回・リダイレクトの各ホップ・ページ内からの遷移)ごとに呼ばれるrobots.txt確認
    * (fetcher/http.tsのHttpGetOptions.checkRobotsと同じ役割)。拒否時はそのまま伝播する。
    */
   checkRobots?: ((url: string) => Promise<void>) | undefined;
