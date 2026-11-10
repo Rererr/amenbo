@@ -22,7 +22,7 @@ afterAll(() => {
 
 interface Writer {
   child: ChildProcessWithoutNullStreams;
-  opening: Promise<void>;
+  blocked: Promise<void>;
   ready: Promise<void>;
   exit: Promise<{ code: number | null; stderr: string }>;
 }
@@ -44,14 +44,15 @@ function startWriter(id: string, dir: string = cacheDir): Writer {
       waiters.push({ marker, resolve });
       child.once("exit", (code) => reject(new Error(`書き込み役 ${id} が "${marker}" の前に終了しました(code=${code}): ${stderr}`)));
     });
-  const opening = waitFor("opening");
+  const blocked = waitFor("blocked");
   const ready = waitFor("ready");
-  // 待ち直しのテストは "ready" を待たないので、準備前の終了は exit のほうで確かめる。
+  // 待ち直しのテストは "ready" を、ほかのテストは "blocked" を待たないので、その前の終了は exit のほうで確かめる。
   ready.catch(() => {});
+  blocked.catch(() => {});
   const exit = new Promise<{ code: number | null; stderr: string }>((resolve) => {
     child.once("exit", (code) => resolve({ code, stderr }));
   });
-  return { child, opening, ready, exit };
+  return { child, blocked, ready, exit };
 }
 
 describe("PageCache - 複数プロセスからの同時書き込み", () => {
@@ -83,6 +84,8 @@ describe("PageCache - 複数プロセスからの同時書き込み", () => {
     // WALへの切り替えはbusy_timeoutを待たずに失敗するので、待ち直しが無いと子は終了コード1になる。
     const dir = mkdtempSync(join(tmpdir(), "amenbo-wal-switch-test-"));
     const holder = new DatabaseSync(join(dir, "cache.sqlite"));
+    // 子が待ち直す間は共有ロックを短く取り直すので、COMMITの昇格が重なっても待てるようにする。
+    holder.exec("PRAGMA busy_timeout = 5000");
     let locked = false;
     try {
       holder.exec("CREATE TABLE existing (a INTEGER)");
@@ -90,8 +93,8 @@ describe("PageCache - 複数プロセスからの同時書き込み", () => {
       locked = true;
       const writer = startWriter("wal", dir);
       writer.child.stdin.end("go\n");
-      await writer.opening;
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // 子がWAL切り替えの失敗を見て待ち直しに入ったと確かめてから手放す(時間で待つと、負荷で子が遅れたときに待ち直しを通らない)。
+      await writer.blocked;
       holder.exec("COMMIT");
       locked = false;
 
