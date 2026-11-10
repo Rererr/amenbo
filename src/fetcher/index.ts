@@ -7,6 +7,7 @@
  */
 import { parseHTML } from "linkedom";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
+import { findAgentResources, type AgentResources } from "./agentResources.js";
 import { fetchWithBrowser } from "./browser.js";
 import { httpGetRouted, type HttpGetOptions } from "./http.js";
 
@@ -27,6 +28,8 @@ export interface FetchResult {
   escalationReason: string | null;
   /** Phase 4 ジオメトリ抽出用データ。browser tierのみ非null。 */
   geometry: PageGeometrySnapshot | null;
+  /** ページが知らせるMarkdown版と llms.txt の在りか(応答ヘッダとHTMLの `<link>` から)。 */
+  agentResources: AgentResources;
 }
 
 export interface NotModifiedResult {
@@ -129,6 +132,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
       cacheControl: null,
       escalationReason: "forceBrowser指定",
       geometry: forced.geometry,
+      agentResources: findAgentResources({ linkHeader: null, llmsTxtHeader: null, html: forced.html, baseUrl: forced.finalUrl }),
     };
   }
 
@@ -167,6 +171,8 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
   }
 
   const spaSignals = detectSpaSignals(routed.html);
+  const linkHeader = routed.headers.get("link");
+  const llmsTxtHeader = routed.headers.get("x-llms-txt");
 
   if (!spaSignals.escalate) {
     return {
@@ -180,6 +186,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
       cacheControl: routed.headers.get("cache-control"),
       escalationReason: null,
       geometry: null,
+      agentResources: findAgentResources({ linkHeader, llmsTxtHeader, html: routed.html, baseUrl: routed.finalUrl }),
     };
   }
 
@@ -197,5 +204,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
     cacheControl: null,
     escalationReason: spaSignals.reason,
     geometry: browserResult.geometry,
+    // 応答ヘッダはHTTPで受け取った分を使い、<link> は描画後のHTMLから読む。
+    agentResources: findAgentResources({ linkHeader, llmsTxtHeader, html: browserResult.html, baseUrl: browserResult.finalUrl }),
   };
 }
