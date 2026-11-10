@@ -6,7 +6,7 @@
  *   - fetch: politeness → cache(fresh/revalidated/unchanged/diff/miss) → 二段フェッチ
  *     → J4 pruning・J7アダプタ・J8バナー除去 込みのMarkdown抽出 → mode別出力
  *     (markdown/outline/section/screenshot)。PDFはURL判定で別経路。
- *   - links: sitemap/RSS優先のリンク列挙。
+ *   - links: sitemap/llms.txt/RSS優先のリンク列挙。
  *   - screenshot: 明示的な視覚確認用のタイル分割スクリーンショット。
  *
  * プロンプト(1個): usage — README推奨プロンプトと同内容の利用作法をprompts/get経由で配布する。
@@ -175,7 +175,7 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
   server.registerTool(
     "links",
     {
-      title: "List links from a page (sitemap/RSS-first)",
+      title: "List links from a page (sitemap/llms.txt/RSS-first)",
       description:
         "Enumerate URLs under a site or page without fetching each one. Tries, in this order and regardless of what is cached: sitemap.xml (from robots.txt or the conventional path; gzip is unpacked up to the body-size limit and a `warning:` line is added when it cannot be read), then the llms.txt the page advertises, then RSS/Atom feeds, then falls back to links found in the page itself. The response header reports which source was used (`source:`), the `count:`, and `(truncated)` when more than 200 links were cut. " +
         "Each link is one line, `- <title> — <url>` (title omitted when unknown; for llms.txt it is `name: description`). `filter` narrows by substring or `*` glob against URL and link text; an empty result states whether the filter removed everything or the source had no links. Each source is cached for 15 minutes, so repeating the call with another filter does not hit the site again. " +

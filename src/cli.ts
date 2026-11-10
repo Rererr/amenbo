@@ -245,7 +245,7 @@ function usageText(): string {
     "Commands:",
     "  serve                          MCPサーバーとして起動する(既定。引数省略時と同じ)",
     "  fetch <url> [options]          ページをMarkdownとして取得する",
-    "  links <url> [options]          ページ内のリンクを列挙する(sitemap/RSS優先)",
+    "  links <url> [options]          ページ内のリンクを列挙する(sitemap/llms.txt/RSS優先)",
     "  screenshot <url> [options]     ページのスクリーンショットを撮影する",
     "  install-browser                スクリーンショット/SPA取得用のChromiumをインストールする(Chromeが無い環境のみ必要)",
     "",
