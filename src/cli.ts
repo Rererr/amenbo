@@ -376,7 +376,10 @@ async function dispatch(core: Core, command: ParsedFetchCommand | ParsedLinksCom
       ...(command.maxTokens !== undefined ? { max_tokens: command.maxTokens } : {}),
       ...(command.forceFull !== undefined ? { force_full: command.forceFull } : {}),
     };
-    const blocks = await runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => core.handleFetchTool(input));
+    // 確認の後の取り直しも同じ1回の呼び出しとして扱う(待ちの上限を最初の要求にだけ当てるため)。
+    const blocks = await core.politeness.rememberRefusals(() =>
+      runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => core.handleFetchTool(input)),
+    );
     writeBlocks(blocks, command.url, command.outDir ?? resolveFetchScreenshotDir());
     return;
   }
@@ -393,7 +396,9 @@ async function dispatch(core: Core, command: ParsedFetchCommand | ParsedLinksCom
     ...(command.width !== undefined ? { width: command.width } : {}),
     ...(command.scale !== undefined ? { scale: command.scale } : {}),
   };
-  const blocks = await runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => core.handleScreenshotTool(input));
+  const blocks = await core.politeness.rememberRefusals(() =>
+    runWithTerminalRobotsConsent(command.askRobotsOverride === true, () => core.handleScreenshotTool(input)),
+  );
   writeBlocks(blocks, command.url, command.outDir ?? process.cwd());
 }
 

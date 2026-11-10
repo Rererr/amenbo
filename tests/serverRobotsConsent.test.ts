@@ -100,6 +100,31 @@ describe("server.ts - robots.txt の例外取得(利用者の確認)", () => {
     expect(asked[0]).toContain(PAGE);
   });
 
+  it("確認の後の取り直しも1回の呼び出しとして扱い、転送元への2回目の要求に60秒の上限を当てない", async () => {
+    httpGetMock.mockReset().mockResolvedValue({
+      finalUrl: "http://example.com/robots.txt",
+      status: 200,
+      headers: new Headers(),
+      html: "User-agent: *\nCrawl-delay: 90\nDisallow: /private\n",
+      encoding: "UTF-8",
+    });
+    let now = 1_000_000;
+    const politeness = new PolitenessManager({ now: () => now, sleep: async (ms) => void (now += ms) });
+    await politeness.getSitemaps("http://example.com/a"); // robots.txt を先に取得し、間隔が空いた状態にする
+    now += 100_000;
+    // 許可されたページ a が、robots.txt の拒否するページ b へ転送する
+    robotsGate.guard = async () => {
+      await politeness.guard("http://example.com/a");
+      await politeness.robotsCheckForThisCall()(PAGE);
+    };
+    const { client, asked } = await connectedClient({ action: "accept" });
+
+    const result = await client.callTool({ name: "fetch", arguments: { url: "http://example.com/a", ask_robots_override: true } });
+
+    expect(asked).toHaveLength(1);
+    expect(result.isError).toBeFalsy();
+  });
+
   it("利用者が断ったら取得しない", async () => {
     const { client } = await connectedClient({ action: "decline" });
 
