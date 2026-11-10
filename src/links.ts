@@ -6,9 +6,10 @@
  * (plan.md §4「sitemap/RSSが在ればリンク探索はそちらを優先」)。
  *
  * 優先順位: robots.txt宣言のsitemap(→慣例パス`/sitemap.xml`) → ページの<link rel=alternate>
- * が指すRSS/Atomフィード → 最終手段としてページ内の<a>リンク抽出。起点のページが llms.txt の
- * 在りかを知らせていると分かっていれば(取得済みのページの応答か、ここでページを取ったとき)、
- * まだ試していない出典より先に llms.txt を使う。在りかを推測して探しには行かない。
+ * が指すRSS/Atomフィード → 最終手段としてページ内の<a>リンク抽出。ページを取ったときに、そのページが
+ * llms.txt の在りかを知らせていれば、フィードより先に llms.txt を使う。在りかを推測して探しには行かない。
+ * 順はキャッシュの状態(前に fetch したか)に依らず一つに決める。sitemap がある限りページを取らないので、
+ * ページの知らせる llms.txt を sitemap より先に置くと、そのためだけにページを取る要求が増える。
  *
  * 取得した sitemap・フィード・ページ・llms.txt は、ページと同じTTLでキャッシュする。filter を
  * 変えて呼び直すたびに同じ索引を取り直さないため(先方への要求を増やさない)。
@@ -26,7 +27,6 @@ import {
   UnsupportedContentError,
   WaitTooLongError,
 } from "./errors.js";
-import { agentResourcesFromMetadata } from "./fetcher/agentResources.js";
 import { fetchPage } from "./fetcher/index.js";
 import { assertHttpScheme, decodeHtmlBytes, httpGet, httpGetBinary, resolveDefaultMaxBodyBytes } from "./fetcher/http.js";
 import { currentCancellation, type PolitenessManager } from "./politeness.js";
@@ -119,20 +119,48 @@ interface XmlLikeDocument {
 /** links が使うキャッシュ(PageCacheの一部。呼び出し側とテストが差し替えられるよう構造で受ける)。 */
 export type LinkSourceCache = Pick<PageCache, "get" | "isFresh" | "set">;
 
+function isLinkEntries(value: unknown): value is LinkEntry[] {
+  return (
+    Array.isArray(value) &&
+    value.every((entry: unknown) => {
+      if (typeof entry !== "object" || entry === null) return false;
+      const { url, title } = entry as Record<string, unknown>;
+      return typeof url === "string" && (typeof title === "string" || title === null);
+    })
+  );
+}
+
+function isSitemapDocument(value: unknown): value is SitemapDocument {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (record.kind === "urlset") return isLinkEntries(record.links);
+  if (record.kind === "index") return Array.isArray(record.children) && record.children.every((child) => typeof child === "string");
+  return record.kind === "none" && (record.warning === undefined || typeof record.warning === "string");
+}
+
+function isPageDocument(value: unknown): value is PageDocument {
+  if (typeof value !== "object" || value === null) return false;
+  const { feedUrl, llmsTxt, links } = value as Record<string, unknown>;
+  const isUrlOrNull = (field: unknown): boolean => typeof field === "string" || field === null;
+  return isUrlOrNull(feedUrl) && isUrlOrNull(llmsTxt) && isLinkEntries(links);
+}
+
 /**
  * 出典ごとの取得結果をキャッシュから返すか、取得してキャッシュする。ページのキャッシュ
  * (fetchツール)と同じ表に置くため、キーはURLの前に種別を付けて衝突させない。
- * loadがnullを返したら(一時的な失敗)保存しない。
+ * loadがnullを返したら(一時的な失敗)保存しない。保存した値は形を確かめ、合わなければ取り直す。
  */
 async function cachedSource<T>(
   cache: LinkSourceCache | undefined,
   key: string,
+  isValid: (value: unknown) => value is T,
   load: () => Promise<{ value: T; cacheControl: string | null } | null>,
 ): Promise<T | null> {
   const entry = cache?.get(key);
   if (entry && cache?.isFresh(entry)) {
     try {
-      return JSON.parse(entry.markdown) as T;
+      const value: unknown = JSON.parse(entry.markdown);
+      if (isValid(value)) return value;
     } catch {
       // 形の壊れた行は無いものとして取り直す。
     }
@@ -213,7 +241,7 @@ interface SourceContext {
 type SitemapDocument = { kind: "urlset"; links: LinkEntry[] } | { kind: "index"; children: string[] } | { kind: "none"; warning?: string };
 
 function loadSitemap(sitemapUrl: string, context: SourceContext): Promise<SitemapDocument | null> {
-  return cachedSource<SitemapDocument>(context.cache, `links-sitemap:${sitemapUrl}`, async () => {
+  return cachedSource(context.cache, `links-sitemap:${sitemapUrl}`, isSitemapDocument, async () => {
     try {
       await context.politeness.guard(sitemapUrl, context.onProgress);
       const { document, cacheControl } = await fetchXml(sitemapUrl, context.timeoutMs, context.politeness);
@@ -285,7 +313,7 @@ function feedEntries(document: XmlLikeDocument): LinkEntry[] {
 }
 
 function tryParseFeed(feedUrl: string, context: SourceContext): Promise<LinkEntry[] | null> {
-  return cachedSource<LinkEntry[]>(context.cache, `links-feed:${feedUrl}`, async () => {
+  return cachedSource(context.cache, `links-feed:${feedUrl}`, isLinkEntries, async () => {
     try {
       await context.politeness.guard(feedUrl, context.onProgress);
       // RSS 2.0の<link>はHTMLパーサにvoid要素として扱われるためリネームして回避する(escapeRssLinkTag参照)
@@ -322,7 +350,7 @@ export function parseLlmsTxt(text: string, baseUrl: string): LinkEntry[] {
 }
 
 function tryParseLlmsTxt(llmsTxtUrl: string, context: SourceContext): Promise<LinkEntry[] | null> {
-  return cachedSource<LinkEntry[]>(context.cache, `links-llms:${llmsTxtUrl}`, async () => {
+  return cachedSource(context.cache, `links-llms:${llmsTxtUrl}`, isLinkEntries, async () => {
     try {
       await context.politeness.guard(llmsTxtUrl, context.onProgress);
       const result = await httpGet(llmsTxtUrl, {
@@ -345,7 +373,7 @@ interface PageDocument {
 const EMPTY_PAGE: PageDocument = { feedUrl: null, llmsTxt: null, links: [] };
 
 async function loadPage(url: string, context: SourceContext): Promise<PageDocument> {
-  const page = await cachedSource<PageDocument>(context.cache, `links-page:${url}`, async () => {
+  const page = await cachedSource(context.cache, `links-page:${url}`, isPageDocument, async () => {
     await context.politeness.guard(url, context.onProgress);
     const pageResult = await fetchPage(url, {
       timeoutMs: context.timeoutMs,
@@ -376,22 +404,6 @@ async function loadPage(url: string, context: SourceContext): Promise<PageDocume
   });
   // loadは一時的な失敗でもnullを返さず投げるので、ここには来ない。
   return page ?? EMPTY_PAGE;
-}
-
-/** 起点のページが llms.txt を知らせていると、取得せずに分かっているか(fetchツールかlinksがキャッシュ済みのとき)。 */
-function knownLlmsTxt(url: string, cache: LinkSourceCache | undefined): string | null {
-  const fetched = cache?.get(url);
-  if (fetched && cache?.isFresh(fetched)) {
-    const announced = agentResourcesFromMetadata(fetched.metadata.agentResources).llmsTxt;
-    if (announced) return announced;
-  }
-  const page = cache?.get(`links-page:${url}`);
-  if (!page || !cache?.isFresh(page)) return null;
-  try {
-    return (JSON.parse(page.markdown) as PageDocument).llmsTxt;
-  } catch {
-    return null;
-  }
 }
 
 /** ページ内の&lt;a href&gt;リンクを抽出する(機能C: extract/dataSources.tsからも再利用される)。 */
@@ -486,13 +498,6 @@ async function discoverLinksOnce(url: string, politeness: PolitenessManager, opt
     throw error;
   };
 
-  // 0. 起点のページが llms.txt を知らせていると既に分かっていれば、それを先に使う
-  const announcedLlmsTxt = knownLlmsTxt(url, options.cache);
-  if (announcedLlmsTxt) {
-    const links = await tryParseLlmsTxt(announcedLlmsTxt, context).catch(skipWaitOnOtherHost);
-    if (links && links.length > 0) return finalize("llms.txt", links, options.filter, context.warnings);
-  }
-
   // 1. sitemap優先(robots.txtのSitemap宣言 → 見つからなければ慣例パス)
   const declaredSitemaps = await politeness.getSitemaps(url);
   const candidateSitemaps = declaredSitemaps.length > 0 ? declaredSitemaps : [`${origin}/sitemap.xml`];
@@ -505,7 +510,7 @@ async function discoverLinksOnce(url: string, politeness: PolitenessManager, opt
 
   // 2. ページを取得し、知らせている llms.txt、<link rel=alternate>が指すRSS/Atomフィードの順に試す
   const page = await loadPage(url, context);
-  if (page.llmsTxt && page.llmsTxt !== announcedLlmsTxt) {
+  if (page.llmsTxt) {
     const links = await tryParseLlmsTxt(page.llmsTxt, context).catch(skipWaitOnOtherHost);
     if (links && links.length > 0) return finalize("llms.txt", links, options.filter, context.warnings);
   }
