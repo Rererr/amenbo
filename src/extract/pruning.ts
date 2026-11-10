@@ -59,7 +59,7 @@ const CLAUSE_BREAK_WEIGHT = 22;
 const LETTER_WEIGHT = 1;
 const LINK_WEIGHT = 5;
 
-function countWords(text: string): number {
+export function countWords(text: string): number {
   let count = 0;
   for (const segment of WORD_SEGMENTER.segment(text)) {
     if (segment.isWordLike === true) count++;
