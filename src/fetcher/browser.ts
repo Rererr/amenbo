@@ -14,10 +14,10 @@ import {
   type Response as PlaywrightResponse,
   type Route,
 } from "playwright";
-import { AmenboError, BrowserLaunchError, BrowserUnavailableError, FetchTimeoutError, HttpStatusError, InvalidUrlError } from "../errors.js";
+import { AmenboError, BrowserLaunchError, BrowserUnavailableError, FetchTimeoutError, InvalidUrlError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { CONSENT_BANNER_RULES } from "../jp/consentBanner.js";
-import { guardPublicAddress, USER_AGENT } from "./http.js";
+import { assertUsableResponse, guardPublicAddress, USER_AGENT } from "./http.js";
 import { closeSharedSsrfProxy, getSharedSsrfProxyUrl } from "./ssrfProxy.js";
 
 export type { PageGeometrySnapshot } from "../extract/geometry.js";
@@ -478,9 +478,11 @@ export async function openPageAndNavigate(
   try {
     const page = await context.newPage();
     const { response, assertNotBlocked } = await navigateSafely(page, url, timeoutMs, navigationOptions);
-    // HTTP経路(httpGet)と同じく非2xxは失敗にする。bot対策の画面(429等)を取得成功として返さないため。
-    if (response && response.status() >= 400) {
-      throw new HttpStatusError(page.url(), response.status(), response.statusText(), response.headers()["retry-after"]);
+    // HTTP経路(httpGet)と同じく、400以上と bot 対策の確認画面は失敗にする(取得成功として返さないため)。
+    if (response) {
+      const headers = response.headers();
+      const status = response.status();
+      assertUsableResponse(page.url(), { status, statusText: response.statusText(), ok: status < 400 }, (name) => headers[name]);
     }
     return { context, page, response, assertNotBlocked };
   } catch (error) {

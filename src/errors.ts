@@ -130,6 +130,26 @@ export class HttpStatusError extends AmenboError {
   }
 }
 
+/**
+ * bot 対策の確認画面が返った(Cloudflare の `cf-mitigated: challenge`、AWS WAF の `x-amzn-waf-action`)。
+ * ステータスが 2xx でも本文ではないので返さない。ブラウザで開けば確認画面のスクリプトが走って
+ * 通過しうるため、ブラウザへの昇格もしない(bot 対策を回避しない方針)。
+ */
+export class BotChallengeError extends AmenboError {
+  readonly code = "BOT_CHALLENGE";
+
+  constructor(
+    readonly url: string,
+    readonly status: number,
+    /** 確認画面と判定した根拠のヘッダ(例: "cf-mitigated: challenge")。 */
+    readonly marker: string,
+  ) {
+    super(
+      `bot 対策の確認画面が返りました(${marker}、HTTP ${status}): ${url} — 本文ではないため返しません。amenbo は確認画面を通過する操作をしないので、取り直さずにそのまま報告してください`,
+    );
+  }
+}
+
 /** 以前に取得を断られたホストへは、期限まで amenbo 側でアクセスしない。 */
 export class HostRefusedError extends AmenboError {
   readonly code = "HOST_REFUSED";
