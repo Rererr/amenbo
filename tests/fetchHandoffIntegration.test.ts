@@ -17,6 +17,7 @@ const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-handoff-integration-"));
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
 const { handleFetchTool, cache } = await import("../src/core.js");
+const { formatHandoffResponse } = await import("../src/formatting.js");
 const { setAddressPolicyForTests } = await import("../src/fetcher/http.js");
 
 const MARKDOWN_LINES = Array.from({ length: 300 }, (_, i) => `- 項目 ${i}: Markdown 版の本文がページ送りで最後まで読めるかを確かめる行`);
@@ -67,6 +68,24 @@ async function fetchText(input: Parameters<typeof handleFetchTool>[0]): Promise<
     .map((c) => c.text)
     .join("\n");
 }
+
+describe("handoff の size", () => {
+  it("圧縮して送られた応答は、Content-Length(圧縮後の転送量)でなく受け取った本文の大きさを出す", async () => {
+    const text = await fetchText({ url: `${origin}/gzipped.txt` });
+
+    expect(text).toContain(`size: ${Buffer.byteLength(PLAIN_TEXT)}\n`);
+  }, 30_000);
+
+  it("途中で読むのをやめ、全体の大きさも分からないときは、取得した量を全体の大きさとして出さない", () => {
+    const bytes = new TextEncoder().encode("a".repeat(100));
+    const text = formatHandoffResponse(
+      { handoff: true, finalUrl: `${origin}/x.txt`, status: 200, contentType: "text/plain", bytes, declaredSize: null, truncated: true, etag: null, lastModified: null, cacheControl: null },
+      8000,
+    );
+
+    expect(text).toMatch(/^size: 不明\(先頭100バイトまで取得/m);
+  });
+});
 
 describe("text/markdown の応答", () => {
   it("本文をプレビューとして返す(curl の案内だけにしない)", async () => {

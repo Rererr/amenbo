@@ -727,6 +727,17 @@ async function readBodyPreview(
   }
 }
 
+/**
+ * Content-Lengthが示す本文の大きさ。Content-Encoding付きの応答では圧縮後の転送量を指し、
+ * 受け取って展開した本文の大きさとは違う(実測: 20,528バイトのgzip応答で8,695)ため、無いものとして扱う。
+ */
+function declaredBodySize(headers: Headers): number | null {
+  const encoding = headers.get("content-encoding")?.trim().toLowerCase();
+  if (encoding && encoding !== "identity") return null;
+  const length = headers.get("content-length");
+  return length && Number.isFinite(Number(length)) ? Number(length) : null;
+}
+
 export type HttpGetRoutedResult =
   | { kind: "notModified"; status: 304; finalUrl: string; headers: Headers }
   | { kind: "html"; status: number; finalUrl: string; headers: Headers; html: string; encoding: string }
@@ -737,7 +748,7 @@ export type HttpGetRoutedResult =
       headers: Headers;
       contentType: string | null;
       bytes: Uint8Array;
-      /** Content-Lengthヘッダ由来の宣言サイズ(無ければnull)。 */
+      /** Content-Lengthヘッダ由来の宣言サイズ(無いか、圧縮後の大きさしか分からなければnull)。 */
       declaredSize: number | null;
       /** プレビュー上限で本文を打ち切った場合true(ファイル全体は取得していない)。 */
       truncated: boolean;
@@ -773,8 +784,7 @@ export async function httpGetRouted(url: string, options: HttpGetOptions = {}): 
       return { kind: "html", status: response.status, finalUrl, headers: response.headers, html: decoded.text, encoding: decoded.encoding };
     }
 
-    const declaredLengthHeader = response.headers.get("content-length");
-    const declaredSize = declaredLengthHeader && Number.isFinite(Number(declaredLengthHeader)) ? Number(declaredLengthHeader) : null;
+    const declaredSize = declaredBodySize(response.headers);
 
     const fullReadLimit = options.fullReadMaxBytes?.(contentType, finalUrl) ?? null;
     if (fullReadLimit !== null) {
