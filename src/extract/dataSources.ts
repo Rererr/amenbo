@@ -30,6 +30,10 @@ const GENERIC_VOCAB_KEYWORDS = ["一括ダウンロード", "sitemap.xml", "RSS"
  * 照合すると、Yahoo!ニュース等の広告リダイレクトURL(`.../redirect_api_log/...`)のような
  * 無関係な文字列も誤ってヒットしてしまう。英字の語境界(`\bapi\b`)で厳格化し、
  * 「redirect_api_log」のような複合語の一部としての出現は除外する。
+ *
+ * リンク文字列だけで照合し、URLでは照合しない: 英語のdocsは`/api/`や`/api-playground/`を
+ * 普通の説明ページのパスに使い、共有ボタンのURLはページの題名(「API」を含みうる)を
+ * クエリに持つため、構造化データでないリンクを拾う。
  */
 const API_WORD_PATTERN = /\bapi\b/i;
 
@@ -63,7 +67,7 @@ function matchesVocab(entry: LinkEntry, baseUrl: string): boolean {
   const haystack = `${entry.title ?? ""} ${entry.url}`;
   const haystackLower = haystack.toLowerCase();
 
-  if (API_WORD_PATTERN.test(haystack)) {
+  if (API_WORD_PATTERN.test(entry.title ?? "")) {
     return true;
   }
   if (GENERIC_VOCAB_KEYWORDS.some((keyword) => haystackLower.includes(keyword.toLowerCase()))) {
