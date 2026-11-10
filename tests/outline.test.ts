@@ -219,6 +219,18 @@ describe("最初の見出しより前の内容(冒頭の節 s0)", () => {
     expect(extractSection(WITH_PREAMBLE, "s0")).toBe("導入の段落です。ページの要約が書かれています。");
   });
 
+  it("冒頭の直後がh5/h6でも、その内容を冒頭の節に含める", () => {
+    const markdown = ["導入の段落です。", "", "##### 注記", "", "注記の本文です。", "", BODY].join("\n");
+    expect(extractSection(markdown, "s0")).toContain("注記の本文です。");
+    expect(buildOutline(markdown).sections.map((s) => s.heading)).toEqual(["(冒頭)", "節A", "節B"]);
+  });
+
+  it("outlineに載る見出しが無くh5/h6だけのページは、全文を見出しなしの1節にする", () => {
+    const markdown = ["導入の段落です。", "", "##### 注記", "", "注記の本文です。"].join("\n");
+    expect(buildOutline(markdown).sections.map((s) => [s.id, s.heading])).toEqual([["s1", "(見出しなし)"]]);
+    expect(extractSection(markdown, "s1")).toContain("注記の本文です。");
+  });
+
   it("冒頭が空白だけなら s0 を出さない", () => {
     expect(buildOutline(`\n\n  \n${BODY}`).sections.map((s) => s.id)).toEqual(["s1", "s2"]);
   });

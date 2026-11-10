@@ -94,15 +94,16 @@ interface OpenSection extends MarkdownSection {
 
 /**
  * 見出し行を境界に、ネストを考慮した節データを構築する。
- * 見出しが1つも無いページは、全文を単一のsection "s1" として扱う。
- * 最初の見出しより前に内容があれば、それを冒頭の節 "s0" として先頭に置く。
+ * outlineに載る見出し(h1-h4)が1つも無いページは、全文を単一のsection "s1" として扱う。
+ * outlineに載る最初の見出しより前に内容があれば、それを冒頭の節 "s0" として先頭に置く。
  * diff.ts(§3-3 差分応答)からも再利用される共通処理。
  */
 export function splitSections(markdown: string): MarkdownSection[] {
   const lines = markdown.split("\n");
   const headings = findHeadingLines(lines);
+  const firstOutlined = headings.find((heading) => heading.level <= MAX_OUTLINE_LEVEL);
 
-  if (headings.length === 0) {
+  if (!firstOutlined) {
     if (markdown.trim().length === 0) return [];
     return [{ id: "s1", level: 1, heading: "(見出しなし)", ancestors: [], content: markdown, ownContent: markdown }];
   }
@@ -165,7 +166,8 @@ export function splitSections(markdown: string): MarkdownSection[] {
     ownContent: section.ownLines.join("\n").trim(),
   }));
 
-  const preamble = lines.slice(0, headings[0]?.lineIndex ?? 0).join("\n").trim();
+  // outlineに載らないh5/h6が先に来ても、その内容を取りこぼさないよう、載る最初の見出しまでを冒頭にする。
+  const preamble = lines.slice(0, firstOutlined.lineIndex).join("\n").trim();
   // 冒頭を"s1"にしないのは、冒頭の有無で既存の節の番号がずれないようにするため。
   if (preamble.length > 0) {
     sections.unshift({ id: "s0", level: 1, heading: "(冒頭)", ancestors: [], content: preamble, ownContent: preamble });
