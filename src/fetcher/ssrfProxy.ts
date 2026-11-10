@@ -44,15 +44,25 @@ export async function resolveSafeAddress(hostOrLiteral: string): Promise<Resolve
   return safe ? { address: safe.address, family: safe.family } : null;
 }
 
-/** "host:port" / "[v6]:port" を分解する。ポート省略時はdefaultPortを使う。 */
-function splitHostPort(hostPort: string, defaultPort: number): { host: string; port: number } {
-  const bracketMatch = /^\[(.+)\](?::(\d+))?$/.exec(hostPort);
+/** ポート表記を1〜65535の整数に限って読む(省略時はdefaultPort)。範囲外・非数値はnull(=要求を拒否)。 */
+function parsePort(raw: string | undefined, defaultPort: number): number | null {
+  if (raw === undefined || raw === "") return defaultPort;
+  if (!/^\d{1,5}$/.test(raw)) return null;
+  const port = Number(raw);
+  return port >= 1 && port <= 65535 ? port : null;
+}
+
+/** "host:port" / "[v6]:port" を分解する。ポート省略時はdefaultPortを使う。ポートが不正ならnull。 */
+function splitHostPort(hostPort: string, defaultPort: number): { host: string; port: number } | null {
+  const bracketMatch = /^\[(.+)\](?::([^:]*))?$/.exec(hostPort);
   if (bracketMatch) {
-    return { host: bracketMatch[1] ?? "", port: bracketMatch[2] ? Number(bracketMatch[2]) : defaultPort };
+    const port = parsePort(bracketMatch[2], defaultPort);
+    return port === null ? null : { host: bracketMatch[1] ?? "", port };
   }
   const lastColon = hostPort.lastIndexOf(":");
   if (lastColon === -1) return { host: hostPort, port: defaultPort };
-  return { host: hostPort.slice(0, lastColon), port: Number(hostPort.slice(lastColon + 1)) || defaultPort };
+  const port = parsePort(hostPort.slice(lastColon + 1), defaultPort);
+  return port === null ? null : { host: hostPort.slice(0, lastColon), port };
 }
 
 export interface SsrfProxyOptions {
@@ -71,6 +81,8 @@ export class SsrfProxy {
 
   constructor(options: SsrfProxyOptions = {}) {
     this.resolve = options.resolve ?? resolveSafeAddress;
+    // 要求の処理で投げられた例外はここで止める。漏れると未処理のrejectとしてプロセスごと落ち、
+    // 同じMCPサーバーを使う全セッションの取得が止まる。
     this.server = createServer((clientReq, clientRes) => {
       void (async () => {
         let target: URL;
@@ -80,11 +92,11 @@ export class SsrfProxy {
           clientRes.writeHead(400).end();
           return;
         }
-        if (target.protocol !== "http:") {
+        const port = parsePort(target.port, 80);
+        if (target.protocol !== "http:" || port === null) {
           clientRes.writeHead(400).end();
           return;
         }
-        const port = target.port ? Number(target.port) : 80;
         const safe = await this.resolve(target.hostname);
         if (!safe) {
           clientRes.writeHead(403).end("blocked by amenbo SSRF proxy");
@@ -108,27 +120,38 @@ export class SsrfProxy {
           clientRes.end();
         });
         clientReq.pipe(upstream);
-      })();
+      })().catch(() => {
+        if (!clientRes.headersSent) clientRes.writeHead(502);
+        clientRes.end();
+      });
     });
 
     // HTTPS(CONNECT): 検証済みIPへTCPトンネルを張る(TLSはend-to-endのまま)。
     this.server.on("connect", (req, clientSocket: Socket, head: Buffer) => {
+      let upstream: Socket | null = null;
+      clientSocket.on("error", () => upstream?.destroy());
       void (async () => {
-        const { host, port } = splitHostPort(req.url ?? "", 443);
-        const safe = await this.resolve(host);
+        const target = splitHostPort(req.url ?? "", 443);
+        if (!target) {
+          clientSocket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+          return;
+        }
+        const safe = await this.resolve(target.host);
         if (!safe) {
           clientSocket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
           return;
         }
-        const upstream = netConnect(port, safe.address, () => {
+        const tunnel = netConnect(target.port, safe.address, () => {
           clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-          if (head && head.length > 0) upstream.write(head);
-          upstream.pipe(clientSocket);
-          clientSocket.pipe(upstream);
+          if (head && head.length > 0) tunnel.write(head);
+          tunnel.pipe(clientSocket);
+          clientSocket.pipe(tunnel);
         });
-        upstream.on("error", () => clientSocket.destroy());
-        clientSocket.on("error", () => upstream.destroy());
-      })();
+        upstream = tunnel;
+        tunnel.on("error", () => clientSocket.destroy());
+      })().catch(() => {
+        clientSocket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+      });
     });
   }
 
