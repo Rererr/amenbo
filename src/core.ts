@@ -674,17 +674,12 @@ function pdfImageBlocks(
 function readCachedPdfImages(url: string): Array<TextBlock | ImageBlock> | null {
   const cached = cache.getScreenshot(computePdfImageCacheKey(url));
   if (!cached || !cache.isFresh(cached)) return null;
+  const { title, pdfPageCount, pdfExtractedPageCount } = cached.metadata;
+  // ページ数が欠けた行から「全0ページ中」と申告しないよう、取り直しに回す。
+  if (typeof pdfPageCount !== "number" || typeof pdfExtractedPageCount !== "number") return null;
   const tiles = readCachedTiles(cached.tilePaths);
   if (!tiles) return null;
-  const { title, pdfPageCount, pdfExtractedPageCount } = cached.metadata;
-  return pdfImageBlocks(
-    typeof title === "string" ? title : null,
-    cached.url,
-    Number(pdfPageCount ?? 0),
-    Number(pdfExtractedPageCount ?? pdfPageCount ?? 0),
-    tiles.map((tile) => tile.data),
-    "fresh",
-  );
+  return pdfImageBlocks(typeof title === "string" ? title : null, cached.url, pdfPageCount, pdfExtractedPageCount, tiles.map((tile) => tile.data), "fresh");
 }
 
 /** PDFの取得(必要なら)と解析。同一URLではこれが1本にまとめられる。 */

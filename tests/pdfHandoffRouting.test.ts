@@ -30,6 +30,7 @@ const cacheDir = mkdtempSync(join(tmpdir(), "amenbo-pdf-handoff-routing-test-"))
 process.env.AMENBO_CACHE_DIR = cacheDir;
 
 const { cache, handleFetchTool, politeness } = await import("../src/core.js");
+const { computePdfImageCacheKey } = await import("../src/cache.js");
 
 afterAll(() => {
   // Windows CI対応: 開いたままのSQLiteファイルハンドルを解放してから削除する
@@ -120,6 +121,24 @@ describe("拡張子なしPDF(content-typeのみで判明)のハンドオフ→PD
     expect(textOf(second)).toContain("cache: fresh");
     expect(second.filter((block) => block.type === "image")).toEqual(first.filter((block) => block.type === "image"));
     expect(httpGetBinaryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("ページ数の欠けた画像キャッシュは使わず、取り直してページ数を申告する", async () => {
+    const url = "https://example.com/scanned-broken-metadata.pdf";
+    cache.setScreenshot({ cacheKey: computePdfImageCacheKey(url), url, tiles: [Buffer.from("png")], metadata: {} });
+    httpGetBinaryMock.mockResolvedValue({
+      finalUrl: url,
+      status: 200,
+      headers: new Headers(),
+      bytes: fixture("sample-blank.pdf"),
+      contentType: "application/pdf",
+    });
+
+    const text = textOf(await handleFetchTool({ url }));
+
+    expect(httpGetBinaryMock).toHaveBeenCalledTimes(1);
+    expect(text).toContain("cache: miss");
+    expect(text).not.toContain("全0ページ");
   });
 
   it("no-storeの文字の層が無いPDFは画像を保存せず、次回も取得しに行く", async () => {
