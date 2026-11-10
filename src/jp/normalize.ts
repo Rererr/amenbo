@@ -40,6 +40,10 @@ const CJK_ADJACENT_WHITESPACE = new RegExp(
   "gu",
 );
 
+// turndownが<br>に出す強制改行(行末の空白2つ以上+改行)。CJKに挟まれていても行の区切りとして残す
+// (住所・電話番号・営業時間を<br>で並べる会社概要などで、行が連結されるのを防ぐ)。
+const HARD_LINE_BREAK = /[ \t]{2,}\r?\n/;
+
 // Turndownは<strong>/<em>等をCJKに隣接して変換する際、Markdownの曖昧性回避のため
 // "とても **重要** です" のように装飾記号の前後へ空白を挿入することがある。
 // 日本語の地の文では強調記号の前後に空白は不要なため、装飾記号(*_~)越しにCJKが
@@ -101,7 +105,10 @@ function splitProtectingCode(markdown: string): TextSegment[] {
 /** コード以外の地の文に対して NFKC正規化 + CJK隣接空白除去を適用する。 */
 function normalizeProse(text: string): string {
   const nfkc = text.normalize("NFKC");
-  return nfkc.replace(CJK_ADJACENT_WHITESPACE, "").replace(CJK_SPACE_BEFORE_MARKER, "").replace(CJK_SPACE_AFTER_MARKER, "");
+  return nfkc
+    .replace(CJK_ADJACENT_WHITESPACE, (run) => (HARD_LINE_BREAK.test(run) ? run : ""))
+    .replace(CJK_SPACE_BEFORE_MARKER, "")
+    .replace(CJK_SPACE_AFTER_MARKER, "");
 }
 
 /**
