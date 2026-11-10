@@ -37,5 +37,5 @@ describe("hideConsentBanners(実Chromium)", () => {
     } finally {
       await context.close();
     }
-  });
+  }, 30_000);
 });
