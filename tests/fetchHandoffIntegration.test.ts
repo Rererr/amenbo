@@ -42,8 +42,21 @@ const routes: Record<string, Handler> = {
   },
 };
 
+const hits = new Map<string, number>();
+routes["/paged.md"] = (_req, res) => {
+  res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8" });
+  res.end(MARKDOWN);
+};
+routes["/fragment.md"] = routes["/paged.md"];
+routes["/no-store.md"] = (_req, res) => {
+  res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(MARKDOWN);
+};
+
 const server: Server = createServer((req, res) => {
-  const handler = routes[(req.url ?? "/").split("?")[0] ?? "/"];
+  const path = (req.url ?? "/").split("?")[0] ?? "/";
+  hits.set(path, (hits.get(path) ?? 0) + 1);
+  const handler = routes[path];
   if (handler) {
     handler(req, res);
     return;
@@ -85,6 +98,33 @@ describe("handoff の size", () => {
 
     expect(text).toMatch(/^size: 不明\(先頭100バイトまで取得/m);
   });
+});
+
+describe("handoff のページ送り", () => {
+  it("page を変えて読んでも、同じファイルを取り直さない", async () => {
+    const first = await fetchText({ url: `${origin}/paged.md`, max_tokens: 1000 });
+    const totalPages = Number(/page: 1 of (\d+)/.exec(first)?.[1]);
+    for (let page = 2; page <= totalPages; page++) {
+      expect(await fetchText({ url: `${origin}/paged.md`, max_tokens: 1000, page })).toContain(`page: ${page} of ${totalPages}`);
+    }
+
+    expect(totalPages).toBeGreaterThan(2);
+    expect(hits.get("/paged.md")).toBe(1);
+  }, 30_000);
+
+  it("`#` だけ違う URL でも、保存した本文を使って取り直さない", async () => {
+    await fetchText({ url: `${origin}/fragment.md`, max_tokens: 1000 });
+    await fetchText({ url: `${origin}/fragment.md#section-2`, max_tokens: 1000, page: 2 });
+
+    expect(hits.get("/fragment.md")).toBe(1);
+  }, 30_000);
+
+  it("no-store の応答は保存せず、次の page で取り直す", async () => {
+    await fetchText({ url: `${origin}/no-store.md`, max_tokens: 1000 });
+    await fetchText({ url: `${origin}/no-store.md`, max_tokens: 1000, page: 2 });
+
+    expect(hits.get("/no-store.md")).toBe(2);
+  }, 30_000);
 });
 
 describe("text/markdown の応答", () => {
