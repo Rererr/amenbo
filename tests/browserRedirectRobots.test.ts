@@ -55,6 +55,22 @@ beforeAll(async () => {
     if (path === "/a") return void res.writeHead(301, { location: "/b" }).end();
     if (path === "/b") return void res.writeHead(307, { location: "/ok" }).end();
     if (path === "/js") return html(page("JS", `<script>location.href='/private/js'</script>`));
+    if (path === "/sw.js") {
+      // ナビゲーションを横取りして、robots.txt が拒否するページの中身を返す Service Worker
+      res.writeHead(200, { "content-type": "text/javascript" });
+      res.end(
+        `self.addEventListener("install", () => self.skipWaiting()); self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim())); self.addEventListener("fetch", (e) => { if (new URL(e.request.url).pathname === "/sw-go") e.respondWith(fetch("/private/sw")); });`,
+      );
+      return;
+    }
+    if (path === "/swpage") {
+      return html(
+        page(
+          "SWPAGE",
+          `<script>navigator.serviceWorker?.register("/sw.js").then(() => navigator.serviceWorker.ready).then(() => new Promise((r) => { if (navigator.serviceWorker.controller) r(); else navigator.serviceWorker.addEventListener("controllerchange", r); })).then(() => { location.href = "/sw-go"; })</script>`,
+        ),
+      );
+    }
     if (path.startsWith("/private/")) return html(page(`SECRET${path}`));
     return html(page(`PAGE${path}`));
   });
@@ -143,6 +159,17 @@ describe("ブラウザ経路のrobots.txt確認(実Chromium)", () => {
     } finally {
       otherRobotsDelayMs = 0;
     }
+  }, 30_000);
+
+  itWithBrowser("Service Workerにナビゲーションを横取りさせず、robots.txtが拒否するページの中身を返さない", async () => {
+    arrivals.length = 0;
+
+    const result = await fetchWithBrowser(`${origin}/swpage`, 10_000, { checkRobots: checkRobots() });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+    expect(result.html).not.toContain("SECRET");
+    expect(arrivals).not.toContain("/sw.js");
+    expect(arrivals).not.toContain("/private/sw");
   }, 30_000);
 
   itWithBrowser("許可されたパスだけを通る複数段のリダイレクトは、最後まで辿って本文を返す", async () => {
