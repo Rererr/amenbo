@@ -8,6 +8,11 @@ vi.mock("../src/fetcher/http.js", async (importOriginal) => {
   return {
     ...actual,
     httpGet: (...args: Parameters<typeof actual.httpGet>) => httpGetMock(...args),
+    // sitemapとフィードはgzipを見分けるためバイト列で取る。同じフェイクの応答をバイト列にして返す。
+    httpGetBinary: async (...args: Parameters<typeof actual.httpGetBinary>) => {
+      const result = (await httpGetMock(...args)) as { finalUrl: string; status: number; headers: Headers; html: string };
+      return { ...result, bytes: new TextEncoder().encode(result.html), contentType: result.headers.get("content-type") };
+    },
   };
 });
 
@@ -15,7 +20,11 @@ vi.mock("../src/fetcher/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/fetcher/index.js")>();
   return {
     ...actual,
-    fetchPage: (...args: Parameters<typeof actual.fetchPage>) => fetchPageMock(...args),
+    // 実物のFetchResultは常にagentResourcesを持つ。テストが省いた分を補う。
+    fetchPage: async (...args: Parameters<typeof actual.fetchPage>) => {
+      const result = (await fetchPageMock(...args)) as Record<string, unknown>;
+      return "html" in result ? { agentResources: { markdownAlternate: null, llmsTxt: null }, ...result } : result;
+    },
   };
 });
 

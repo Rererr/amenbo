@@ -174,7 +174,12 @@ export function buildScreenshotContent(
 }
 
 export function formatLinksResponse(url: string, result: LinksResult): string {
-  const header = [`url: ${url}`, `source: ${result.source}`, `count: ${result.links.length}${result.truncated ? " (truncated)" : ""}`].join("\n");
+  const header = [
+    `url: ${url}`,
+    `source: ${result.source}`,
+    `count: ${result.links.length}${result.truncated ? " (truncated)" : ""}`,
+    ...(result.warnings ?? []).map((warning) => `warning: ${warning}`),
+  ].join("\n");
   const body = result.links.map((link) => (link.title ? `- ${link.title} — ${link.url}` : `- ${link.url}`)).join("\n");
   // レビュー指摘対応: 0件のとき、フィルタで全部落ちたのか(preFilterCount>0)、
   // sitemap/RSS/ページ自体が空だったのか(preFilterCount===0)をエージェントが判別できるようにする。

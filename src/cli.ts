@@ -385,7 +385,7 @@ async function dispatch(core: Core, command: ParsedFetchCommand | ParsedLinksCom
   }
 
   if (command.kind === "links") {
-    const result = await discoverLinks(command.url, core.politeness, command.filter !== undefined ? { filter: command.filter } : {});
+    const result = await discoverLinks(command.url, core.politeness, { ...(command.filter !== undefined ? { filter: command.filter } : {}), cache: core.cache });
     process.stdout.write(`${formatLinksResponse(command.url, result)}\n`);
     return;
   }
