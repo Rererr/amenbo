@@ -54,6 +54,28 @@ describe("ユーティリティクラスの値とReadabilityのclass名の採点
   });
 });
 
+describe("見出しから作ったidとReadabilityの「本文らしくない名前」", () => {
+  const section = (n: number, title: string): string =>
+    `<section id="section-${n}"><h2>${n}. ${title}</h2>` +
+    Array.from({ length: 3 }, (_, i) => `<p>Section ${n} paragraph ${i} defines how a cache stores, reuses, and validates responses for ${title}.</p>`).join("") +
+    "</section>";
+  const html =
+    `<!DOCTYPE html><html><body><article>${section(1, "Introduction")}${section(2, "Overview")}` +
+    `<div id="header.field.definitions">${section(3, "Field Definitions")}</div>${section(4, "Security")}</article>` +
+    `<div id="sidebar"><p>Sidebar links and a short note about this site.</p></div></body></html>`;
+
+  it("章を包む要素のidが判定の語(header)を含んでも、その章は本文に残る", () => {
+    const { markdown } = extractMarkdown(html, { url: "https://www.example.org/rfc/rfc0000.html" });
+    expect(markdown).toMatch(/^## 3\\?\. Field Definitions$/m);
+    expect(markdown).toContain("Section 3 paragraph 2 defines");
+  });
+
+  it("本文に比べて小さいサイドバーは従来どおり落ちる", () => {
+    const { markdown } = extractMarkdown(html, { url: "https://www.example.org/rfc/rfc0000.html" });
+    expect(markdown).not.toContain("Sidebar links");
+  });
+});
+
 describe("見出しの中のパーマリンクとブロック要素", () => {
   const paragraph = "<p>この段落は見出しの下に置いた本文で、抽出の経路によらず残ることを確かめるための文章です。</p>";
 
