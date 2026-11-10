@@ -20,7 +20,7 @@ import {
 } from "./errors.js";
 import { fetchPage } from "./fetcher/index.js";
 import { assertHttpScheme, httpGet } from "./fetcher/http.js";
-import type { PolitenessManager } from "./politeness.js";
+import { currentCancellation, type PolitenessManager } from "./politeness.js";
 
 /**
  * M5: robots拒否(RobotsDeniedError)・SSRF拒否(PrivateAddressError)は「sitemap/feedが
@@ -288,6 +288,8 @@ async function discoverLinksOnce(url: string, politeness: PolitenessManager, opt
   assertHttpScheme(url);
   // robots.txt の取得(getSitemaps)は guard より前にあるので、止めているホストはここで止める。
   politeness.assertNotRefused(url);
+  // 同じ理由で、取り消し済みならrobots.txtを取りに行く前に抜ける(robots.txtの取得は取り消せない)。
+  if (currentCancellation()?.aborted) throw new RequestCancelledError(url);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const origin = new URL(url).origin;
   const pageHost = new URL(url).host;
