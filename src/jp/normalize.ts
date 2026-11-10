@@ -112,12 +112,25 @@ function unifyWidth(text: string): string {
   return text.normalize("NFC").replace(WIDTH_VARIANTS, (run) => run.normalize("NFKC"));
 }
 
+// 全角の「～～～」「｀｀｀」は幅の統一でフェンスの記号になる。turndownが地の文の記号に施すのと
+// 同じ形でエスケープし、outline・ブロック分割がコードの始まりと読まないようにする。
+const FENCE_LIKE_LINE_START = /(^|\n)([ \t]*)(`{3,}|~{3,})/g;
+
+function escapeFenceLikeLines(text: string, startsAtLineStart: boolean): string {
+  return text.replace(FENCE_LIKE_LINE_START, (match: string, newline: string, indent: string, run: string, offset: number) => {
+    if (offset === 0 && newline === "" && !startsAtLineStart) return match;
+    const escaped = run.startsWith("~") ? `\\${run}` : run.replace(/`/g, "\\`");
+    return `${newline}${indent}${escaped}`;
+  });
+}
+
 /** コード以外の地の文に対して 全半角の統一 + CJK隣接空白除去を適用する。 */
-function normalizeProse(text: string): string {
-  return unifyWidth(text)
+function normalizeProse(text: string, startsAtLineStart: boolean): string {
+  const normalized = unifyWidth(text)
     .replace(CJK_ADJACENT_WHITESPACE, (run) => (HARD_LINE_BREAK.test(run) ? run : ""))
     .replace(CJK_SPACE_BEFORE_MARKER, "")
     .replace(CJK_SPACE_AFTER_MARKER, "");
+  return escapeFenceLikeLines(normalized, startsAtLineStart);
 }
 
 /**
@@ -127,7 +140,12 @@ function normalizeProse(text: string): string {
  * CJK文字間の不要な空白・改行の除去を適用する。
  */
 export function normalizeCjkText(markdown: string): string {
+  let atLineStart = true;
   return splitProtectingCode(markdown)
-    .map((segment) => (segment.isCode ? segment.text : normalizeProse(segment.text)))
+    .map((segment) => {
+      const text = segment.isCode ? segment.text : normalizeProse(segment.text, atLineStart);
+      if (text.length > 0) atLineStart = text.endsWith("\n");
+      return text;
+    })
     .join("");
 }
