@@ -151,7 +151,7 @@ class FakePage {
 describe("navigateSafely", () => {
   it("公開IPアドレスへの直接遷移は許可される", async () => {
     const page = new FakePage();
-    const response = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/", 5000);
+    const { response } = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/", 5000);
     expect(response?.status()).toBe(200);
   });
 
@@ -195,7 +195,7 @@ describe("navigateSafely", () => {
     // メインページの取得(goto)自体は成功する。
     page.subRequests.push(subFrameNav("http://169.254.169.254/latest/meta-data/"));
 
-    const response = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/", 5000);
+    const { response } = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/", 5000);
     expect(response?.status()).toBe(200);
     expect(page.subRequestOutcomes).toEqual([{ url: "http://169.254.169.254/latest/meta-data/", outcome: "abort" }]);
   });
@@ -233,7 +233,7 @@ describe("navigateSafely", () => {
     page.redirects.set("http://93.184.216.34/a", "http://93.184.216.34/b");
     page.redirects.set("http://93.184.216.34/b", "http://93.184.216.34/c");
 
-    const response = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000);
+    const { response } = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000);
     expect(response?.status()).toBe(200);
     expect(page.url()).toBe("http://93.184.216.34/c");
   });
@@ -291,7 +291,7 @@ describe("navigateSafely - リダイレクト時のrobots.txt確認", () => {
     const page = new FakePage();
     page.redirects.set("http://93.184.216.34/a", "http://8.8.8.8/c");
 
-    const response = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000);
+    const { response } = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000);
 
     expect(response?.status()).toBe(200);
   });

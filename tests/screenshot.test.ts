@@ -106,7 +106,7 @@ describe("captureTiledScreenshot(レビュー指摘対応: fullPageフラグの�
 
   it("options.fullPage: falseの場合、page.screenshotへfullPage:falseを渡す(全ページレンダリングを避ける)", async () => {
     const { page, screenshotMock } = createFakePage(800, 500);
-    openPageAndNavigateMock.mockResolvedValue({ context: { close: async () => {} }, page, response: null });
+    openPageAndNavigateMock.mockResolvedValue({ context: { close: async () => {} }, page, response: null, assertNotBlocked: () => {} });
 
     await captureTiledScreenshot("https://example.com/", { fullPage: false });
 
@@ -115,7 +115,7 @@ describe("captureTiledScreenshot(レビュー指摘対応: fullPageフラグの�
 
   it("options.fullPage未指定(既定true)の場合、page.screenshotへfullPage:trueを渡す", async () => {
     const { page, screenshotMock } = createFakePage(800, 500);
-    openPageAndNavigateMock.mockResolvedValue({ context: { close: async () => {} }, page, response: null });
+    openPageAndNavigateMock.mockResolvedValue({ context: { close: async () => {} }, page, response: null, assertNotBlocked: () => {} });
 
     await captureTiledScreenshot("https://example.com/");
 
@@ -124,7 +124,7 @@ describe("captureTiledScreenshot(レビュー指摘対応: fullPageフラグの�
 
   it("options.fullPage: trueを明示指定した場合もpage.screenshotへfullPage:trueを渡す", async () => {
     const { page, screenshotMock } = createFakePage(800, 500);
-    openPageAndNavigateMock.mockResolvedValue({ context: { close: async () => {} }, page, response: null });
+    openPageAndNavigateMock.mockResolvedValue({ context: { close: async () => {} }, page, response: null, assertNotBlocked: () => {} });
 
     await captureTiledScreenshot("https://example.com/", { fullPage: true });
 
@@ -135,7 +135,7 @@ describe("captureTiledScreenshot(レビュー指摘対応: fullPageフラグの�
     // 出力タイルだけを10枚に切り詰めていた頃は、無限スクロールのページで
     // 捨てるだけの数万px分をChromiumに描画させ、巨大なPNGをメモリへ展開していた。
     const { page, screenshotMock } = createFakePage(800, 50_000);
-    openPageAndNavigateMock.mockResolvedValue({ context: { close: async () => {} }, page, response: null });
+    openPageAndNavigateMock.mockResolvedValue({ context: { close: async () => {} }, page, response: null, assertNotBlocked: () => {} });
 
     const result = await captureTiledScreenshot("https://example.com/", { fullPage: true });
 
