@@ -18,6 +18,24 @@ describe("removeConsentBanners", () => {
     expect(removed).toBe(1);
   });
 
+  it("英語のCookie同意バナーを除去する", () => {
+    const doc = makeDocument(`
+      <div id="onetrust-consent-sdk">We use cookies to improve your experience. <button>Got it</button></div>
+      <div class="cookie-banner">This website uses cookies. <a href="/privacy">Learn more</a></div>
+      <div class="cmp-dialog">Manage your choices. <button>Accept all cookies</button><button>Reject</button></div>
+      <article><p>This paragraph is the article body.</p></article>
+    `);
+    expect(removeConsentBanners(doc)).toBe(3);
+  });
+
+  it("英語でcookieやacceptを含むだけの本文は除去しない", () => {
+    const doc = makeDocument(`
+      <div class="consent-form">Please accept the terms before you submit the form.</div>
+      <div class="cookie-recipe">Bake the cookies for twelve minutes, then let them cool.</div>
+    `);
+    expect(removeConsentBanners(doc)).toBe(0);
+  });
+
   it("アプリ誘導バナーを除去する", () => {
     const doc = makeDocument(`
       <div class="app-banner-container">アプリで開くと更に便利です。<a href="#">アプリで開く</a></div>
