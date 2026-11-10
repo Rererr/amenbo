@@ -1034,8 +1034,10 @@ interface ClassHostElement {
   querySelectorAll(selector: string): ArrayLike<ClassElement>;
 }
 
-// CSSのプロパティ名を冠したユーティリティクラス(overflow-hidden・lg:overflow-y-scroll・scroll-mt-24)。
-const UTILITY_CLASS_TOKEN = /^(?:[^:\s]+:)*!?-?(?:overflow|scroll)-/;
+// 値が負の語と重なるユーティリティクラス(overflow-hidden・lg:overflow-y-scroll!)。`scroll-container`の
+// ような意味のある名前は外さない。関連記事の一覧の容れ物がoverflow-hidden等を持つと、その一覧が
+// 本文に混ざりうる(手順や図の容れ物とclass名では区別できないため受け入れる)。
+const UTILITY_CLASS_TOKEN = /^(?:[^:\s]+:)*!?overflow(?:-[xy])?-(?:hidden|clip|scroll)!?$/;
 
 /**
  * Readabilityが負の語(hidden・scroll)として採点に使うclass名のうち、ユーティリティクラスの値だけを外す。
