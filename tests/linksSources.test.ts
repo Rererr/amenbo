@@ -203,23 +203,41 @@ describe("llms.txt", () => {
     expect(hits.get(llmsPath)).toBe(1);
   });
 
-  it("fetch で取ったページが知らせていたと分かっていれば、sitemap より先に llms.txt を使い、sitemap は取らない", async () => {
+  it("出典の順はキャッシュの状態に依らない: sitemap があれば、ページが llms.txt を知らせていても fetch の前後とも sitemap", async () => {
     const sitemapPath = fresh("/sitemap.xml");
+    const pagePath = fresh("/docs");
     const llmsPath = fresh("/llms.txt");
     site = {
       robots: `User-agent: *\nAllow: /\nSitemap: __ORIGIN__${sitemapPath}\n`,
       routes: {
         [sitemapPath]: { headers: { "Content-Type": "application/xml" }, body: SITEMAP },
+        [pagePath]: { headers: { "Content-Type": "text/html; charset=utf-8", Link: `<${llmsPath}>; rel="llms-txt"` }, body: page("") },
         [llmsPath]: { headers: { "Content-Type": "text/markdown" }, body: LLMS_TXT },
       },
     };
-    const start = `${origin}${fresh("/docs")}`;
+    const start = `${origin}${pagePath}`;
+
+    const before = await discoverLinks(start, politeness, { cache });
+    // fetch でそのページを取り、llms.txt の在りかがキャッシュに残った状態
     cache.set({ url: start, etag: null, lastModified: null, markdown: "# 起点", metadata: { agentResources: { markdownAlternate: null, llmsTxt: `${origin}${llmsPath}` } } });
+    const after = await discoverLinks(start, politeness, { cache, filter: "blog" });
 
-    const result = await discoverLinks(start, politeness, { cache });
+    expect(before.source).toBe("sitemap");
+    expect(after.source).toBe("sitemap");
+    // sitemap で足りるので、ページも llms.txt も取らない(要求を増やさない)。
+    expect(hits.get(pagePath)).toBeUndefined();
+    expect(hits.get(llmsPath)).toBeUndefined();
+  });
 
-    expect(result.source).toBe("llms.txt");
-    expect(hits.get(sitemapPath)).toBeUndefined();
+  it("形の合わないキャッシュの行は無いものとして取り直す", async () => {
+    const sitemapPath = fresh("/sitemap.xml");
+    site = { robots: `User-agent: *\nAllow: /\nSitemap: __ORIGIN__${sitemapPath}\n`, routes: { [sitemapPath]: { headers: { "Content-Type": "application/xml" }, body: SITEMAP } } };
+    cache.set({ url: `links-sitemap:${origin}${sitemapPath}`, etag: null, lastModified: null, markdown: JSON.stringify({ kind: "urlset", links: [1, 2] }), metadata: {} });
+
+    const result = await discoverLinks(`${origin}${fresh("/")}`, politeness, { cache });
+
+    expect(result.links).toHaveLength(3);
+    expect(hits.get(sitemapPath)).toBe(1);
   });
 
   it("知らされていなければ llms.txt を探しに行かない", async () => {
