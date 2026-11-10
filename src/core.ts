@@ -22,7 +22,7 @@ import {
   type Validators,
 } from "./cache.js";
 import { diffMarkdown } from "./diff.js";
-import { AmenboError, SectionNotFoundError } from "./errors.js";
+import { AmenboError, PdfUnreadableError, SectionNotFoundError } from "./errors.js";
 import { detectDataSources } from "./extract/dataSources.js";
 import { extractMarkdown, type ExtractionMethod } from "./extract/markdown.js";
 import { buildOutline, findSection, formatBreadcrumb } from "./extract/outline.js";
@@ -629,6 +629,8 @@ export type ImageBlock = { type: "image"; data: string; mimeType: string };
  */
 interface PrefetchedPdf {
   bytes: Uint8Array;
+  /** 応答のcontent-type(PDFでない応答だったときの説明に使う)。 */
+  contentType: string | null;
   finalUrl: string;
   etag: string | null;
   lastModified: string | null;
@@ -762,6 +764,7 @@ async function loadPdfDocument(url: string, notify: (message: string) => void, p
     url,
     {
       bytes: binary.bytes,
+      contentType: binary.contentType,
       finalUrl: binary.finalUrl,
       etag: binary.headers.get("etag"),
       lastModified: binary.headers.get("last-modified"),
@@ -771,10 +774,53 @@ async function loadPdfDocument(url: string, notify: (message: string) => void, p
   );
 }
 
+/** pdf.jsはファイル先頭1024バイト以内の `%PDF-` をヘッダとして受け付ける(その前のゴミを許容する)。 */
+const PDF_SIGNATURE = new TextEncoder().encode("%PDF-");
+const PDF_SIGNATURE_SEARCH_BYTES = 1024;
+
+function hasPdfSignature(bytes: Uint8Array): boolean {
+  return Buffer.from(bytes.subarray(0, PDF_SIGNATURE_SEARCH_BYTES)).includes(PDF_SIGNATURE);
+}
+
+/**
+ * URLの拡張子だけでPDFの経路へ入るため、期限切れのリンクがログイン画面や案内ページ(HTML)を返すと
+ * pdf.jsの生の例外(InvalidPDFException)になっていた。PDFでない応答は、何が返ったかを書いて失敗にする。
+ * 取得済みのHTMLを本文抽出の経路へ回すことはしない(HTML経路は取得から組み立て直す作りで、
+ * 同じ応答を使い回す口が無い。転送先が別のURLなら、そのURLのfetchで読める)。
+ */
+function assertPdfContent(requestedUrl: string, source: PrefetchedPdf): void {
+  if (hasPdfSignature(source.bytes)) return;
+  const contentType = source.contentType ?? "不明";
+  const isHtml = /text\/html|application\/xhtml\+xml/i.test(contentType);
+  const redirected = source.finalUrl !== requestedUrl && !looksLikePdf(source.finalUrl, null);
+  throw new PdfUnreadableError(
+    source.finalUrl,
+    `PDFではない応答が返りました(content-type: ${contentType})` +
+      (isHtml ? "。ログイン画面や案内ページへの転送の可能性があります" : "") +
+      (redirected ? `。転送先 ${source.finalUrl} を fetch すれば、そのページとして読めます` : ""),
+  );
+}
+
+/** pdf.jsの例外(型の外から来るため、そのままでは「予期しないエラー」になる)を理由の分かるエラーにする。 */
+function toPdfUnreadableError(url: string, cause: unknown): AmenboError {
+  if (cause instanceof AmenboError) return cause;
+  const name = cause instanceof Error ? cause.name : "";
+  const reason =
+    name === "PasswordException"
+      ? "パスワードで保護されたPDFのため読めません"
+      : name === "InvalidPDFException"
+        ? "PDFの構造を読めませんでした(壊れているか、途中で切れている可能性があります)"
+        : `PDFの解析に失敗しました(${cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause)})`;
+  return new PdfUnreadableError(url, reason, { cause });
+}
+
 /** 取得済みPDFバイト列を解析し、テキスト層があればキャッシュへ書き込む。 */
 async function parsePdfDocument(url: string, source: PrefetchedPdf, notify: (message: string) => void): Promise<PdfDocument> {
+  assertPdfContent(url, source);
   notify("PDFを解析しています…");
-  const textResult = await extractPdfText(source.bytes);
+  const textResult = await extractPdfText(source.bytes).catch((cause: unknown) => {
+    throw toPdfUnreadableError(source.finalUrl, cause);
+  });
 
   if (textResult.hasTextLayer) {
     const markdown = markdownFromPdfText(textResult);
@@ -803,7 +849,9 @@ async function parsePdfDocument(url: string, source: PrefetchedPdf, notify: (mes
 
   // テキスト層が実質無い(スキャンPDF): 先頭ページから画像タイルとして返す。描画した画像は画面写真と
   // 同じ仕組みで保存し、同じPDFを求められるたびに最大20MBを取り直して描画し直さないようにする。
-  const images = await renderPdfPages(source.bytes);
+  const images = await renderPdfPages(source.bytes).catch((cause: unknown) => {
+    throw toPdfUnreadableError(source.finalUrl, cause);
+  });
   if (!parseCacheControl(source.cacheControl).noStore) {
     cache.setScreenshot({
       cacheKey: computePdfImageCacheKey(url),
@@ -899,6 +947,7 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
       // fullReadMaxBytesで本体を読み切っているため、ここで取得し直さない。
       return handlePdfFetch(documentUrl, page, maxTokens, input.onProgress, {
         bytes: handoff.bytes,
+        contentType: handoff.contentType,
         finalUrl: handoff.finalUrl,
         etag: handoff.etag,
         lastModified: handoff.lastModified,
