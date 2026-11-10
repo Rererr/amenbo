@@ -85,6 +85,20 @@ const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15分
 const MAX_CACHE_CONTROL_TTL_MS = 24 * 60 * 60 * 1000;
 /** Phase 4テンプレート学習: 定型ブロック判定に使う「直近ページ数」の既定値。 */
 const DEFAULT_TEMPLATE_RECENT_PAGES = 3;
+/** 別プロセスが書き込み中のとき、ロックの解放を待つ最長時間。 */
+const BUSY_TIMEOUT_MS = 5000;
+const WAL_RETRY_INTERVAL_MS = 20;
+const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
+const SQLITE_BUSY = 5;
+
+/** SQLiteの結果コード。errcodeを持たない版のNodeでも判別できるよう、SQLite固定の文言からも引く。 */
+function sqliteErrorCode(error: unknown): number | null {
+  if (!(error instanceof Error)) return null;
+  const errcode = (error as { errcode?: unknown }).errcode;
+  if (typeof errcode === "number") return errcode & 0xff;
+  if (error.message.includes("database is locked")) return SQLITE_BUSY;
+  return null;
+}
 /** meta テーブルに前回prune時刻を記録するキー。 */
 const META_LAST_PRUNED_AT = "last_pruned_at";
 
@@ -202,11 +216,13 @@ export class PageCache {
       mkdirSync(this.cacheDir, { recursive: true });
     }
     this.db = new DatabaseSync(options.dbPath ?? join(this.cacheDir, "cache.sqlite"));
+    // DatabaseSync の timeout オプションは Node 22.16 からで、engines(>=22.13.0)の下限では効かない。
+    this.db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.robotsTtlMs = options.robotsTtlMs ?? DEFAULT_ROBOTS_TTL_MS;
     this.pruneIntervalMs = Math.min(this.ttlMs, this.robotsTtlMs);
     this.now = options.now ?? Date.now;
-    this.db.exec("PRAGMA journal_mode = WAL");
+    this.enableWal();
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS pages (
         url TEXT PRIMARY KEY,
@@ -274,6 +290,24 @@ export class PageCache {
     // 起動のたびに掃除するとCLIバルク収集(1コマンド=1プロセス)で毎回DELETEが走るため、
     // 前回pruneからTTL未満なら間引く(maybePruneExpired参照)。
     this.maybePruneExpired();
+  }
+
+  /**
+   * WALへの切り替えは、まだWALでないDBを複数プロセスが同時に開くと、busy_timeoutを待たずに
+   * "database is locked" を返す(共有ロックから排他ロックへの昇格はSQLiteがデッドロック回避のため
+   * 待たない)。初回起動が重なったときにプロセスごと起動できなくならないよう、自前で待ち直す。
+   */
+  private enableWal(): void {
+    const deadline = Date.now() + BUSY_TIMEOUT_MS;
+    for (;;) {
+      try {
+        this.db.exec("PRAGMA journal_mode = WAL");
+        return;
+      } catch (error) {
+        if (sqliteErrorCode(error) !== SQLITE_BUSY || Date.now() >= deadline) throw error;
+        Atomics.wait(SLEEP_CELL, 0, 0, WAL_RETRY_INTERVAL_MS);
+      }
+    }
   }
 
   /** 全SQL文を一度だけprepareする(DDL適用後・prune前に呼ぶ)。 */
