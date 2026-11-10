@@ -147,6 +147,8 @@ export class PolitenessManager {
   private readonly robotsCache = new Map<string, RobotsCacheEntry>();
   /** robots.txt に届かず規則を確認できなかったオリジンと、その理由(全面拒否の理由に添える)。 */
   private readonly robotsUnreachable = new Map<string, string>();
+  /** 取得中の robots.txt。新しいサイトへの同時の取得で、robots.txt を件数ぶん同時に取りに行かないため。 */
+  private readonly robotsInFlight = new Map<string, Promise<Robot>>();
   // N8: settledを持たせるのは、pruneStaleHostStateがまだ完了していない(=キューに並んでいる
   // 呼び出しがある)ロックを誤って消してしまうと直列化が壊れる(同一ホストへの同時呼び出しが
   // 追い越してしまう)ため。「完了済み」かつ「最終アクセスから十分時間が経っている」ロックのみ
@@ -347,6 +349,16 @@ export class PolitenessManager {
     if (cached && this.now() - cached.fetchedAt < (cached.ttlMs ?? this.robotsTtlMs)) {
       return cached.robots;
     }
+
+    const inFlight = this.robotsInFlight.get(origin);
+    if (inFlight) return inFlight;
+    const loading = this.loadRobots(origin).finally(() => this.robotsInFlight.delete(origin));
+    this.robotsInFlight.set(origin, loading);
+    return loading;
+  }
+
+  /** robots.txt をストアかネットワークから読む。同じオリジンへの同時の呼び出しは getRobots が1本にまとめる。 */
+  private async loadRobots(origin: string): Promise<Robot> {
     this.robotsUnreachable.delete(origin);
 
     // レビュー指摘対応: インメモリキャッシュに無い/TTL超過の場合、ネットワークへ行く前に
