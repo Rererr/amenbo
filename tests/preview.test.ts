@@ -6,13 +6,24 @@ function toBytes(text: string): Uint8Array {
 }
 
 describe("機能B: isTextLikeContentType", () => {
-  it("text/plain・text/csv・text/tab-separated-values・application/json・application/xmlはtext-like", () => {
-    expect(isTextLikeContentType("text/plain; charset=utf-8")).toBe(true);
-    expect(isTextLikeContentType("text/csv")).toBe(true);
-    expect(isTextLikeContentType("text/tab-separated-values")).toBe(true);
-    expect(isTextLikeContentType("application/json")).toBe(true);
-    expect(isTextLikeContentType("application/xml")).toBe(true);
-    expect(isTextLikeContentType("text/xml")).toBe(true);
+  // 仕様: 人が読める文字で書かれた文書の型は、本文としてプレビューする。サイトが本文を配る形
+  // (llms.txt の text/plain、ページごとの .md の text/markdown)を漏らさないことが要点。
+  it.each([
+    ["text/plain; charset=utf-8"],
+    ["text/markdown"],
+    ["text/markdown; charset=utf-8"],
+    ["Text/Markdown; charset=UTF-8"],
+    ["text/x-markdown"],
+    ["text/csv"],
+    ["text/tab-separated-values"],
+    ["text/xml"],
+    ["application/json"],
+    ["application/xml"],
+    ["application/ld+json"],
+    ["application/rss+xml"],
+  ])("%s はテキスト系としてプレビューする", (contentType) => {
+    expect(isTextLikeContentType(contentType)).toBe(true);
+    expect(buildHandoffPreview(toBytes("本文の一行目"), contentType, 1000, false)?.body).toBe("本文の一行目");
   });
 
   it("application/zip・application/vnd.ms-excel等のバイナリ系はtext-likeではない", () => {

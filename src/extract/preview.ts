@@ -1,7 +1,7 @@
 /**
  * extract/preview.ts — 機能B: 非HTMLコンテンツのハンドオフ応答用プレビュー整形。
  *
- * text/plain・CSV/TSV・JSON・XML等のテキスト系コンテンツはプレビュー本文を、
+ * text/plain・Markdown・CSV/TSV・JSON・XML等のテキスト系コンテンツはプレビュー本文を、
  * それ以外(zip/xlsx等のバイナリ系)はメタデータのみを返す方針(server.tsの
  * formatHandoffResponseから利用される)。
  */
@@ -9,7 +9,7 @@ import { decodeHtmlBytes } from "../fetcher/http.js";
 import { estimateTokens } from "../tokens.js";
 
 /** プレビュー対象とみなすテキスト系content-type(charset等のパラメータは除いて判定)。 */
-const TEXT_CONTENT_TYPE_RE = /^(text\/(plain|csv|tab-separated-values|xml)|application\/(json|xml))$/i;
+const TEXT_CONTENT_TYPE_RE = /^(text\/(plain|markdown|x-markdown|csv|tab-separated-values|xml)|application\/(json|xml))$/i;
 const JSON_OR_XML_SUFFIX_RE = /\+(json|xml)$/i;
 
 function mimeOnly(contentType: string | null): string {
