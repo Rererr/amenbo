@@ -548,4 +548,16 @@ describe("discoverLinks - 待ちの上限と取り消し", () => {
     expect(fetchPageMock).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
+
+  it("取り消し済みなら、robots.txt も取りに行かない", async () => {
+    const { RequestCancelledError } = await import("../src/errors.js");
+    const { runCancellableBy } = await import("../src/politeness.js");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(runCancellableBy(controller.signal, () => discoverLinks("http://example.com/", makePoliteness()))).rejects.toThrow(
+      RequestCancelledError,
+    );
+    expect(httpGetMock).not.toHaveBeenCalled();
+  });
 });
