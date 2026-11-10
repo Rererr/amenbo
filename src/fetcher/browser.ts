@@ -385,8 +385,9 @@ export async function navigateSafely(
     // 成功しても検証は外さない。gotoが返った後のページ内の遷移も止めるため(外すのはcontextを閉じるとき)。
     return { response, assertNotBlocked };
   } catch (cause) {
-    await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
+    // 先にCDPで止めている段を失敗させる。判定の途中で時間切れになった段を、後から送らせないため。
     await stopGuardingRedirects();
+    await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
     assertNotBlocked();
     if (cause instanceof Error && /timeout/i.test(cause.message)) {
       throw new FetchTimeoutError(url, timeoutMs, "browser");
@@ -406,7 +407,8 @@ export interface SafeNavigation {
 
 /**
  * メインフレームのリダイレクトの各ホップを、送る前にSSRF検証とrobots.txtの確認にかける。
- * 拒否したホップは送らずに失敗させ、onBlockedで理由を渡す。戻り値は止めるのをやめる関数。
+ * 拒否したホップは送らずに失敗させ、onBlockedで理由を渡す。戻り値は止めるのをやめる関数で、そのとき判定の途中の
+ * ホップは送らずに失敗させる。
  */
 async function guardMainFrameRedirects(
   page: Page,
@@ -416,25 +418,31 @@ async function guardMainFrameRedirects(
   const session = await page.context().newCDPSession(page);
   const { frameTree } = await session.send("Page.getFrameTree");
   const mainFrameId = frameTree.frame.id;
+  const checking = new Set<string>();
+  // 送る前にページが閉じられていれば続ける先が無いので、失敗は無視してよい。
+  const fail = (requestId: string) => session.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }).catch(() => {});
   session.on("Fetch.requestPaused", (event) => {
     void (async () => {
       const hopUrl = event.request.url;
       if (event.frameId === mainFrameId && event.redirectedRequestId !== undefined) {
+        checking.add(event.requestId);
         try {
           await guardPublicAddress(hopUrl);
           await checkRobots?.(hopUrl);
         } catch (error) {
           onBlocked(error instanceof AmenboError ? error : new InvalidUrlError(hopUrl, "リダイレクト先の検証に失敗しました"));
-          await session.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" }).catch(() => {});
+          await fail(event.requestId);
           return;
+        } finally {
+          checking.delete(event.requestId);
         }
       }
-      // 送る前にページが閉じられていれば続ける先が無いので、失敗は無視してよい。
       await session.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {});
     })();
   });
   await session.send("Fetch.enable", { patterns: [{ resourceType: "Document", requestStage: "Request" }] });
   return async () => {
+    await Promise.all([...checking].map(fail));
     await session.detach().catch(() => {});
   };
 }
