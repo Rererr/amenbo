@@ -1025,8 +1025,10 @@ export function normalizeRetainedTables(contentHtml: string): string {
 
 interface ClassElement {
   tagName: string;
+  parentElement: ClassElement | null;
   textContent: string | null;
   children: ArrayLike<ClassElement>;
+  querySelectorAll(selector: string): ArrayLike<ClassElement>;
   getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
@@ -1056,6 +1058,7 @@ function neutralizeUtilityClassTokens(root: ClassHostElement): void {
 
 interface ReadabilityNamePatterns {
   unlikelyCandidates: RegExp;
+  negative: RegExp;
 }
 
 /**
@@ -1065,8 +1068,9 @@ interface ReadabilityNamePatterns {
 function readabilityNamePatterns(): ReadabilityNamePatterns | null {
   const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
   const unlikelyCandidates = regexps?.unlikelyCandidates;
-  if (!(unlikelyCandidates instanceof RegExp)) return null;
-  return { unlikelyCandidates };
+  const negative = regexps?.negative;
+  if (!(unlikelyCandidates instanceof RegExp) || !(negative instanceof RegExp)) return null;
+  return { unlikelyCandidates, negative };
 }
 
 // 見出しから作ったidで章や表を包むだけの要素(xml2rfcの`<div id="header.field.definitions"><section>`)の中身。
@@ -1084,6 +1088,41 @@ function dropUnlikelyIdsOfAnchorWrappers(body: ClassHostElement, patterns: Reada
     const [only, ...rest] = Array.from(el.children);
     if (!only || rest.length > 0 || !ANCHOR_WRAPPED_TAGS.has(only.tagName)) continue;
     el.removeAttribute("id");
+  }
+}
+
+// コードブロックの容れ物が持つ飾り(言語のタブ・ファイル名・コピーのボタン)の文字数の上限。
+const CODE_CHROME_MAX_LENGTH = 100;
+
+function visibleLength(text: string | null): number {
+  return (text ?? "").replace(/\s+/g, "").length;
+}
+
+/**
+ * コードブロック(pre)と、ほぼコードだけを持つその祖先から、Readabilityの負の語に当たるclassを外す。
+ * スクロール領域の部品名(`[--scroll-area-fade-size:32px]`・`base-ui-disable-scrollbar`)が`scroll`に
+ * 当たり、コードブロックが採点で捨てられていた。コード以外の文字を多く持つ祖先(コメント欄など)では
+ * 止める: そこまで外すと、コードを含むだけの本文でない部品まで残る。
+ */
+function dropNegativeClassesAroundCode(body: ClassHostElement, negative: RegExp): void {
+  const lengths = new Map<ClassElement, { text: number; code: number }>();
+  const measure = (el: ClassElement): { text: number; code: number } => {
+    const known = lengths.get(el);
+    if (known) return known;
+    const text = visibleLength(el.textContent);
+    const code = el.tagName === "PRE" ? text : Array.from(el.querySelectorAll("pre")).reduce((sum, pre) => sum + visibleLength(pre.textContent), 0);
+    const measured = { text, code };
+    lengths.set(el, measured);
+    return measured;
+  };
+  for (const pre of Array.from(body.querySelectorAll("pre"))) {
+    for (let el: ClassElement | null = pre; el && el !== (body as unknown); el = el.parentElement) {
+      const { text, code } = measure(el);
+      if (text - code > CODE_CHROME_MAX_LENGTH) break;
+      const tokens = (el.getAttribute("class") ?? "").split(/\s+/);
+      const kept = tokens.filter((token) => !negative.test(token));
+      if (kept.length !== tokens.length) el.setAttribute("class", kept.join(" "));
+    }
   }
 }
 
@@ -1221,7 +1260,10 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
       if (document.body) {
         neutralizeUtilityClassTokens(document.body as unknown as ClassHostElement);
         const namePatterns = readabilityNamePatterns();
-        if (namePatterns) dropUnlikelyIdsOfAnchorWrappers(document.body as unknown as ClassHostElement, namePatterns);
+        if (namePatterns) {
+          dropUnlikelyIdsOfAnchorWrappers(document.body as unknown as ClassHostElement, namePatterns);
+          dropNegativeClassesAroundCode(document.body as unknown as ClassHostElement, namePatterns.negative);
+        }
       }
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;
