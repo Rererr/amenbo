@@ -465,7 +465,9 @@ export function normalizeTableHtml(tableHtml: string): string {
 
 /** テキストからタグを除きシグネチャ用に空白正規化する。 */
 function normalizeForSignature(text: string): string {
-  return text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  // \sはゼロ幅空白(U+200B)等の書式文字を含まない。見出しのパーマリンクが持つ書式文字は
+  // Readabilityが落とす側にだけ残るため、畳まないと同じ見出しを別物と判定して二重に戻す。
+  return text.replace(/<[^>]+>/g, " ").replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim();
 }
 
 interface TableAnchor {
@@ -1023,9 +1025,14 @@ export interface StyleLeakHostDocument {
  * 無い復元ロジック)。ここで先回りして除去すると差し替え元のnoscriptが消え、劣化した
  * プレースホルダ画像しか残らなくなる。noscript自体の除去はremoveResidualNoscriptElements
  * (turndown直前の全経路共通パス、Readability実行後)に委ねる。
+ *
+ * templateは描画されないのに文字を持つ(docs基盤がページ全体のJSONを置く)ため、残すと
+ * Readabilityの文字数判定・品質判定の分母・表の重複照合がその文字を本文として数える。
+ * 宣言的Shadow DOM(shadowrootmode)のtemplateも区別しない: turndownはtemplateの中身を
+ * もともと出力しないので、除いても出力から消えるものは無い。
  */
 export function removeStyleLeakElements(document: StyleLeakHostDocument): void {
-  for (const el of Array.from(document.querySelectorAll("style, script"))) {
+  for (const el of Array.from(document.querySelectorAll("style, script, template"))) {
     if (el.closest("pre, code")) continue;
     el.remove();
   }
