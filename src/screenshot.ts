@@ -61,7 +61,7 @@ export interface ScreenshotOptions {
   /** 解像度スケール(0.5〜1.0)。既定1.0。小さいほど画像サイズ(トークン)が減る。 */
   scale?: number;
   timeoutMs?: number;
-  /** 別オリジンへ遷移した場合のrobots.txt確認(HTTP層のcheckRobotsと同じ役割)。 */
+  /** メインフレームの遷移ごとのrobots.txt確認(HTTP層のcheckRobotsと同じ役割)。 */
   checkRobots?: ((url: string) => Promise<void>) | undefined;
 }
 

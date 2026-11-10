@@ -96,8 +96,7 @@ async function fetchXml(
   politeness: PolitenessManager,
   rewrite?: (xml: string) => string,
 ): Promise<XmlLikeDocument> {
-  // レビュー指摘対応: リダイレクトで別オリジンへ着地した場合、着地先のrobots.txtも確認する
-  // (fetcher/http.tsのHttpGetOptions.checkRobots参照)。
+  // リダイレクトの転送先ごとにrobots.txtも確認する(fetcher/http.tsのHttpGetOptions.checkRobots参照)。
   const result = await httpGet(url, { timeoutMs, checkRobots: (targetUrl) => politeness.checkRedirectTarget(targetUrl) });
   const { document } = parseHTML(rewrite ? rewrite(result.html) : result.html);
   return document as unknown as XmlLikeDocument;
