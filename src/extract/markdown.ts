@@ -1123,7 +1123,7 @@ function readabilityNamePatterns(): ReadabilityNamePatterns | null {
 const ANCHOR_WRAPPED_TAGS = new Set(["SECTION", "TABLE"]);
 
 /**
- * idが「本文らしくない」語に当たっても、子が章か表の1つだけの要素は、
+ * idが「本文らしくない」語に当たっても、子が自分のidを持つ章か表の1つだけの要素は、
  * idを外してReadabilityに捨てさせない。文字の割合では決めない: コメント欄やサイドバーも
  * ページの文字の多くを持ちうる。classは外さない: 本文全体の容れ物がclassの語で捨てられるページは
  * Readabilityの再試行で本文を取れており、外すと採点の起点が変わって記事の冒頭の説明文を落とす。
@@ -1132,7 +1132,7 @@ function dropUnlikelyIdsOfAnchorWrappers(body: ClassHostElement, patterns: Reada
   for (const el of Array.from(body.querySelectorAll("[id]"))) {
     if (!patterns.unlikelyCandidates.test(el.getAttribute("id") ?? "")) continue;
     const [only, ...rest] = Array.from(el.children);
-    if (!only || rest.length > 0 || !ANCHOR_WRAPPED_TAGS.has(only.tagName)) continue;
+    if (!only || rest.length > 0 || !ANCHOR_WRAPPED_TAGS.has(only.tagName) || !only.getAttribute("id")) continue;
     el.removeAttribute("id");
   }
 }
