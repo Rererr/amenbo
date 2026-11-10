@@ -33,6 +33,27 @@ describe("描画されないtemplateと見出しの書式文字(docs基盤の構
   });
 });
 
+describe("ユーティリティクラスの値とReadabilityのclass名の採点", () => {
+  it("overflow-hidden・md:overflow-y-scrollを持つ容れ物の中の手順も本文に残る", () => {
+    const intro = Array.from(
+      { length: 4 },
+      (_, i) => `<p>Paragraph ${i} explains how the relay daemon delivers messages, why workers acknowledge them, and what happens on failure.</p>`,
+    ).join("");
+    const step = (n: number, utility: string, title: string, body: string): string =>
+      `<div role="listitem" class="step relative flex items-start pb-5"><div class="absolute py-2">${n}</div>` +
+      `<div class="w-full ${utility} pl-8 pr-px"><p class="mt-2 font-semibold">${title}</p><div class="prose"><span>${body}</span></div></div></div>`;
+    const html = `<!DOCTYPE html><html><body><article><h1>Relay guide</h1>${intro}<h2>Set up</h2><div role="list" class="steps ml-3">${step(
+      1,
+      "overflow-hidden",
+      "Install the daemon",
+      "Run the installer once per machine.",
+    )}${step(2, "md:overflow-y-scroll", "Start the workers", "Each worker connects on start.")}</div>${intro}</article></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://docs.example.com/relay" });
+    expect(markdown).toContain("Install the daemon");
+    expect(markdown).toContain("Each worker connects on start.");
+  });
+});
+
 describe("見出しの中のパーマリンクとブロック要素", () => {
   const paragraph = "<p>この段落は見出しの下に置いた本文で、抽出の経路によらず残ることを確かめるための文章です。</p>";
 
