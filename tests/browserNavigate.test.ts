@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { InvalidUrlError, PrivateAddressError, RobotsDeniedError } from "../src/errors.js";
+import { BotChallengeError, FetchTimeoutError, InvalidUrlError, PrivateAddressError, RobotsDeniedError } from "../src/errors.js";
 import { navigateSafely } from "../src/fetcher/browser.js";
 
 /**
@@ -104,7 +104,24 @@ class FakePage {
     this.handler = null;
   }
 
-  async goto(startUrl: string, _opts: unknown): Promise<{ status(): number } | null> {
+  /** waitForLoadState に渡された状態と上限(待ち方の検証用)。 */
+  readonly loadStateWaits: Array<{ state: string; timeout: number | undefined }> = [];
+  /** networkidle が来ないページを模す(true なら networkidle の待ちがタイムアウトする)。 */
+  networkNeverIdle = false;
+  /** load が来ないページを模す。 */
+  loadNeverFires = false;
+  /** 最終応答のヘッダ(bot 対策の確認画面の印の検証用)。 */
+  responseHeaders: Record<string, string> = {};
+  readonly gotoOptions: unknown[] = [];
+
+  async waitForLoadState(state: string, options?: { timeout?: number }): Promise<void> {
+    this.loadStateWaits.push({ state, timeout: options?.timeout });
+    if (state === "networkidle" && this.networkNeverIdle) throw new Error(`Timeout ${options?.timeout}ms exceeded.`);
+    if (state === "load" && this.loadNeverFires) throw new Error(`page.waitForLoadState: Timeout ${options?.timeout}ms exceeded.`);
+  }
+
+  async goto(startUrl: string, opts: unknown): Promise<{ status(): number; statusText(): string; headers(): Record<string, string> } | null> {
+    this.gotoOptions.push(opts);
     let currentUrl = startUrl;
     for (let hop = 0; hop < 5; hop++) {
       if (hop === 0) {
@@ -122,7 +139,7 @@ class FakePage {
         if (this.clientNavigation && (await this.navigateThroughRoute(this.clientNavigation))) {
           this.finalUrl = "chrome-error://chromewebdata/";
         }
-        return { status: () => 200 };
+        return { status: () => 200, statusText: () => "OK", headers: () => this.responseHeaders };
       }
       currentUrl = next;
     }
@@ -294,5 +311,41 @@ describe("navigateSafely - リダイレクト時のrobots.txt確認", () => {
     const { response } = await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000);
 
     expect(response?.status()).toBe(200);
+  });
+});
+
+describe("navigateSafely - 読み込みの待ち方", () => {
+  const asPage = (page: FakePage) => page as unknown as import("playwright").Page;
+
+  it("通信が途切れないページ(networkidle が来ない)でも、load の後に短く待って中身を返す", async () => {
+    const page = new FakePage();
+    page.networkNeverIdle = true;
+
+    const { response } = await navigateSafely(asPage(page), "http://93.184.216.34/", 15_000);
+
+    expect(response?.status()).toBe(200);
+    expect(page.loadStateWaits.map((wait) => wait.state)).toEqual(["load", "networkidle"]);
+    expect(page.loadStateWaits[1]!.timeout).toBeLessThanOrEqual(5_000);
+  });
+
+  it("応答ヘッダが届いた時点(commit)で止まり、bot 対策の確認画面なら読み込みを待たずに失敗する", async () => {
+    const page = new FakePage();
+    page.responseHeaders = { "cf-mitigated": "challenge" };
+
+    await expect(navigateSafely(asPage(page), "http://93.184.216.34/", 15_000)).rejects.toThrow(BotChallengeError);
+    expect(page.gotoOptions[0]).toMatchObject({ waitUntil: "commit" });
+    expect(page.loadStateWaits).toEqual([]);
+  });
+
+  it("load が来ないときは、ブラウザの読み込みのタイムアウトとして HTTP のタイムアウトと区別できる文言にする", async () => {
+    const page = new FakePage();
+    page.loadNeverFires = true;
+
+    const error = await navigateSafely(asPage(page), "http://93.184.216.34/", 15_000).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(FetchTimeoutError);
+    expect(error).toMatchObject({ stage: "browser" });
+    expect((error as Error).message).toContain("ブラウザで開いたページの読み込み");
+    expect((error as Error).message).not.toContain("取得がタイムアウトしました");
   });
 });
