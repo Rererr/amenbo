@@ -153,3 +153,48 @@ describe("SsrfProxy: 平文HTTP転送", () => {
     expect(body).toContain("FORWARDED-BODY");
   });
 });
+
+describe("SsrfProxy: 不正な要求でプロセスを落とさない", () => {
+  it.each(["example.com:99999", "example.com:0", "example.com:abc", "[2001:db8::1]:70000"])(
+    "CONNECT %s は400で拒否し、その後の要求も処理できる",
+    async (hostPort) => {
+      const upstream: TcpServer = createTcpServer((socket) => socket.end("UPSTREAM-OK"));
+      await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+      const upstreamPort = (upstream.address() as { port: number }).port;
+      cleanups.push(() => new Promise<void>((r) => upstream.close(() => r())));
+
+      // 解決は固定し、範囲外のポートが接続処理(net.connectは同期的に投げる)まで届く状況を作る。
+      const proxy = new SsrfProxy({ resolve: async () => ({ address: "127.0.0.1", family: 4 }) });
+      const port = await proxy.start();
+      cleanups.push(() => proxy.close());
+
+      const line = await rawStatusLine(port, `CONNECT ${hostPort} HTTP/1.1\r\nHost: ${hostPort}\r\n\r\n`);
+      expect(line).toMatch(/^HTTP\/1\.1 400/);
+
+      const tunnel = await proxyConnect(port, `allowed.test:${upstreamPort}`);
+      tunnel.destroy();
+    },
+  );
+
+  it("平文HTTPの範囲外ポート(0)は400で拒否する", async () => {
+    const proxy = new SsrfProxy({ resolve: async () => ({ address: "127.0.0.1", family: 4 }) });
+    const port = await proxy.start();
+    cleanups.push(() => proxy.close());
+
+    const line = await rawStatusLine(port, "GET http://example.com:0/ HTTP/1.1\r\nHost: example.com:0\r\n\r\n");
+    expect(line).toMatch(/^HTTP\/1\.1 400/);
+  });
+
+  it("処理中の例外は502で返し、プロセスは動き続ける(CONNECT・平文HTTPとも)", async () => {
+    const proxy = new SsrfProxy({
+      resolve: async () => {
+        throw new Error("resolver exploded");
+      },
+    });
+    const port = await proxy.start();
+    cleanups.push(() => proxy.close());
+
+    expect(await rawStatusLine(port, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")).toMatch(/^HTTP\/1\.1 502/);
+    expect(await rawStatusLine(port, "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n")).toMatch(/^HTTP\/1\.1 502/);
+  });
+});
