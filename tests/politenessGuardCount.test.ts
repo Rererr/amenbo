@@ -103,15 +103,15 @@ describe("politeness.guard呼び出し回数(実ネットワークfetch直前で
     const url = "https://example.com/shot-fetch-screenshot";
     await handleFetchTool({ url, mode: "screenshot" });
     expect(guardSpy).toHaveBeenCalledTimes(1);
-    // 第2引数はMCP progress notifications用のonProgress(未指定時はundefined)
-    expect(guardSpy).toHaveBeenCalledWith(url, undefined);
+    // 第2引数は同時要求をまとめた全員へ進捗を配る通知口(呼び出し元のonProgressが未指定でも渡る)
+    expect(guardSpy).toHaveBeenCalledWith(url, expect.any(Function));
   });
 
   it("独立screenshotツール経路はguardを1回のみ呼ぶ(resolveScreenshot内)", async () => {
     const url = "https://example.com/shot-independent-tool";
     await handleScreenshotTool({ url });
     expect(guardSpy).toHaveBeenCalledTimes(1);
-    expect(guardSpy).toHaveBeenCalledWith(url, undefined);
+    expect(guardSpy).toHaveBeenCalledWith(url, expect.any(Function));
   });
 
   it("キャッシュfreshな2回目のscreenshot撮影ではguardが呼ばれない(#4と同型の回帰テスト)", async () => {

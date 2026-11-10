@@ -56,6 +56,23 @@ describe("resolveScreenshot - onProgress(MCP progress notifications)", () => {
     expect(onProgress).toHaveBeenCalledWith("スクリーンショットを撮影しています…");
   });
 
+  it("同じURL・同じ撮影条件の同時要求は1回の撮影にまとまる", async () => {
+    const { captureTiledScreenshot } = await import("../src/screenshot.js");
+    const capture = vi.mocked(captureTiledScreenshot);
+    capture.mockClear();
+    capture.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return fakeCaptureResult;
+    });
+
+    const url = "https://example.com/unique-concurrent";
+    const [first, second] = await Promise.all([handleScreenshotTool({ url }), handleScreenshotTool({ url })]);
+
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(first.filter((block) => block.type === "image")).toHaveLength(1);
+    expect(second.filter((block) => block.type === "image")).toHaveLength(1);
+  });
+
   it("onProgress未指定でも後方互換で動作する", async () => {
     await expect(handleScreenshotTool({ url: "https://example.com/unique-progress-2" })).resolves.toBeDefined();
   });
