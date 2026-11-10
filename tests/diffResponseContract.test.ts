@@ -21,6 +21,7 @@ process.env.AMENBO_CACHE_TTL_MS = "1";
 
 const { handleFetchTool, politeness, cache } = await import("../src/core.js");
 const { setAddressPolicyForTests } = await import("../src/fetcher/http.js");
+const { estimateTokens } = await import("../src/tokens.js");
 
 setAddressPolicyForTests(() => false);
 const server = await startFixtureServer();
@@ -120,6 +121,43 @@ describe("差分応答の契約(fetchツールのハンドラを通す)", () => 
     expect(second).not.toContain("DIFF-ONE");
     expect(totalTokensOf(second)).toBeGreaterThan(0);
     expect(second).toContain("force_full: true");
+  }, 30_000);
+
+  it("親節と子節が変わったdiffは、子節の本文を二重に出さず、全文より小さい", async () => {
+    const url = `${server.origin}/v/nested`;
+    const build = (parent: string, child: string) =>
+      articleHtml("入れ子のページ", [
+        { heading: "親", marker: parent, children: [{ heading: "子1", marker: child }, { heading: "子2", marker: "NESTED-SIBLING" }] },
+        { heading: "別の節", marker: "NESTED-OTHER" },
+      ]);
+    server.pages.set("/v/nested", build("NESTED-PARENT-OLD", "NESTED-CHILD-OLD"));
+    await fetchText({ url });
+
+    server.pages.set("/v/nested", build("NESTED-PARENT-NEW", "NESTED-CHILD-NEW"));
+    await expire();
+    const second = await fetchText({ url });
+
+    expect(second).toContain("cache: diff");
+    expect(second).toContain("NESTED-PARENT-NEW");
+    expect(second.match(/NESTED-CHILD-NEW/g)).toHaveLength(1);
+    expect(second).not.toContain("NESTED-SIBLING");
+    expect(estimateTokens(second)).toBeLessThan(totalTokensOf(second));
+  }, 30_000);
+
+  it("diffがmax_tokensを超えるときは、差分ではなくページに区切った通常の応答を返す", async () => {
+    const url = `${server.origin}/v/large-diff`;
+    const sections = Array.from({ length: 6 }, (_, i) => ({ heading: `節${i + 1}`, marker: `LARGE-${i + 1}-OLD` }));
+    server.pages.set("/v/large-diff", articleHtml("多くの節が変わるページ", sections));
+    await fetchText({ url, max_tokens: 200 });
+
+    // 最後の節だけ残して変える(全節変更だと別の理由で通常の応答になる)。
+    server.pages.set("/v/large-diff", articleHtml("多くの節が変わるページ", sections.map((s, i) => (i < 5 ? { ...s, marker: `LARGE-${i + 1}-NEW` } : s))));
+    await expire();
+    const second = await fetchText({ url, max_tokens: 200 });
+
+    expect(second).not.toContain("cache: diff");
+    expect(second).toMatch(/^page: 1 of \d+$/m);
+    expect(estimateTokens(second)).toBeLessThan(400);
   }, 30_000);
 
   it("outlineだけを見た後に全文を求めると、本文か取り直しの案内が返る", async () => {

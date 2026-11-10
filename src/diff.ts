@@ -15,7 +15,10 @@ export interface SectionDiff {
   type: SectionDiffType;
   level: number;
   heading: string;
-  /** added/changed時の新しいMarkdown内容(見出し行を含む)。removed時は空文字。 */
+  /**
+   * added/changed時の新しいMarkdown内容(見出し行を含み、子節を含まない)。removed時は空文字。
+   * 子節は変わっていれば自分の項目として別に出るので、親に含めると同じ本文が二重に出る。
+   */
   content: string;
 }
 
@@ -70,11 +73,11 @@ export function diffMarkdown(oldMarkdown: string, newMarkdown: string): DiffResu
   newSections.forEach((section, i) => {
     const previous = oldByKey.get(newKeys[i] ?? "");
     if (!previous) {
-      sections.push({ type: "added", level: section.level, heading: section.heading, content: section.content });
+      sections.push({ type: "added", level: section.level, heading: section.heading, content: section.ownContent });
     } else if (previous.ownContent !== section.ownContent) {
       // 比較にはownContent(子見出しを含まない直接の内容)を使う。contentは子節の変更でも
       // 変わってしまうため、子の変更が親にも伝播して誤ってchanged扱いになるのを防ぐ。
-      sections.push({ type: "changed", level: section.level, heading: section.heading, content: section.content });
+      sections.push({ type: "changed", level: section.level, heading: section.heading, content: section.ownContent });
     } else {
       unchangedCount++;
     }

@@ -49,6 +49,30 @@ describe("diffMarkdown", () => {
     expect(result.allSectionsChanged).toBe(true);
   });
 
+  it("変わった親節は子節を含まない自節の内容で報告し、子節の本文を二重に出さない", () => {
+    const old = ["## 親", "", "親の本文(旧)。", "", "### 子1", "", "子1の本文(旧)。", "", "### 子2", "", "子2の本文。"].join("\n");
+    const updated = old.replace("親の本文(旧)。", "親の本文(新)。").replace("子1の本文(旧)。", "子1の本文(新)。");
+
+    const result = diffMarkdown(old, updated);
+
+    const parent = result.sections.find((s) => s.heading === "親");
+    const child = result.sections.find((s) => s.heading === "子1");
+    expect(parent?.content).toContain("親の本文(新)。");
+    expect(parent?.content).not.toContain("子1の本文");
+    expect(parent?.content).not.toContain("子2の本文");
+    expect(child?.content).toContain("子1の本文(新)。");
+    expect(result.sections.map((s) => s.content).join("\n").match(/子1の本文\(新\)/g)).toHaveLength(1);
+  });
+
+  it("子節ごと追加された親節も、子節の本文を二重に出さない", () => {
+    const withNewParent = `${BASE}\n\n## 見出しD\n\n本文Dです。\n\n### 見出しD1\n\n本文D1です。`;
+
+    const result = diffMarkdown(BASE, withNewParent);
+
+    expect(result.sections.map((s) => s.heading)).toEqual(["見出しD", "見出しD1"]);
+    expect(result.sections.map((s) => s.content).join("\n").match(/本文D1です。/g)).toHaveLength(1);
+  });
+
   it("空文字列同士は差分無し", () => {
     const result = diffMarkdown("", "");
     expect(result.sections).toEqual([]);
