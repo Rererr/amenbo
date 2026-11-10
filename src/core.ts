@@ -905,7 +905,7 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
         cacheControl: handoff.cacheControl,
       });
     }
-    return [{ type: "text", text: formatHandoffResponse(handoff, maxTokens) }];
+    return [{ type: "text", text: formatHandoffResponse(handoff, maxTokens, page) }];
   }
   const resolved = resolvedOrHandoff;
 

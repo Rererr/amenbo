@@ -37,6 +37,10 @@ export interface HandoffPreviewResult {
   body: string;
   /** 補足情報(CSV/TSVの行数注記や、max_tokens予算による打ち切りの注記)。無ければnull。 */
   note: string | null;
+  /** 返したページ(1始まり。範囲外の要求は最寄りの有効ページへ丸める)。 */
+  page: number;
+  /** 取得範囲の本文をmax_tokens予算で区切ったページ数。 */
+  totalPages: number;
 }
 
 /** テキストを先頭行=ヘッダ、続く最大5行=データ行としてプレビュー整形する(CSV/TSV共通)。 */
@@ -53,17 +57,28 @@ function buildTabularPreview(text: string): HandoffPreviewResult {
   const visibleDataRows = Math.max(lines.length - 1, 0);
 
   const note = `プレビュー範囲内で確認できたデータ行数: ${visibleDataRows}行中先頭${dataLines.length}行を表示(ファイル全体の行数ではありません。取得範囲の制約による部分プレビューです)`;
-  return { body, note };
+  return { body, note, page: 1, totalPages: 1 };
 }
 
-/** max_tokens予算に収まる最大長までテキストを切り詰める(J5 CJK対応トークン見積りを流用)。 */
-function capTextByTokenBudget(text: string, maxTokens: number): { text: string; truncated: boolean } {
-  if (estimateTokens(text) <= maxTokens) {
-    return { text, truncated: false };
+/**
+ * max_tokens予算に収まる先頭の長さ(UTF-16の単位)を返す(J5 CJK対応トークン見積りを流用)。
+ * 毎回テキスト全体を測ると、小さい予算で多数のページに区切るときに二次時間になるため、
+ * 倍々に伸ばして上限を見つけてから二分探索する(1ページの長さに比例する手間で済む)。
+ */
+function prefixLengthWithinBudget(text: string, maxTokens: number): number {
+  let within = 0;
+  let probe = 1;
+  while (probe < text.length && estimateTokens(text.slice(0, probe)) <= maxTokens) {
+    within = probe;
+    probe *= 2;
+  }
+  if (probe >= text.length) {
+    if (estimateTokens(text) <= maxTokens) return text.length;
+    probe = text.length;
   }
 
-  let lo = 0;
-  let hi = text.length;
+  let lo = within;
+  let hi = probe - 1;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
     if (estimateTokens(text.slice(0, mid)) <= maxTokens) {
@@ -72,7 +87,26 @@ function capTextByTokenBudget(text: string, maxTokens: number): { text: string; 
       hi = mid - 1;
     }
   }
-  return { text: text.slice(0, lo), truncated: true };
+  // 予算が1文字分にも満たないと先へ進めず、同じページを返し続けてしまう。
+  if (lo === 0) return 1;
+  // 行の途中で切ると次のページが語の途中から始まるため、後半に改行があればそこで切る。
+  const lastNewline = text.lastIndexOf("\n", lo - 1);
+  if (lastNewline >= lo / 2) return lastNewline + 1;
+  // サロゲートペアの間で切ると、両ページに壊れた文字が残る。
+  const code = text.charCodeAt(lo - 1);
+  return code >= 0xd800 && code <= 0xdbff && lo > 1 ? lo - 1 : lo;
+}
+
+/** テキストをmax_tokens予算ごとのページに区切る(連結すると元のテキストに戻る)。 */
+function splitTextIntoPages(text: string, maxTokens: number): string[] {
+  const pages: string[] = [];
+  let rest = text;
+  do {
+    const length = prefixLengthWithinBudget(rest, maxTokens);
+    pages.push(rest.slice(0, length));
+    rest = rest.slice(length);
+  } while (rest.length > 0);
+  return pages;
 }
 
 /**
@@ -84,12 +118,14 @@ function capTextByTokenBudget(text: string, maxTokens: number): { text: string; 
  *   既存の注記で十分だが、非表形式(text/plain・JSON等)はmax_tokens予算に達していなくても
  *   「取得できたのはファイルの先頭部分のみ」という事実が伝わらないケースがあったため、
  *   その場合のみ専用の注記を追加する。
+ * @param page 非表形式の本文をmax_tokens予算で区切ったときに返すページ(1始まり)。
  */
 export function buildHandoffPreview(
   bytes: Uint8Array,
   contentType: string | null,
   maxTokens: number,
   sourceTruncated: boolean,
+  page: number = 1,
 ): HandoffPreviewResult | null {
   if (!isTextLikeContentType(contentType)) return null;
 
@@ -100,15 +136,26 @@ export function buildHandoffPreview(
     return buildTabularPreview(decoded.text);
   }
 
-  const capped = capTextByTokenBudget(decoded.text, maxTokens);
-  if (capped.truncated) {
-    return { body: capped.text, note: "プレビューはmax_tokens予算に達したため打ち切りました(取得範囲内でのさらなる切り詰めです)" };
+  const pages = splitTextIntoPages(decoded.text, Math.max(1, maxTokens));
+  const totalPages = pages.length;
+  const clampedPage = Math.min(Math.max(1, page), totalPages);
+  const body = pages[clampedPage - 1] ?? "";
+  const isLastPage = clampedPage === totalPages;
+  if (!isLastPage) {
+    return {
+      body,
+      note: `プレビューはmax_tokens予算で区切りました(続きは page: ${clampedPage + 1} で取得できます)`,
+      page: clampedPage,
+      totalPages,
+    };
   }
   if (sourceTruncated) {
     return {
-      body: capped.text,
+      body,
       note: "取得範囲の上限に達したため、ファイル先頭部分のみのプレビューです(ファイル全体はさらに続きがあります)",
+      page: clampedPage,
+      totalPages,
     };
   }
-  return { body: capped.text, note: null };
+  return { body, note: null, page: clampedPage, totalPages };
 }
