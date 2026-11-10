@@ -40,7 +40,9 @@ export function removeTemplateBlocks(markdown: string, templateHashes: ReadonlyS
   let removedCount = 0;
 
   for (const block of blocks) {
-    if (templateHashes.has(hashContent(block.text.trim()))) {
+    // 見出しは消さない: 「脚注」「関連項目」のように同じドメインで繰り返す節見出しも定型と判定され、
+    // outlineの節とsection IDがずれる。見出しの下の定型文は本文のブロックとして今までどおり消える。
+    if (!block.isHeading && templateHashes.has(hashContent(block.text.trim()))) {
       removedCount++;
       continue;
     }

@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { hashContent } from "../src/cache.js";
+import { hashContent, PageCache } from "../src/cache.js";
+import { buildOutline } from "../src/extract/outline.js";
 import { computeBlockHashes, removeTemplateBlocks } from "../src/templateLearning.js";
 
 describe("computeBlockHashes", () => {
@@ -52,5 +56,27 @@ describe("removeTemplateBlocks", () => {
     const result = removeTemplateBlocks(markdown, hashes);
     expect(result.markdown).toBe("");
     expect(result.removedCount).toBe(2);
+  });
+
+  it("同じドメインで繰り返す節見出しは定型と判定されても消さず、outlineの節が残る", () => {
+    const dir = mkdtempSync(join(tmpdir(), "amenbo-template-heading-test-"));
+    const cache = new PageCache({ dbPath: join(dir, "cache.sqlite"), cacheDir: dir });
+    try {
+      const page = (summary: string) =>
+        [`${summary}の概要です。`, "## 歴史", `${summary}の歴史です。`, "## 脚注", "脚注は本文中の番号に対応します。", "## 関連項目", "- 一覧"].join("\n\n");
+      ["東京", "大阪", "京都"].forEach((name, i) => {
+        cache.recordDomainPageBlocks("ja.example.org", `https://ja.example.org/wiki/${i}`, computeBlockHashes(page(name)));
+      });
+
+      const fourth = page("名古屋");
+      const { markdown } = removeTemplateBlocks(fourth, cache.getTemplateBlockHashes("ja.example.org"));
+
+      expect(buildOutline(markdown).sections.map((s) => s.heading)).toEqual(["歴史", "脚注", "関連項目"]);
+      // 見出しの下の定型文は今までどおり消える
+      expect(markdown).not.toContain("脚注は本文中の番号に対応します。");
+    } finally {
+      cache.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
