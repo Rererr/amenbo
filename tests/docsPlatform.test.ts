@@ -235,6 +235,26 @@ describe("見出しから作ったidとReadabilityの「本文らしくない名
     expect(markdown).not.toContain("読者0さん");
   });
 
+  describe("章を包むように見える部品(コメント欄・サイドバー)", () => {
+    const article = Array.from({ length: 20 }, (_, i) => `<p>本文の段落${i}です。この記事では、日本語のブログで本文を抽出するときに、コメント欄が混ざらないかを確かめます。</p>`).join("");
+    const post = (i: number): string =>
+      `<div class="c"><p>読者${i}さんの投稿です。とても参考になりました。私も同じ問題で困っていたので、手順どおりに試してみたところ、うまく動きました。</p></div>`;
+    const posts = (n: number): string => Array.from({ length: n }, (_, i) => post(i)).join("");
+    const extract = (aside: string): string =>
+      extractMarkdown(`<html><body><div id="wrap"><div id="main"><div class="entry"><h1>題名</h1>${article}</div></div>${aside}</div></body></html>`, {
+        url: "https://blog.example.jp/entry/1",
+      }).markdown;
+
+    it("idを持たない章を1つだけ包むコメント欄は本文に混ざらない", () => {
+      expect(extract(`<div id="comments"><section><h2>みんなの反応</h2>${posts(8)}</section></div>`)).not.toContain("読者0さん");
+    });
+
+    it("idを持つ章を複数包むサイドバーは本文に混ざらない", () => {
+      const sections = `<section id="side-a"><h2>人気の記事</h2>${posts(4)}</section><section id="side-b"><h2>新着</h2>${posts(4)}</section>`;
+      expect(extract(`<div id="sidebar">${sections}</div>`)).not.toContain("読者0さん");
+    });
+  });
+
   it("名前の判定はReadabilityの同じ版から借りている(版の更新で消えたらここで気づく)", () => {
     const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
     expect(regexps?.unlikelyCandidates).toBeInstanceOf(RegExp);
