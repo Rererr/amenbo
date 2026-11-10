@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { extractMarkdown } from "../src/extract/markdown.js";
 import { buildOutline } from "../src/extract/outline.js";
 import { normalizeCjkText } from "../src/jp/normalize.js";
 import { splitIntoBlocks } from "../src/tokens.js";
@@ -30,6 +31,17 @@ describe("フェンスコードブロックの判定(CommonMark準拠)", () => {
   it("ブロック分割: 長いフェンスの中の空行でブロックを分けない", () => {
     const blocks = splitIntoBlocks(["前の段落。", "", NESTED_FENCE, "", "後の段落。"].join("\n"));
     expect(blocks.map((block) => block.text)).toEqual(["前の段落。", NESTED_FENCE, "後の段落。"]);
+  });
+
+  it.each(["～～～～～", "｀｀｀"])("全角の区切り線「%s」は幅の統一の後もフェンスにならず、後ろの見出しを隠さない", (separator) => {
+    const html = `<html><body><main><h2>はじめに</h2><p>前の段落です。</p><p>${separator}</p><h2>次の節</h2><p>本文です。</p><h2>最後の節</h2><p>おわりです。</p></main></body></html>`;
+    const { markdown } = extractMarkdown(html, { selector: "main" });
+    expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["はじめに", "次の節", "最後の節"]);
+    expect(splitIntoBlocks(markdown)).toHaveLength(7);
+  });
+
+  it("正規化: 行の途中から始まる地の文の「～～～」はエスケープしない", () => {
+    expect(normalizeCjkText("値は `x` ～～～です")).toBe("値は `x` ~~~です");
   });
 
   it("正規化: 長いフェンスの中の ``` の後ろもコードとして保護し、フェンスの外は正規化する", () => {
