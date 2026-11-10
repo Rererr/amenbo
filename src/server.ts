@@ -115,7 +115,7 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
       description:
         "Fetch a web page (Japanese-web-native) as low-impact, token-efficient Markdown. Built-in robots.txt compliance, rate limiting, and caching. " +
         "mode: auto (default; quality score picks Markdown or screenshot) / markdown / outline (heading summary) / screenshot. " +
-        "Refetching a cached URL returns cache: unchanged, or diff (changed sections only), to save tokens. PDF URLs are handled automatically. " +
+        "Once amenbo's cached copy has expired (15 min by default) and the site resends the whole page (no 304), page 1 may come back as cache: unchanged or diff (changed sections only) against that cached copy, which another session or the CLI may have fetched. PDF URLs are handled automatically. " +
         "mode: screenshot is the retry for pages whose Markdown came back poor; when the layout itself is the information or you need viewport/scale control, use the `screenshot` tool instead.",
       inputSchema: z.object({
         url: z.string().url().describe("Target URL (http/https only; PDF supported)"),
@@ -124,7 +124,7 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
         section: z.string().optional().describe("Section ID obtained from outline mode; returns only that section's Markdown"),
         page: z.number().int().positive().optional().describe("Page number (default 1)"),
         max_tokens: z.number().int().positive().optional().describe("Approximate token budget per page (default 8000)"),
-        force_full: z.boolean().optional().describe("Default false. If true, disables diff responses (unchanged/diff) and boilerplate-block removal (pagination by max_tokens still applies)"),
+        force_full: z.boolean().optional().describe("Default false. If true, disables diff responses (unchanged/diff) and boilerplate-block removal (pagination by max_tokens still applies). Set it when you got unchanged/diff but have not read the whole content yourself"),
         ask_robots_override: z
           .boolean()
           .optional()

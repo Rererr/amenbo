@@ -67,9 +67,16 @@ export function formatMarkdownResponse(
   return `${header}\n\n${paginated.content}${dataSourcesSection(page.dataSourceHints)}`;
 }
 
-/** §3-3 差分応答: 本文ハッシュ一致(約10トークンの短文応答)。 */
-export function formatUnchangedResponse(page: ResolvedPage): string {
-  return [`url: ${page.finalUrl}`, `mode_used: markdown`, `cache: unchanged`].join("\n");
+// トークン節約のために省かない: 比較の基準は呼び出し元が見た内容ではなく、セッションやCLIをまたいで
+// 共有されるキャッシュなので、本文を見ていない呼び出し元にもこの応答が返る。
+const UNCHANGED_HINT =
+  "hint: amenboが前回取得した内容(別のセッションやCLIの取得を含む)から変更はありません。本文を見ていない、または一部しか見ていなければ force_full: true で全文を取り直してください";
+const DIFF_HINT =
+  "hint: amenboが前回取得した内容(別のセッションやCLIの取得を含む)から変わった節だけを返しています。本文を見ていない、または一部しか見ていなければ force_full: true で全文を取り直してください";
+
+/** §3-3 差分応答: 本文ハッシュ一致(本文を含まない短文応答)。totalTokensは全文を取り直したときの推定。 */
+export function formatUnchangedResponse(page: ResolvedPage, totalTokens: number): string {
+  return [`url: ${page.finalUrl}`, `mode_used: markdown`, `cache: unchanged`, `total_tokens: ${totalTokens}`, UNCHANGED_HINT].join("\n");
 }
 
 function formatSectionDiffBlock(diff: SectionDiff): string {
@@ -85,8 +92,8 @@ function formatSectionDiffBlock(diff: SectionDiff): string {
   return `${"#".repeat(diff.level)} ${diff.heading} [${label}]\n\n${diff.content}`;
 }
 
-/** §3-3 差分応答: 変更・追加・削除された節のみ返却。 */
-export function formatDiffResponse(page: ResolvedPage, sections: SectionDiff[], templateRemovedCount: number): string {
+/** §3-3 差分応答: 変更・追加・削除された節のみ返却。totalTokensは全文を取り直したときの推定。 */
+export function formatDiffResponse(page: ResolvedPage, sections: SectionDiff[], templateRemovedCount: number, totalTokens: number): string {
   const counts = { added: 0, changed: 0, removed: 0 };
   for (const section of sections) counts[section.type]++;
 
@@ -96,10 +103,12 @@ export function formatDiffResponse(page: ResolvedPage, sections: SectionDiff[], 
     `mode_used: markdown`,
     `cache: diff`,
     `changed_sections: ${sections.length}(追加${counts.added}/変更${counts.changed}/削除${counts.removed})`,
+    `total_tokens: ${totalTokens}`,
     `fetch_tier: ${page.tier}`,
     ...adapterLine(page.adapterName),
     ...extractionMethodLine(page.extractionMethod),
     ...templateRemovedLine(templateRemovedCount),
+    DIFF_HINT,
   ].join("\n");
 
   return `${header}\n\n${sections.map(formatSectionDiffBlock).join("\n\n")}${dataSourcesSection(page.dataSourceHints)}`;
