@@ -2,7 +2,7 @@
  * J1-J3: 日本語Webページ向けの正規化処理。
  *
  * - stripRubyAnnotations: J2 ruby正規化(DOM段階で <rt>/<rp> を除去し、読み仮名の本文二重化を防ぐ)
- * - normalizeCjkText: J3 CJKテキスト正規化(NFKC・全角英数→半角・Turndownが挿入する
+ * - normalizeCjkText: J3 CJKテキスト正規化(全半角の統一・Turndownが挿入する
  *   CJK文字間の不要な空白/改行の除去)。Markdown化後の文字列に対して適用し、
  *   フェンスコードブロックとインラインコード(`...`)の中身は変更しない。
  */
@@ -102,10 +102,19 @@ function splitProtectingCode(markdown: string): TextSegment[] {
   return segments;
 }
 
-/** コード以外の地の文に対して NFKC正規化 + CJK隣接空白除去を適用する。 */
+// 全半角の統一の対象: 全角英数・記号と半角カナ(U+FF01-U+FFEE)、全角空白などの空白類。
+// 文字列全体へのNFKCは使わない: 上付き・分数・単位記号・囲み文字などの互換文字まで
+// 書き換え、意味を変える(m²→m2、10⁻³→10−3、㎡→m2、①→1)。
+const WIDTH_VARIANTS = /[\u00a0\u2000-\u200a\u202f\u205f\u3000\uff01-\uffee]+/g;
+
+/** 全半角を統一する。分解されたかなの合成(NFC)は全体にかける。 */
+function unifyWidth(text: string): string {
+  return text.normalize("NFC").replace(WIDTH_VARIANTS, (run) => run.normalize("NFKC"));
+}
+
+/** コード以外の地の文に対して 全半角の統一 + CJK隣接空白除去を適用する。 */
 function normalizeProse(text: string): string {
-  const nfkc = text.normalize("NFKC");
-  return nfkc
+  return unifyWidth(text)
     .replace(CJK_ADJACENT_WHITESPACE, (run) => (HARD_LINE_BREAK.test(run) ? run : ""))
     .replace(CJK_SPACE_BEFORE_MARKER, "")
     .replace(CJK_SPACE_AFTER_MARKER, "");
@@ -114,7 +123,7 @@ function normalizeProse(text: string): string {
 /**
  * J3: CJKテキスト正規化。
  * pre/code由来のフェンスコード・インラインコードの中身は変更せず、
- * それ以外の地の文にのみ NFKC正規化(全角英数→半角を含む)と
+ * それ以外の地の文にのみ全半角の統一(全角英数→半角・半角カナ→全角)と
  * CJK文字間の不要な空白・改行の除去を適用する。
  */
 export function normalizeCjkText(markdown: string): string {
