@@ -613,8 +613,8 @@ export async function httpGet(url: string, options: HttpGetOptions = {}): Promis
       encoding: decoded.encoding,
     };
   } catch (error) {
-    // 取り消しで中止した要求は、タイムアウトや接続断に見えても取り消しとして返す。
-    throw options.signal?.aborted ? new RequestCancelledError(url) : error;
+    // 中止はタイムアウトと同じ形で現れるので、それだけを取り消しに直す(429等の応答は断られた記録に使う)。
+    throw options.signal?.aborted && error instanceof FetchTimeoutError ? new RequestCancelledError(url) : error;
   } finally {
     clearTimeout(timer);
     stopFollowingCancellation();
@@ -660,8 +660,8 @@ export async function httpGetBinary(url: string, options: HttpGetBinaryOptions =
 
     return { finalUrl, status: response.status, headers: response.headers, bytes, contentType: response.headers.get("content-type") };
   } catch (error) {
-    // 取り消しで中止した要求は、タイムアウトや接続断に見えても取り消しとして返す。
-    throw options.signal?.aborted ? new RequestCancelledError(url) : error;
+    // 中止はタイムアウトと同じ形で現れるので、それだけを取り消しに直す(429等の応答は断られた記録に使う)。
+    throw options.signal?.aborted && error instanceof FetchTimeoutError ? new RequestCancelledError(url) : error;
   } finally {
     clearTimeout(timer);
     stopFollowingCancellation();
@@ -785,8 +785,8 @@ export async function httpGetRouted(url: string, options: HttpGetOptions = {}): 
     const { bytes, truncated } = await readBodyPreview(response, finalUrl, HANDOFF_PREVIEW_BYTES, timeout);
     return { kind: "handoff", status: response.status, finalUrl, headers: response.headers, contentType, bytes, declaredSize, truncated };
   } catch (error) {
-    // 取り消しで中止した要求は、タイムアウトや接続断に見えても取り消しとして返す。
-    throw options.signal?.aborted ? new RequestCancelledError(url) : error;
+    // 中止はタイムアウトと同じ形で現れるので、それだけを取り消しに直す(429等の応答は断られた記録に使う)。
+    throw options.signal?.aborted && error instanceof FetchTimeoutError ? new RequestCancelledError(url) : error;
   } finally {
     clearTimeout(timer);
     stopFollowingCancellation();

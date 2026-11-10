@@ -181,3 +181,41 @@ describe("httpGet - checkRobots(リダイレクトの転送先のrobots確認)",
     await expect(httpGet("http://93.184.216.34/", { timeoutMs: 5000 })).resolves.toMatchObject({ status: 200 });
   });
 });
+
+describe("httpGet - 呼び出し元の取り消し(signal)", () => {
+  /** 応答を返す前に呼び出し元が取り消したことにして、respondの結果を返す(投げれば送信の失敗)。 */
+  function cancelBeforeResponding(controller: AbortController, respond: () => Response) {
+    fetchMock.mockImplementationOnce((async () => {
+      controller.abort();
+      return respond();
+    }) as never);
+  }
+
+  it("送信中に取り消されたら、タイムアウトではなく取り消しとして返す", async () => {
+    const { RequestCancelledError } = await import("../src/errors.js");
+    const controller = new AbortController();
+    cancelBeforeResponding(controller, () => {
+      throw new DOMException("This operation was aborted", "AbortError");
+    });
+
+    await expect(httpGet("http://93.184.216.34/", { timeoutMs: 5000, signal: controller.signal })).rejects.toThrow(RequestCancelledError);
+  });
+
+  it("サイトの断り(429)を受け取った直後に取り消されても、断られた記録に使えるよう HttpStatusError のまま返す", async () => {
+    const controller = new AbortController();
+    cancelBeforeResponding(controller, () => mockResponse(429, { "retry-after": "60" }, "busy"));
+
+    const error = await httpGet("http://93.184.216.34/", { timeoutMs: 5000, signal: controller.signal }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(HttpStatusError);
+    expect(error).toMatchObject({ status: 429, isRefusal: true });
+  });
+
+  it("既に取り消されていたら、何も送らずに取り消しとして返す", async () => {
+    const { RequestCancelledError } = await import("../src/errors.js");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(httpGet("http://93.184.216.34/", { timeoutMs: 5000, signal: controller.signal })).rejects.toThrow(RequestCancelledError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
