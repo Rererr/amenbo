@@ -1104,7 +1104,6 @@ function neutralizeUtilityClassTokens(root: ClassHostElement): void {
 
 interface ReadabilityNamePatterns {
   unlikelyCandidates: RegExp;
-  negative: RegExp;
 }
 
 /**
@@ -1116,8 +1115,7 @@ let warnedMissingNamePatterns = false;
 function readabilityNamePatterns(): ReadabilityNamePatterns | null {
   const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
   const unlikelyCandidates = regexps?.unlikelyCandidates;
-  const negative = regexps?.negative;
-  if (unlikelyCandidates instanceof RegExp && negative instanceof RegExp) return { unlikelyCandidates, negative };
+  if (unlikelyCandidates instanceof RegExp) return { unlikelyCandidates };
   if (!warnedMissingNamePatterns) {
     warnedMissingNamePatterns = true;
     console.error(
@@ -1164,13 +1162,18 @@ function isHiddenAtWideScreen(tokens: readonly string[]): boolean {
   return tokens.some((token) => HIDDEN_UTILITY.test(token)) && !tokens.some((token) => BREAKPOINT_SHOWN_UTILITY.test(token));
 }
 
+// コードの容れ物から外す、Readabilityの負の語に当たるclass(スクロール領域の部品名と、表示の切り替え)。
+// 他の負の語(share・widget・comment等)は外さない: 共有用の埋め込みコードやコメント欄の短いコードまで
+// 本文に入る。
+const CODE_CONTAINER_CLASS_WORD = /scroll|hidden/i;
+
 /**
- * コードブロック(pre)と、ほぼコードだけを持つその祖先から、Readabilityの負の語に当たるclassを外す。
- * スクロール領域の部品名(`[--scroll-area-fade-size:32px]`・`base-ui-disable-scrollbar`)が`scroll`に
- * 当たり、コードブロックが採点で捨てられていた。コード以外の文字を多く持つ祖先(コメント欄など)では
- * 止める: そこまで外すと、コードを含むだけの本文でない部品まで残る。
+ * コードブロック(pre)と、ほぼコードだけを持つその祖先から、スクロール領域の部品名
+ * (`[--scroll-area-fade-size:32px]`・`base-ui-disable-scrollbar`)などのclassを外す。
+ * コード以外の文字を多く持つ祖先(コメント欄など)では止める: そこまで外すと、コードを含むだけの
+ * 本文でない部品まで残る。
  */
-function dropNegativeClassesAroundCode(body: ClassElement, patterns: ReadabilityNamePatterns): void {
+function dropScrollClassesAroundCode(body: ClassElement): void {
   const lengths = new Map<ClassElement, { text: number; code: number }>();
   const measure = (el: ClassElement): { text: number; code: number } => {
     const known = lengths.get(el);
@@ -1187,9 +1190,7 @@ function dropNegativeClassesAroundCode(body: ClassElement, patterns: Readability
       if (text - code > CODE_CHROME_MAX_LENGTH) break;
       const tokens = (el.getAttribute("class") ?? "").split(/\s+/);
       if (isHiddenAtWideScreen(tokens)) continue;
-      // 採点の前に要素ごと捨てる語(comment・sidebar・related等)は外さない: 外すと、短いコードを
-      // 含むだけのコメント欄やサイドバーが本文に入る。
-      const kept = tokens.filter((token) => !patterns.negative.test(token) || patterns.unlikelyCandidates.test(token));
+      const kept = tokens.filter((token) => !CODE_CONTAINER_CLASS_WORD.test(token));
       if (kept.length !== tokens.length) el.setAttribute("class", kept.join(" "));
     }
   }
@@ -1328,11 +1329,9 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
 
       if (document.body) {
         neutralizeUtilityClassTokens(document.body as unknown as ClassHostElement);
+        dropScrollClassesAroundCode(document.body as unknown as ClassElement);
         const namePatterns = readabilityNamePatterns();
-        if (namePatterns) {
-          dropUnlikelyIdsOfAnchorWrappers(document.body as unknown as ClassHostElement, namePatterns);
-          dropNegativeClassesAroundCode(document.body as unknown as ClassElement, namePatterns);
-        }
+        if (namePatterns) dropUnlikelyIdsOfAnchorWrappers(document.body as unknown as ClassHostElement, namePatterns);
       }
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;

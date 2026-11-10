@@ -122,6 +122,7 @@ describe("コードブロックの容れ物とReadabilityの負の語", () => {
     it.each([
       ["コメント欄", `<div class="comment"><p>Try this:</p>${code}</div>`, "Try this"],
       ["サイドバー", '<div class="sidebar-widget"><p>Install</p><pre><code>brew install relay</code></pre></div>', "brew install"],
+      ["共有用の埋め込みコード", '<div class="share-embed"><pre><code>&lt;iframe src="https://example.com/embed"&gt;&lt;/iframe&gt;</code></pre></div>', "iframe"],
     ])("%sは、コードを含んでも本文に入らない", (_label, inner, needle) => {
       expect(count(page(inner), needle)).toBe(0);
     });
@@ -258,7 +259,6 @@ describe("見出しから作ったidとReadabilityの「本文らしくない名
   it("名前の判定はReadabilityの同じ版から借りている(版の更新で消えたらここで気づく)", () => {
     const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
     expect(regexps?.unlikelyCandidates).toBeInstanceOf(RegExp);
-    expect(regexps?.negative).toBeInstanceOf(RegExp);
   });
 
   it("Readabilityの版が変わって名前の判定を借りられなくても、抽出は失敗せず、警告を一度だけ出す", () => {
