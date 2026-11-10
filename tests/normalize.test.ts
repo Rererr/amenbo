@@ -73,6 +73,30 @@ describe("normalizeCjkText", () => {
     });
   });
 
+  describe("全半角の統一の範囲", () => {
+    it("半角カナを全角へ(濁点・半濁点は合成して)正規化する", () => {
+      expect(normalizeCjkText("ｱﾒﾝﾎﾞのﾍﾟｰｼﾞ")).toBe("アメンボのページ");
+    });
+
+    it("全角の空白・ノーブレークスペースは半角の空白にする", () => {
+      expect(normalizeCjkText("Tokyo　Osaka Nagoya")).toBe("Tokyo Osaka Nagoya");
+    });
+
+    it("分解されたかな(か+結合濁点)は合成する", () => {
+      expect(normalizeCjkText("がぎ")).toBe("がぎ");
+    });
+
+    it.each([
+      ["上付き・単位記号", "面積は25 m²、㎡単価は10⁻³倍。"],
+      ["分数", "½カップと¼さじ"],
+      ["囲み文字", "①手順 ㈱アメンボ"],
+      ["ローマ数字・記号", "第Ⅳ章、気温は30℃。Amenbo™"],
+      ["三点リーダー", "それは……"],
+    ])("%sは書き換えない", (_label, text) => {
+      expect(normalizeCjkText(text)).toBe(text);
+    });
+  });
+
   it("CJK文字に挟まれた<br>の改行は消さず、行を連結しない", () => {
     const { markdown } = extractMarkdown("<html><body><main><p>住所:東京都千代田区丸の内<br>電話番号:03-1234-5678<br>営業時間:平日</p></main></body></html>", {
       selector: "main",
