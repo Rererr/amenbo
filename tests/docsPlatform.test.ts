@@ -227,6 +227,13 @@ describe("見出しの中のパーマリンクとブロック要素", () => {
     expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["Setup の手順"]);
   });
 
+  it("中身が空の見出しは`## `だけの行として出さない", () => {
+    const html = `<!DOCTYPE html><html><body><main><h2> </h2>${paragraph}<h2><a href="#x">​</a></h2>${paragraph}<h2>次の節</h2>${paragraph}</main></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://docs.example.org/", selector: "main" });
+    expect(markdown).not.toMatch(/^#{1,6}\s*$/m);
+    expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["(冒頭)", "次の節"]);
+  });
+
   it("見出しの外のページ内リンクはそのまま残す", () => {
     const html = `<!DOCTYPE html><html><body><main><h2>概要</h2><p>詳しくは<a href="#detail">詳細</a>を参照。</p>${paragraph}</main></body></html>`;
     const { markdown } = extractMarkdown(html, { url: "https://docs.example.org/", selector: "main" });
