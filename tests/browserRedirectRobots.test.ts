@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // ループバックはSSRF検証プロキシが断るので、このテストの間だけプロキシを通さずに届かせる(ブラウザ起動前に設定する)。
 process.env.PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK = "1";
 
-const { BrowserUnavailableError, RobotsDeniedError } = await import("../src/errors.js");
+const { BrowserUnavailableError, FetchTimeoutError, RobotsDeniedError } = await import("../src/errors.js");
 const { closeBrowser, fetchWithBrowser, getBrowser, openPageAndNavigate } = await import("../src/fetcher/browser.js");
 const { setAddressPolicyForTests } = await import("../src/fetcher/http.js");
 const { PolitenessManager } = await import("../src/politeness.js");
@@ -27,6 +27,11 @@ const itWithBrowser = browser ? it : it.skip;
 const arrivals: string[] = [];
 let server: Server;
 let origin: string;
+/** 別オリジン(別のポート)。robots.txt の応答を遅らせられる。 */
+const otherArrivals: string[] = [];
+let otherRobotsDelayMs = 0;
+let other: Server;
+let otherOrigin: string;
 
 const page = (marker: string, head = "") =>
   `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${marker}</title>${head}</head><body><article><h1>${marker}</h1><p>${marker}</p></article></body></html>`;
@@ -46,6 +51,7 @@ beforeAll(async () => {
       return;
     }
     if (path === "/go") return void res.writeHead(302, { location: "/private/secret" }).end();
+    if (path === "/to-other") return void res.writeHead(302, { location: `${otherOrigin}/fine` }).end();
     if (path === "/a") return void res.writeHead(301, { location: "/b" }).end();
     if (path === "/b") return void res.writeHead(307, { location: "/ok" }).end();
     if (path === "/js") return html(page("JS", `<script>location.href='/private/js'</script>`));
@@ -54,13 +60,31 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  other = createServer((req, res) => {
+    const path = req.url ?? "/";
+    otherArrivals.push(path);
+    if (path === "/robots.txt") {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("User-agent: *\nDisallow: /private/\n");
+      }, otherRobotsDelayMs);
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(page(path.startsWith("/private/") ? `SECRET${path}` : `OTHER${path}`));
+  });
+  await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", resolve));
+  otherOrigin = `http://127.0.0.1:${(other.address() as AddressInfo).port}`;
 });
 
 afterAll(async () => {
   setAddressPolicyForTests(null);
   await closeBrowser();
-  server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  for (const s of [server, other]) {
+    s.closeAllConnections();
+    await new Promise<void>((resolve) => s.close(() => resolve()));
+  }
 });
 
 function checkRobots() {
@@ -104,6 +128,20 @@ describe("ブラウザ経路のrobots.txt確認(実Chromium)", () => {
       expect(arrivals).not.toContain("/private/late");
     } finally {
       await navigation.context.close();
+    }
+  }, 30_000);
+
+  itWithBrowser("転送の段の判定の途中で時間切れになったら、その段を後から送らない", async () => {
+    otherRobotsDelayMs = 3_000;
+    otherArrivals.length = 0;
+    const startedAt = Date.now();
+    try {
+      await expect(fetchWithBrowser(`${origin}/to-other`, 1_000, { checkRobots: checkRobots() })).rejects.toThrow(FetchTimeoutError);
+      expect(Date.now() - startedAt).toBeLessThan(otherRobotsDelayMs); // robots.txt の判定を待たずに戻る
+      await new Promise((resolve) => setTimeout(resolve, otherRobotsDelayMs + 500)); // 判定が終わった後まで見る
+      expect(otherArrivals).toEqual(["/robots.txt"]);
+    } finally {
+      otherRobotsDelayMs = 0;
     }
   }, 30_000);
 
