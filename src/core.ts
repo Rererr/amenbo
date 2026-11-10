@@ -541,6 +541,14 @@ async function resolveScreenshot(url: string, options: ResolveScreenshotOptions)
     // PNGファイル欠損: キャッシュmiss扱いで下の再撮影へフォールスルーする
   }
 
+  return screenshotOperations.run(cacheKey, options.onProgress, (notify) => captureScreenshot(url, cacheKey, { ...options, onProgress: notify }));
+}
+
+/** 同じURL・同じ撮影条件の同時要求は、ブラウザで同じページを重ねて開かないよう1回の撮影にまとめる。 */
+const screenshotOperations = new SharedOperations<ResolvedScreenshot>();
+
+/** resolveScreenshotのうち、実際にブラウザで撮影する部分(同じキャッシュキーでは1本にまとめられる)。 */
+async function captureScreenshot(url: string, cacheKey: string, options: ResolveScreenshotOptions): Promise<ResolvedScreenshot> {
   // レビュー指摘対応: 実URLへの独立したブラウザ遷移が発生する直前でguardする(markdown取得時の
   // guardとは別枠。handleFetchTool冒頭の共通guardは撤去済み)。キャッシュfresh返却時は通らない。
   await politeness.guard(url, options.onProgress);
