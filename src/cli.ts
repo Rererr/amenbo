@@ -264,7 +264,7 @@ function fetchHelpText(): string {
     "Options:",
     "  --mode <auto|markdown|outline|screenshot>   取得モード(既定 auto)",
     "  --selector <css>                            本文を絞り込むCSSセレクタ",
-    "  --section <id>                              outlineで得たsection ID。その節のMarkdownのみ返す(IDは見出しの位置で振るので、outlineを取ったときと--selectorと--force-fullを揃える)",
+    "  --section <id>                              outlineで得たsection ID。その節のMarkdownのみ返す(IDは見出しの位置で振るので、outlineを取ったときと--selectorと--force-fullを揃える。s0はoutlineに載る最初の見出しより前の内容)",
     "  --page <n>                                  ページ番号(既定 1)",
     "  --max-tokens <n>                             1ページの概算トークン上限(既定 8000)",
     "  --force-full                                 定型ブロック除去を無効化する(CLIは差分応答(unchanged/diff)を返さない)。--max-tokensによるページ分割は働くため、全文が要るときは--max-tokensを大きくする",
@@ -274,7 +274,15 @@ function fetchHelpText(): string {
 }
 
 function linksHelpText(): string {
-  return ["amenbo links <url> [options]", "", "Options:", "  --filter <pattern>   URL/リンクテキストの部分一致、または*を使ったglob"].join("\n");
+  return [
+    "amenbo links <url> [options]",
+    "",
+    "探す順: sitemap → ページが知らせるllms.txt → RSS/Atom → ページ内リンク(キャッシュの状態には依らない)。",
+    "各出典は15分キャッシュする。最大200件(sitemapindexは先頭3つの子sitemapまで)。読めない出典はwarning:の行で知らせる。",
+    "",
+    "Options:",
+    "  --filter <pattern>   URL/リンクテキストの部分一致、または*を使ったglob",
+  ].join("\n");
 }
 
 function screenshotHelpText(): string {
