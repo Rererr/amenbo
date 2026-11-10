@@ -85,11 +85,12 @@ function createTurndownService(): TurndownService {
       !Array.from(node.querySelectorAll("img")).some(isInformativeImage),
     replacement: () => "",
   });
-  // 見出しの中の同じページ内を指すリンク(パーマリンク)は、文字を持てば文字だけを残し、
+  // 見出しの中の同じページ内を指すリンク(パーマリンク)は、文字かalt付きの画像を持てばそれだけを残し、
   // 記号やゼロ幅空白だけなら落とす(Sphinxの`¶`、Mintlifyの`​`+アイコン)。
   service.addRule("headingSelfLink", {
     filter: (node) => node.nodeName === "A" && (node.getAttribute("href") ?? "").startsWith("#") && hasHeadingAncestor(node),
-    replacement: (content, node) => (/[\p{L}\p{N}]/u.test(node.textContent ?? "") ? content : ""),
+    replacement: (content, node) =>
+      /[\p{L}\p{N}]/u.test(node.textContent ?? "") || Array.from(node.querySelectorAll("img")).some(isInformativeImage) ? content : "",
   });
   // turndownのフェンスの規則はpreの最初の子がcodeのときだけ働き、Sphinx等の`<pre><span>…`は
   // フェンスの無い地の文になる(コードの中の`# コメント`が見出しになり、正規化もかかる)。
