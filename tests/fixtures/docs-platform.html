@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Relay daemon guide - Example Docs</title></head>
+<body>
+<!-- Synthetic page reproducing the structure of a docs-platform site (Mintlify-style). Not copied content. -->
+<div id="root">
+<header id="navbar"><nav><a href="/docs">Docs</a> <a href="/docs/guides">Guides</a> <a href="/blog">Blog</a></nav></header>
+<nav id="sidebar"><ul><li><a href="/docs/intro">Introduction</a></li><li><a href="/docs/install">Install</a></li><li><a href="/docs/relay">Relay daemon guide</a></li></ul></nav>
+<div class="flex flex-row-reverse gap-12 box-border w-full pt-[calc(10rem+var(--banner-height,2.5rem))] lg:pt-10">
+<div id="content-area">
+<header id="header"><h1 id="page-title">Relay daemon guide</h1><div class="mt-2 text-lg">How the relay daemon moves messages between workers.</div></header>
+<div class="prose" id="content">
+<h2 class="flex whitespace-pre-wrap group font-semibold" id="getting-started"><div class="absolute" tabindex="-1"><a href="#getting-started" class="-ml-10 flex items-center opacity-0" aria-label="Navigate to header: Getting started">​<div class="size-6 rounded-md flex items-center"><svg aria-hidden="true" width="18" height="18"><use href="#icon-link"></use></svg></div></a></div><span class="cursor-pointer">Getting started</span></h2>
+<p>The relay daemon forwards queued messages to every registered worker in arrival order.</p>
+<p>Each worker acknowledges a message before the daemon removes it from the queue.</p>
+<h2 class="flex whitespace-pre-wrap group font-semibold" id="configure-workers"><div class="absolute" tabindex="-1"><a href="#configure-workers" class="-ml-10 flex items-center opacity-0" aria-label="Navigate to header: Configure workers">​<div class="size-6 rounded-md flex items-center"><svg aria-hidden="true" width="18" height="18"><use href="#icon-link"></use></svg></div></a></div><span class="cursor-pointer">Configure workers</span></h2>
+<p>Workers read their settings from a single file that lives next to the daemon binary.</p>
+<p>Changing the file takes effect on the next restart and never interrupts running jobs.</p>
+<h2 class="flex whitespace-pre-wrap group font-semibold" id="retry-policy"><div class="absolute" tabindex="-1"><a href="#retry-policy" class="-ml-10 flex items-center opacity-0" aria-label="Navigate to header: Retry policy">​<div class="size-6 rounded-md flex items-center"><svg aria-hidden="true" width="18" height="18"><use href="#icon-link"></use></svg></div></a></div><span class="cursor-pointer">Retry policy</span></h2>
+<p>A failed delivery is retried three times with a growing pause between attempts.</p>
+<p>After the last attempt the message moves to the dead letter queue for manual review.</p>
+<h2 class="flex whitespace-pre-wrap group font-semibold" id="monitoring"><div class="absolute" tabindex="-1"><a href="#monitoring" class="-ml-10 flex items-center opacity-0" aria-label="Navigate to header: Monitoring">​<div class="size-6 rounded-md flex items-center"><svg aria-hidden="true" width="18" height="18"><use href="#icon-link"></use></svg></div></a></div><span class="cursor-pointer">Monitoring</span></h2>
+<p>The status endpoint reports queue depth, worker count, and the age of the oldest message.</p>
+<p>Alerts fire when the oldest message stays in the queue for more than five minutes.</p>
+</div>
+<footer id="footer"><a href="/docs/install">Previous: Install</a> <a href="/docs/faq">Next: FAQ</a></footer>
+</div>
+</div>
+</div>
+<template data-mint="manifest">{"page": {"title": "Relay daemon guide", "sections": [{"id": "getting-started", "title": "Getting started", "text": "The relay daemon forwards queued messages to every registered worker in arrival order. Each worker acknowledges a message before the daemon removes it from the queue."}, {"id": "configure-workers", "title": "Configure workers", "text": "Workers read their settings from a single file that lives next to the daemon binary. Changing the file takes effect on the next restart and never interrupts running jobs."}, {"id": "retry-policy", "title": "Retry policy", "text": "A failed delivery is retried three times with a growing pause between attempts. After the last attempt the message moves to the dead letter queue for manual review."}, {"id": "monitoring", "title": "Monitoring", "text": "The status endpoint reports queue depth, worker count, and the age of the oldest message. Alerts fire when the oldest message stays in the queue for more than five minutes."}]}, "navigation": [{"group": "Group 0", "pages": ["/docs/page-0-0", "/docs/page-0-1", "/docs/page-0-2", "/docs/page-0-3", "/docs/page-0-4", "/docs/page-0-5", "/docs/page-0-6", "/docs/page-0-7"]}, {"group": "Group 1", "pages": ["/docs/page-1-0", "/docs/page-1-1", "/docs/page-1-2", "/docs/page-1-3", "/docs/page-1-4", "/docs/page-1-5", "/docs/page-1-6", "/docs/page-1-7"]}, {"group": "Group 2", "pages": ["/docs/page-2-0", "/docs/page-2-1", "/docs/page-2-2", "/docs/page-2-3", "/docs/page-2-4", "/docs/page-2-5", "/docs/page-2-6", "/docs/page-2-7"]}, {"group": "Group 3", "pages": ["/docs/page-3-0", "/docs/page-3-1", "/docs/page-3-2", "/docs/page-3-3", "/docs/page-3-4", "/docs/page-3-5", "/docs/page-3-6", "/docs/page-3-7"]}, {"group": "Group 4", "pages": ["/docs/page-4-0", "/docs/page-4-1", "/docs/page-4-2", "/docs/page-4-3", "/docs/page-4-4", "/docs/page-4-5", "/docs/page-4-6", "/docs/page-4-7"]}, {"group": "Group 5", "pages": ["/docs/page-5-0", "/docs/page-5-1", "/docs/page-5-2", "/docs/page-5-3", "/docs/page-5-4", "/docs/page-5-5", "/docs/page-5-6", "/docs/page-5-7"]}]}</template>
+</body></html>
