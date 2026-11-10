@@ -9,6 +9,7 @@
  * 日本語見出しはローマ字化が一意に定まらずスラッグが不安定になるため、
  * 連番の方が単純・決定的で `section` パラメータとして扱いやすい。
  */
+import { createFenceScanner } from "../markdownFence.js";
 import { estimateTokens } from "../tokens.js";
 
 export interface OutlineSection {
@@ -49,14 +50,10 @@ interface HeadingLine {
 /** フェンスコードブロック内は見出しとして扱わないよう考慮しつつ、見出し行を収集する。 */
 function findHeadingLines(lines: string[]): HeadingLine[] {
   const headings: HeadingLine[] = [];
-  let inFence = false;
+  const inCode = createFenceScanner();
 
   lines.forEach((line, lineIndex) => {
-    if (/^\s*```/.test(line)) {
-      inFence = !inFence;
-      return;
-    }
-    if (inFence) return;
+    if (inCode(line)) return;
 
     const heading = matchHeading(line);
     if (heading) headings.push({ lineIndex, level: heading.level, text: heading.text.trim() });

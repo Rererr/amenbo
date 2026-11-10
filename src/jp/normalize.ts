@@ -4,8 +4,10 @@
  * - stripRubyAnnotations: J2 ruby正規化(DOM段階で <rt>/<rp> を除去し、読み仮名の本文二重化を防ぐ)
  * - normalizeCjkText: J3 CJKテキスト正規化(NFKC・全角英数→半角・Turndownが挿入する
  *   CJK文字間の不要な空白/改行の除去)。Markdown化後の文字列に対して適用し、
- *   フェンスコードブロック(```)とインラインコード(`...`)の中身は変更しない。
+ *   フェンスコードブロックとインラインコード(`...`)の中身は変更しない。
  */
+
+import { createFenceScanner } from "../markdownFence.js";
 
 /** DOM要素の最小インターフェース(linkedom/ブラウザDOM双方と構造的に互換)。 */
 interface RemovableElement {
@@ -45,30 +47,53 @@ const CJK_ADJACENT_WHITESPACE = new RegExp(
 const CJK_SPACE_BEFORE_MARKER = new RegExp(`(?<=[${CJK_CLASS}])[ \\t]+(?=[*_~]{1,3}[${CJK_CLASS}])`, "gu");
 const CJK_SPACE_AFTER_MARKER = new RegExp(`(?<=[${CJK_CLASS}][*_~]{1,3})[ \\t]+(?=[${CJK_CLASS}])`, "gu");
 
-// Markdownのフェンスコードブロック / インラインコードを保護するためのパターン
-const CODE_PATTERN = /```[\s\S]*?```|`[^`\n]*`/g;
+// インラインコードを保護するためのパターン(フェンスコードブロックは行単位でcreateFenceScannerが判定する)
+const INLINE_CODE_PATTERN = /`[^`\n]*`/g;
 
 interface TextSegment {
   isCode: boolean;
   text: string;
 }
 
-/** Markdown文字列をコード区間(保護対象)とそれ以外(正規化対象)に分割する。 */
-function splitProtectingCode(markdown: string): TextSegment[] {
-  const segments: TextSegment[] = [];
+/** 地の文をインラインコード(保護対象)とそれ以外に分割して segments へ足す。 */
+function pushProseSegments(segments: TextSegment[], prose: string): void {
   let lastIndex = 0;
-
-  for (const match of markdown.matchAll(CODE_PATTERN)) {
+  for (const match of prose.matchAll(INLINE_CODE_PATTERN)) {
     const index = match.index ?? 0;
-    if (index > lastIndex) {
-      segments.push({ isCode: false, text: markdown.slice(lastIndex, index) });
-    }
+    if (index > lastIndex) segments.push({ isCode: false, text: prose.slice(lastIndex, index) });
     segments.push({ isCode: true, text: match[0] });
     lastIndex = index + match[0].length;
   }
-  if (lastIndex < markdown.length) {
-    segments.push({ isCode: false, text: markdown.slice(lastIndex) });
-  }
+  if (lastIndex < prose.length) segments.push({ isCode: false, text: prose.slice(lastIndex) });
+}
+
+/** Markdown文字列をコード区間(保護対象)とそれ以外(正規化対象)に分割する。 */
+function splitProtectingCode(markdown: string): TextSegment[] {
+  const segments: TextSegment[] = [];
+  const inCode = createFenceScanner();
+  const lines = markdown.split("\n");
+  let start = 0;
+  let startIsCode = false;
+  let offset = 0;
+
+  const flush = (end: number): void => {
+    if (end <= start) return;
+    const text = markdown.slice(start, end);
+    if (startIsCode) segments.push({ isCode: true, text });
+    else pushProseSegments(segments, text);
+  };
+
+  lines.forEach((line, i) => {
+    const isCode = inCode(line);
+    if (i === 0) startIsCode = isCode;
+    else if (isCode !== startIsCode) {
+      flush(offset);
+      start = offset;
+      startIsCode = isCode;
+    }
+    offset += line.length + 1;
+  });
+  flush(markdown.length);
 
   return segments;
 }

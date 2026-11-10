@@ -21,6 +21,7 @@
  * 全クラス適用後の見積り/実測比は、散文で1.14〜2.00倍(安全側)、
  * 記法が密なMarkdown表で0.71倍(過小側の最悪ケース)。
  */
+import { createFenceScanner } from "./markdownFence.js";
 
 const LATIN_CHARS_PER_TOKEN = 3.8;
 const CJK_TOKENS_PER_CHAR = 0.9;
@@ -134,14 +135,14 @@ function trimTrailingNewlines(text: string): string {
 
 /**
  * Markdownをブロック単位(空行区切り)に分割する。
- * フェンスコードブロック(```)内の空行はブロック境界として扱わない。
+ * フェンスコードブロック内の空行はブロック境界として扱わない。
  * templateLearning.ts(Phase 4定型ブロック除去)からも再利用される共通処理。
  */
 export function splitIntoBlocks(markdown: string): Block[] {
   const lines = markdown.split("\n");
   const blocks: Block[] = [];
   let current: string[] = [];
-  let inFence = false;
+  const inCode = createFenceScanner();
 
   const flush = (): void => {
     if (current.length === 0) return;
@@ -153,12 +154,11 @@ export function splitIntoBlocks(markdown: string): Block[] {
   };
 
   for (const line of lines) {
-    if (/^\s*```/.test(line)) {
-      inFence = !inFence;
+    if (inCode(line)) {
       current.push(line);
       continue;
     }
-    if (!inFence && line.trim() === "") {
+    if (line.trim() === "") {
       flush();
       continue;
     }
