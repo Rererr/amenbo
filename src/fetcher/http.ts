@@ -414,7 +414,9 @@ const KANA_RE = /[\u3040-\u30ff]/u;
  */
 function sniffOverWeakDeclaration(bytes: Uint8Array): DecodedHtml | null {
   try {
-    return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), encoding: "UTF-8" };
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    // 英字だけのUTF-16はUTF-8としても読めてしまう(1文字おきにNULが入る)。NULを含む読み方は採らない。
+    if (!text.includes("\u0000")) return { text, encoding: "UTF-8" };
   } catch {
     // UTF-8として読めない。日本語の符号化かを次に見る。
   }
