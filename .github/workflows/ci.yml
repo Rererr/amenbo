@@ -66,3 +66,6 @@ jobs:
       # 一方だけ落ちたときにera判定の退行だと気づきにくい)。
       - run: node scripts/mcp-init-smoke.mjs
       - run: node scripts/mcp-modern-smoke.mjs
+      # lockfileを使わず範囲内の最新の依存で解決した組み合わせ(npxの利用者が受け取るもの)で、テスト一式も流す。
+      # 上流の新しい版がamenboのテストを壊したことを、利用者より先に検出するため。
+      - run: pnpm test
