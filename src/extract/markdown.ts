@@ -1186,6 +1186,43 @@ function dropUnlikelyIdsOfAnchorWrappers(body: ClassHostElement, patterns: Reada
   }
 }
 
+interface NoteAsideElement {
+  children: ArrayLike<NoteAsideElement>;
+  childNodes: ArrayLike<unknown>;
+  matches(selector: string): boolean;
+  replaceWith(node: unknown): void;
+}
+interface NoteReplacementElement {
+  append(...nodes: unknown[]): void;
+}
+interface NoteAsideHostDocument {
+  body: { querySelectorAll(selector: string): ArrayLike<NoteAsideElement> };
+  createElement(tagName: string): NoteReplacementElement;
+}
+
+// class名(footnote等)では見分けない: 生成系ごとに名前が違い、補足の囲みの名前(sidebar-note等)とも重なる。
+const FOOTNOTE_SELECTOR = '[role="doc-footnote"]';
+
+function isFootnoteAside(aside: NoteAsideElement): boolean {
+  if (aside.matches(FOOTNOTE_SELECTOR)) return true;
+  // 脚注を1つでも含むasideを残すのではない: サイドバーの中に脚注があると、サイドバーごと本文に混ざる。
+  const children = Array.from(aside.children);
+  return children.length > 0 && children.every((child) => child.matches(FOOTNOTE_SELECTOR));
+}
+
+/**
+ * Readabilityは本文を決めた後、asideを中身ごと捨てる。脚注をasideで出すページ(Sphinx)では脚注の本文が
+ * 消えるため、脚注のasideと脚注だけを束ねるasideをparse前にdivへ置き換える。
+ */
+function keepFootnoteAsides(document: NoteAsideHostDocument): void {
+  for (const aside of Array.from(document.body.querySelectorAll("aside"))) {
+    if (!isFootnoteAside(aside)) continue;
+    const div = document.createElement("div");
+    div.append(...Array.from(aside.childNodes));
+    aside.replaceWith(div);
+  }
+}
+
 // コードブロックの容れ物が持つ飾り(言語のタブ・ファイル名・コピーのボタン)の文字数の上限。
 const CODE_CHROME_MAX_LENGTH = 100;
 
@@ -1375,6 +1412,7 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
         dropScrollClassesAroundCode(document.body as unknown as ClassElement);
         const namePatterns = readabilityNamePatterns();
         if (namePatterns) dropUnlikelyIdsOfAnchorWrappers(document.body as unknown as ClassHostElement, namePatterns);
+        keepFootnoteAsides(document as unknown as NoteAsideHostDocument);
       }
       const article = new Readability(document).parse();
       const geometryHtml = options.geometry ? extractByGeometry(document as unknown as GeometryHostDocument, options.geometry) : null;
