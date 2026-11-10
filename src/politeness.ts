@@ -4,13 +4,13 @@
  * - robots.txt尊重(robots-parser)。取得結果はプロセス内でキャッシュ(TTL付き)し、
  *   robotsStore注入時はプロセス間でも共有する(CLI併設対応)。利用者が個別に許可した
  *   1回の取得(runIgnoringRobotsFor)の間だけ、許可したページと同じオリジンへの拒否を適用しない
- * - Crawl-Delay尊重
+ * - Crawl-Delay尊重。自分の番までの待ちが上限(MAX_WAIT_MS)を超えるときは、待たずに次に取得できる時刻を返す
  * - ドメイン毎の直列キュー + 既定最小間隔1秒
  * - 取得を断られた(429 / Retry-After)ホストへは、期限までアクセスしない
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import robotsParserImport from "robots-parser";
-import { FetchTimeoutError, HostRefusedError, HttpStatusError, NetworkError, PrivateAddressError, RobotsDeniedError } from "./errors.js";
+import { FetchTimeoutError, HostRefusedError, HttpStatusError, NetworkError, PrivateAddressError, RobotsDeniedError, WaitTooLongError } from "./errors.js";
 import { httpGet, USER_AGENT } from "./fetcher/http.js";
 import { DEFAULT_ROBOTS_TTL_MS } from "./ttl.js";
 
@@ -58,6 +58,8 @@ export const DEFAULT_REFUSAL_COOLDOWN_MS = 30 * 60_000;
 /** Retry-After が長すぎる値でも、止めるのはこの時間まで。 */
 export const MAX_REFUSAL_COOLDOWN_MS = 24 * 60 * 60_000;
 const ROBOTS_FETCH_TIMEOUT_MS = 5000;
+/** 自分の番を待つ時間の上限。超えるなら待たずに、次に取得できる時刻を返す(待つかどうかは呼び出し側が決める)。 */
+export const MAX_WAIT_MS = 60_000;
 
 interface RobotsCacheEntry {
   robots: Robot;
@@ -155,6 +157,8 @@ export class PolitenessManager {
   // 安全に削除できる。
   private readonly locks = new Map<string, { chain: Promise<void>; settled: boolean }>();
   private readonly lastRequestAt = new Map<string, number>();
+  /** ホストごとの、waitTurnに入って番が来ていない(または来て記録を終えていない)呼び出しの数。 */
+  private readonly queued = new Map<string, number>();
 
   constructor(options: PolitenessOptions = {}) {
     this.minIntervalMs = options.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
@@ -257,6 +261,11 @@ export class PolitenessManager {
     const crawlDelayMs = await this.getCrawlDelayMs(url);
     const intervalMs = Math.max(this.minIntervalMs, crawlDelayMs);
 
+    const pace = { url, host, intervalMs, crawlDelayMs };
+    // 番が来てから断ると、そこまで待たせてしまう。先に並んでいる件数から目安を出し、並ぶ前に断る。
+    const ahead = this.queued.get(host) ?? 0;
+    this.assertWaitWithinLimit(pace, Math.max(0, this.lastRequestAtOf(host) + intervalMs - this.now()) + ahead * intervalMs, ahead);
+
     const previousEntry = this.locks.get(host);
     const previous = previousEntry?.chain ?? Promise.resolve();
     let release: () => void = () => {};
@@ -265,16 +274,14 @@ export class PolitenessManager {
     });
     const entry = { chain: previous.then(() => ourTurn), settled: false };
     this.locks.set(host, entry);
+    this.queued.set(host, ahead + 1);
 
     await previous;
     try {
-      // CLI併設対応: インメモリのlastRequestAtとstore(プロセス間永続化)の値のうち新しい方を
-      // 採用する。store未指定時はstoreLastAtが常に-Infinityになり従来通りの挙動になる。
-      const memoryLastAt = this.lastRequestAt.get(host) ?? -Infinity;
-      const storeLastAt = this.store?.getLastRequestAt(host) ?? -Infinity;
-      const lastAt = Math.max(memoryLastAt, storeLastAt);
-      const elapsed = this.now() - lastAt;
+      const elapsed = this.now() - this.lastRequestAtOf(host);
       if (elapsed < intervalMs) {
+        // 並んでいる間に別プロセスが同じホストへの要求を記録していると、目安より長くなりうる。
+        this.assertWaitWithinLimit(pace, intervalMs - elapsed, 0);
         onProgress?.("アクセス間隔を確保するため待機しています…");
         await this.sleep(intervalMs - elapsed);
       }
@@ -284,7 +291,28 @@ export class PolitenessManager {
     } finally {
       release();
       entry.settled = true;
+      const remaining = (this.queued.get(host) ?? 1) - 1;
+      if (remaining > 0) this.queued.set(host, remaining);
+      else this.queued.delete(host);
     }
+  }
+
+  /**
+   * CLI併設対応: インメモリのlastRequestAtとstore(プロセス間永続化)の値のうち新しい方を
+   * 採用する。store未指定時はstore側が常に-Infinityになり従来通りの挙動になる。
+   */
+  private lastRequestAtOf(host: string): number {
+    return Math.max(this.lastRequestAt.get(host) ?? -Infinity, this.store?.getLastRequestAt(host) ?? -Infinity);
+  }
+
+  /** 待ちが上限を超えるなら、待たずに次に取得できる時刻を添えて断る(setTimeoutの上限を超える待ちもここで止まる)。 */
+  private assertWaitWithinLimit(pace: { url: string; host: string; intervalMs: number; crawlDelayMs: number }, waitMs: number, ahead: number): void {
+    if (waitMs <= MAX_WAIT_MS) return;
+    const pacing =
+      pace.crawlDelayMs > this.minIntervalMs ? `robots.txt の Crawl-delay(${pace.crawlDelayMs / 1000}秒)` : `アクセス間隔(${pace.intervalMs / 1000}秒)`;
+    const reason = ahead > 0 ? `${pacing}と、先に並んでいる${ahead}件の取得` : pacing;
+    const now = this.now();
+    throw new WaitTooLongError(pace.url, pace.host, reason, now + waitMs, now, MAX_WAIT_MS);
   }
 
   /** ホストへ1リクエスト発行したことを記録する(インメモリ + プロセス間共有ストア)。 */
