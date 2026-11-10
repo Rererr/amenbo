@@ -209,7 +209,7 @@ export class PolitenessManager {
 
   /**
    * robots.txtとレート制御の両方を確認し、アクセス可能になるまで待機する。拒否時はRobotsDeniedErrorを投げる。
-   * onProgress: MCP progress notifications用。実際に待機が発生する場合のみ呼ばれる(待機0の場合は呼ばれない)。
+   * onProgress: MCP progress notifications用。待機が発生する場合のみ呼ばれる(待機0の場合は呼ばれない。waitTurn参照)。
    */
   async guard(url: string, onProgress?: ((message: string) => void) | undefined): Promise<void> {
     this.assertNotRefused(url);
@@ -252,7 +252,7 @@ export class PolitenessManager {
    * 直列キュー(locks)による直列化はプロセス内のみ有効。store(PolitenessStore)経由の
    * プロセス間共有はread-modify-writeがアトミックではないベストエフォート(PolitenessStoreの
    * JSDoc参照)。
-   * onProgress: 実際にsleepが発生する場合のみ呼ばれる(待機0のときは呼ばれない)。
+   * onProgress: 同じホストへの前の要求が残った状態で並んだとき(並んだ時点で1回)と、実際にsleepが発生するときに呼ばれる(待機0のときは呼ばれない)。
    */
   async waitTurn(url: string, onProgress?: ((message: string) => void) | undefined): Promise<void> {
     this.assertNotRefused(url);
@@ -264,7 +264,9 @@ export class PolitenessManager {
     const pace = { url, host, intervalMs, crawlDelayMs };
     // 番が来てから断ると、そこまで待たせてしまう。先に並んでいる件数から目安を出し、並ぶ前に断る。
     const ahead = this.queued.get(host) ?? 0;
-    this.assertWaitWithinLimit(pace, Math.max(0, this.lastRequestAtOf(host) + intervalMs - this.now()) + ahead * intervalMs, ahead);
+    const expectedWaitMs = Math.max(0, this.lastRequestAtOf(host) + intervalMs - this.now()) + ahead * intervalMs;
+    this.assertWaitWithinLimit(pace, expectedWaitMs, ahead);
+    if (ahead > 0) onProgress?.(`同じサイト(${host})への取得が前に${ahead}件あります。約${Math.ceil(expectedWaitMs / 1000)}秒後に取得します…`);
 
     const previousEntry = this.locks.get(host);
     const previous = previousEntry?.chain ?? Promise.resolve();

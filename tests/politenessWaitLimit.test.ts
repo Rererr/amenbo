@@ -41,6 +41,36 @@ beforeEach(() => {
   httpGetMock.mockReset();
 });
 
+describe("PolitenessManager - 順番待ちの通知", () => {
+  it("前の要求が残った状態で並んだら、前の件数と目安の秒数を並んだ時点で1回通知する", async () => {
+    mockRobots("User-agent: *\nCrawl-delay: 3\n");
+    const clock = createClock();
+    const pm = new PolitenessManager({ now: clock.now, sleep: sleepForever });
+    const received = [vi.fn(), vi.fn(), vi.fn()];
+
+    // robots.txt の取得(=1リクエスト)の直後から並ぶ。どの呼び出しも sleep から戻らないので、並んだままになる
+    const calls = received.map((onProgress, i) => pm.waitTurn(`http://example.com/${i}`, onProgress));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(received[0]!.mock.calls).toEqual([["アクセス間隔を確保するため待機しています…"]]);
+    expect(received[1]!.mock.calls).toEqual([["同じサイト(example.com)への取得が前に1件あります。約6秒後に取得します…"]]);
+    expect(received[2]!.mock.calls).toEqual([["同じサイト(example.com)への取得が前に2件あります。約9秒後に取得します…"]]);
+    expect(await isStillPending(calls[2]!)).toBe(true);
+  });
+
+  it("前に並んでいる要求が無ければ、順番待ちの通知は出さない", async () => {
+    mockRobots("");
+    const clock = createClock();
+    const pm = new PolitenessManager({ now: clock.now, sleep: clock.sleep });
+    const onProgress = vi.fn();
+
+    await pm.waitTurn("http://example.com/a", onProgress);
+    await pm.waitTurn("http://example.com/b", onProgress);
+
+    expect(onProgress.mock.calls.flat().filter((message: string) => message.includes("前に"))).toEqual([]);
+  });
+});
+
 describe("PolitenessManager - 待ちの上限", () => {
   it("上限は60秒", () => {
     expect(MAX_WAIT_MS).toBe(60_000);
