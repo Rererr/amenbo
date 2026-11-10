@@ -339,6 +339,9 @@ class SharedOperations<T> {
 
   run(key: string, onProgress: ((message: string) => void) | undefined, operation: (notify: (message: string) => void) => Promise<T>): Promise<T> {
     const signal = currentCancellation();
+    // 取り消し済みの呼び出しは数に入らないので、まとめると誰も取り消せない処理になる。まとめずに呼び出し自身の
+    // 文脈で実行し、処理の最初のguardで取り消しとして抜けさせる(キーは画面写真ではURLでないので理由に使わない)。
+    if (signal?.aborted) return operation(onProgress ?? (() => {}));
     const existing = this.running.get(key);
     if (existing) {
       if (onProgress) existing.listeners.add(onProgress);

@@ -33,30 +33,38 @@ const { cache, handleScreenshotTool } = await import("../src/core.js");
 const { runCancellableBy } = await import("../src/politeness.js");
 const { setAddressPolicyForTests } = await import("../src/fetcher/http.js");
 
-let server: Server;
-let origin: string;
+const servers: Server[] = [];
 
-beforeAll(async () => {
+beforeAll(() => {
   setAddressPolicyForTests(() => false);
-  // robots.txt だけを返す(撮影は差し替えているので、ページへは要求が来ない)
-  server = createServer((_req, res) => res.end(""));
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
 afterAll(async () => {
   setAddressPolicyForTests(null);
-  server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  for (const server of servers) {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
   cleanupCacheDir(cacheDir, () => cache.close());
 });
+
+/**
+ * テストごとに別のポート(=別の待ち行列)のサイトを立てる。robots.txt だけを返す
+ * (撮影は差し替えているので、ページへは要求が来ない)。
+ */
+async function startSite(): Promise<string> {
+  const server = createServer((_req, res) => res.end(""));
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("同じ画面写真の同時要求の取り消し", () => {
   it("一方だけが取り消しても、取り消していない呼び出しは画面写真を受け取り、撮影は1回で済む", async () => {
     captureMock.mockClear();
-    const url = `${origin}/shot-shared`;
+    const url = `${await startSite()}/shot-shared`;
     const a = new AbortController();
     const b = new AbortController();
 
@@ -72,10 +80,25 @@ describe("同じ画面写真の同時要求の取り消し", () => {
     expect(captureMock).toHaveBeenCalledTimes(1);
   }, 15_000);
 
+  it("呼び出しの時点で既に取り消されていたら、まとめずに撮影せず、URLを示して取り消しとして返す", async () => {
+    const { RequestCancelledError } = await import("../src/errors.js");
+    captureMock.mockClear();
+    const url = `${await startSite()}/shot-pre`;
+    const controller = new AbortController();
+    controller.abort();
+
+    const error = await runCancellableBy(controller.signal, () => handleScreenshotTool({ url })).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(RequestCancelledError);
+    expect((error as Error).message).toContain(url); // まとめるキー(撮影条件のハッシュ)ではなく
+    await sleep(1500);
+    expect(captureMock).not.toHaveBeenCalled();
+  }, 15_000);
+
   it("全員が順番待ちの間に取り消したら、撮影せずに取り消しとして返す", async () => {
     const { RequestCancelledError } = await import("../src/errors.js");
     captureMock.mockClear();
-    const url = `${origin}/shot-all`;
+    const url = `${await startSite()}/shot-all`;
     const a = new AbortController();
     const b = new AbortController();
 
