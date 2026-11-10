@@ -280,6 +280,8 @@ export class PolitenessManager {
    */
   async guard(url: string, onProgress?: ((message: string) => void) | undefined): Promise<void> {
     this.assertNotRefused(url);
+    // robots.txtの取得は相乗りのため取り消せないので、取り消し済みならそれを始める前に抜ける。
+    if (cancellationScope.getStore()?.aborted) throw new RequestCancelledError(url);
     // 範囲を呼ばれた時点で読むので、ツール呼び出しのawaitの連鎖からだけ呼ぶ。イベントのコールバックから
     // 呼ぶと、その資源を作った別の呼び出しの許可を読んでしまう(robotsCheckForThisCall参照)。
     if (!isOverriddenIn(robotsOverrideScope.getStore(), url)) await this.checkRobotsAllowed(url);
