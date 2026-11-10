@@ -478,7 +478,7 @@ export interface DiscoverLinksOptions {
   cache?: LinkSourceCache | undefined;
 }
 
-/** URLからリンク一覧を発見する。sitemap → RSS/Atom → ページ内リンクの優先順で試す。 */
+/** URLからリンク一覧を発見する。sitemap → ページが知らせるllms.txt → RSS/Atom → ページ内リンクの優先順で試す。 */
 export function discoverLinks(url: string, politeness: PolitenessManager, options: DiscoverLinksOptions = {}): Promise<LinksResult> {
   return politeness.rememberRefusals(() => discoverLinksOnce(url, politeness, options));
 }
