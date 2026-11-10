@@ -273,6 +273,7 @@ export function formatPdfImageResponse(
   pdfPageCount: number,
   extractedPageCount: number,
   tileCount: number,
+  cacheStatus: "fresh" | "miss" = "miss",
 ): string {
   const judged =
     extractedPageCount < pdfPageCount
@@ -282,7 +283,7 @@ export function formatPdfImageResponse(
     `title: ${title ?? "(なし)"}`,
     `url: ${finalUrl}`,
     `mode_used: screenshot`,
-    `cache: miss`,
+    `cache: ${cacheStatus}`,
     `reason: ${judged}。全${pdfPageCount}ページ中先頭${tileCount}ページを画像化`,
     `tiles: ${tileCount}`,
     `fetch_tier: pdf`,

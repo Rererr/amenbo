@@ -103,6 +103,64 @@ describe("拡張子なしPDF(content-typeのみで判明)のハンドオフ→PD
     expect(httpGetRoutedMock).not.toHaveBeenCalled();
   });
 
+  it("文字の層が無いPDFは描画した画像をキャッシュし、TTL内の再要求では取得も描画もし直さない", async () => {
+    const url = "https://example.com/scanned.pdf";
+    httpGetBinaryMock.mockResolvedValue({
+      finalUrl: url,
+      status: 200,
+      headers: new Headers(),
+      bytes: fixture("sample-blank.pdf"),
+      contentType: "application/pdf",
+    });
+
+    const first = await handleFetchTool({ url });
+    const second = await handleFetchTool({ url });
+
+    expect(textOf(first)).toContain("cache: miss");
+    expect(textOf(second)).toContain("cache: fresh");
+    expect(second.filter((block) => block.type === "image")).toEqual(first.filter((block) => block.type === "image"));
+    expect(httpGetBinaryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("no-storeの文字の層が無いPDFは画像を保存せず、次回も取得しに行く", async () => {
+    const url = "https://example.com/scanned-no-store.pdf";
+    httpGetBinaryMock.mockResolvedValue({
+      finalUrl: url,
+      status: 200,
+      headers: new Headers({ "cache-control": "no-store" }),
+      bytes: fixture("sample-blank.pdf"),
+      contentType: "application/pdf",
+    });
+
+    await handleFetchTool({ url });
+    const second = await handleFetchTool({ url });
+
+    expect(textOf(second)).toContain("cache: miss");
+    expect(httpGetBinaryMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("拡張子なしの文字の層が無いPDFも、2回目はHTML経路へ行かずキャッシュした画像を返す", async () => {
+    const url = "https://example.com/download?id=scan";
+    httpGetRoutedMock.mockResolvedValue({
+      kind: "handoff",
+      status: 200,
+      finalUrl: url,
+      headers: new Headers(),
+      contentType: "application/pdf",
+      bytes: fixture("sample-blank.pdf"),
+      declaredSize: null,
+      truncated: false,
+    });
+
+    await handleFetchTool({ url });
+    httpGetRoutedMock.mockClear();
+    const text = textOf(await handleFetchTool({ url }));
+
+    expect(text).toContain("cache: fresh");
+    expect(httpGetRoutedMock).not.toHaveBeenCalled();
+    expect(httpGetBinaryMock).not.toHaveBeenCalled();
+  });
+
   it("PDF以外の非HTMLコンテンツ(application/zip)は従来通りhandoff応答のままになる(デグレ防止)", async () => {
     httpGetRoutedMock.mockResolvedValue({
       kind: "handoff",

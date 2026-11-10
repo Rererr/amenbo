@@ -225,6 +225,11 @@ export function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+/** 文字の層が無いPDFを描画した画像のキャッシュキー(画面写真と同じ表に置く)。 */
+export function computePdfImageCacheKey(url: string): string {
+  return hashContent(`pdf-images|${url}`);
+}
+
 /** スクリーンショットのキャッシュキー(url+撮影パラメータの組)を計算する。 */
 export function computeScreenshotCacheKey(url: string, width: number, scale: number, fullPage: boolean): string {
   return hashContent(`${url}|w=${width}|s=${scale}|full=${fullPage}`);
