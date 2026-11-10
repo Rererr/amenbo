@@ -1111,12 +1111,20 @@ interface ReadabilityNamePatterns {
  * Readabilityが採点の前に要素ごと捨てる「本文らしくない名前」の判定を、同じ版の本体から借りる。
  * 非公開のプロパティなので、版の更新で無くなったら名前に関する前処理を飛ばして抽出は続ける。
  */
+let warnedMissingNamePatterns = false;
+
 function readabilityNamePatterns(): ReadabilityNamePatterns | null {
   const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
   const unlikelyCandidates = regexps?.unlikelyCandidates;
   const negative = regexps?.negative;
-  if (!(unlikelyCandidates instanceof RegExp) || !(negative instanceof RegExp)) return null;
-  return { unlikelyCandidates, negative };
+  if (unlikelyCandidates instanceof RegExp && negative instanceof RegExp) return { unlikelyCandidates, negative };
+  if (!warnedMissingNamePatterns) {
+    warnedMissingNamePatterns = true;
+    console.error(
+      "amenbo: @mozilla/readabilityの名前の判定(REGEXPS)を借りられないため、名前に関する前処理を飛ばして抽出を続けます。docs基盤のページで本文が欠けることがあります。",
+    );
+  }
+  return null;
 }
 
 // 見出しから作ったidで章や表を包むだけの要素(xml2rfcの`<div id="header.field.definitions"><section>`)の中身。
