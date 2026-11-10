@@ -871,9 +871,11 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
     }
     const diff = diffMarkdown(view.previousMarkdown ?? "", view.markdown);
     if (diff.sections.length > 0 && !diff.allSectionsChanged) {
-      return [{ type: "text", text: formatDiffResponse(view, diff.sections, templateRemovedCount, totalTokens) }];
+      const diffText = formatDiffResponse(view, diff.sections, templateRemovedCount, totalTokens);
+      // 差分応答はページに区切れないので、予算を超えるなら区切れる通常の応答のほうが呼び出し元の予算を守れる。
+      if (estimateTokens(diffText) <= maxTokens) return [{ type: "text", text: diffText }];
     }
-    // 全節変更、または差分検出不能な場合は通常の全文応答へフォールバックする
+    // 全節変更、差分検出不能、または差分がmax_tokensを超える場合は通常の全文応答へフォールバックする
   }
 
   const paginated = paginateMarkdown(view.markdown, maxTokens, page);
