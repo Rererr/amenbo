@@ -81,7 +81,7 @@ const fakeCdpSession = {
 function fakePage(goto: () => Promise<unknown>, landedUrl: string) {
   return {
     mainFrame: () => ({}),
-    context: () => ({ newCDPSession: async () => fakeCdpSession }),
+    context: () => ({ newCDPSession: async () => fakeCdpSession, route: async () => {}, unroute: async () => {} }),
     on: () => {},
     off: () => {},
     route: async () => {},
@@ -141,9 +141,17 @@ describe("ブラウザ経路での SSRF 検証プロキシの拒否", () => {
     const mainFrame = {};
     let handler: ((route: unknown, request: unknown) => Promise<void>) | null = null;
     const request = (url: string) => ({ url: () => url, isNavigationRequest: () => true, frame: () => mainFrame });
+    const routing = {
+      route: async (_pattern: string, routeHandler: typeof handler) => {
+        handler = routeHandler;
+      },
+      unroute: async () => {
+        handler = null;
+      },
+    };
     return {
       mainFrame: () => mainFrame,
-      context: () => ({ newCDPSession: async () => fakeCdpSession }),
+      context: () => ({ newCDPSession: async () => fakeCdpSession, ...routing }),
       on: (event: string, listener: (value: unknown) => void) => {
         if (!listeners.has(event)) listeners.set(event, new Set());
         listeners.get(event)!.add(listener);
