@@ -32,3 +32,33 @@ describe("描画されないtemplateと見出しの書式文字(docs基盤の構
     expect(headings).toHaveLength(HEADINGS.length);
   });
 });
+
+describe("見出しの中のパーマリンクとブロック要素", () => {
+  const paragraph = "<p>この段落は見出しの下に置いた本文で、抽出の経路によらず残ることを確かめるための文章です。</p>";
+
+  it("中にdivとゼロ幅空白だけのリンクを持つ見出しが、selector経路でも1行の見出しになる", () => {
+    const { markdown } = extractMarkdown(docsHtml, { url: URL_, selector: "#content" });
+    const headings = buildOutline(markdown).sections.map((section) => section.heading);
+    expect(headings).toEqual(HEADINGS);
+  });
+
+  it("Sphinxの`¶`リンクは見出しに残らない", () => {
+    const html = `<!DOCTYPE html><html><body><main>
+      <h2>9.1. A Word About Names<a class="headerlink" href="#a-word-about-names" title="Link to this heading">¶</a></h2>${paragraph}
+      </main></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://docs.example.org/classes.html", selector: "main" });
+    expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["9.1. A Word About Names"]);
+  });
+
+  it("見出しの文字そのものがページ内リンクなら、文字は残す", () => {
+    const html = `<!DOCTYPE html><html><body><main><h2><a href="#setup">Setup の手順</a></h2>${paragraph}</main></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://docs.example.org/", selector: "main" });
+    expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["Setup の手順"]);
+  });
+
+  it("見出しの外のページ内リンクはそのまま残す", () => {
+    const html = `<!DOCTYPE html><html><body><main><h2>概要</h2><p>詳しくは<a href="#detail">詳細</a>を参照。</p>${paragraph}</main></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://docs.example.org/", selector: "main" });
+    expect(markdown).toContain("[詳細](#detail)");
+  });
+});
