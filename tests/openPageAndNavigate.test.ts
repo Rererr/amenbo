@@ -46,7 +46,7 @@ function createFakePage(gotoImpl: (url: string) => Promise<GotoResult>, landedUr
   };
   return {
     mainFrame: () => mainFrameSentinel,
-    context: () => ({ newCDPSession: async () => cdpSession }),
+    context: () => ({ newCDPSession: async () => cdpSession, route: async () => {}, unroute: async () => {} }),
     on: () => {},
     off: () => {},
     route: async () => {},

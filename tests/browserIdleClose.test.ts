@@ -35,6 +35,8 @@ function createFakeBrowser() {
           mainFrame: () => ({}),
           // 転送の段を止めるCDPのFetchドメインの代わり(ここでは転送を起こさないので受けるだけ)
           context: () => ({
+            route: async () => {},
+            unroute: async () => {},
             newCDPSession: async () => ({
               on: () => {},
               send: async (method: string) => (method === "Page.getFrameTree" ? { frameTree: { frame: { id: "main-frame" } } } : {}),

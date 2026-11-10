@@ -82,8 +82,17 @@ class FakePage {
     return this.mainFrameSentinel;
   }
 
-  context(): { newCDPSession(page: unknown): Promise<FakeCdpSession> } {
-    return { newCDPSession: async () => this.cdp };
+  // routeはcontextに掛かる(ポップアップの要求も検証するため)。このフェイクではページ1枚なのでページへ渡す。
+  context(): {
+    newCDPSession(page: unknown): Promise<FakeCdpSession>;
+    route(pattern: string, handler: RouteHandler): Promise<void>;
+    unroute(pattern: string, handler?: RouteHandler): Promise<void>;
+  } {
+    return {
+      newCDPSession: async () => this.cdp,
+      route: (pattern, handler) => this.route(pattern, handler),
+      unroute: (pattern, handler) => this.unroute(pattern, handler),
+    };
   }
 
   private async dispatchSubRequests(): Promise<void> {

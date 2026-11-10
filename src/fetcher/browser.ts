@@ -356,7 +356,7 @@ function guardRequestUrl(rawUrl: string, hostGuardCache: Map<string, Promise<voi
  *
  * 対応:
  *   1. page.goto()の前にguardPublicAddressで初回遷移先を検証する
- *   2. context.route()で全リクエストを横取りし、以下を検証する:
+ *   2. context.route()で全リクエスト(ページが開いたポップアップを含む)を横取りし、以下を検証する:
  *      - メインフレームのナビゲーション(初回遷移・ページ内からの遷移): guardPublicAddressで
  *        再検証し、private/予約アドレスやhttp(s)以外のスキームは実接続前にabort。型付きエラー
  *        (PrivateAddressError/InvalidUrlError)へ変換してgoto()の失敗を報告する。
@@ -396,11 +396,8 @@ export async function navigateSafely(
   const onRequest = (request: Request): void => {
     if (isMainFrame(request)) lastMainFrameUrl = request.url();
   };
-  // 確認画面の応答を見たら、以後の要求(スクリプトのfetch・sendBeacon・画像・解いた後の遷移)をすべて止める。
-  // 応答ヘッダの時点で旗を立てるので、HTMLの解析が始まって出る要求より先に立つ(実測で、これらは先方へ届かなかった)。
-  // WebSocketはrouteを通らないので止められない(実測で、確認画面のスクリプトが開いたWebSocketの接続要求は届いた)。
-  // routeWebSocketで止める案は、通常のページのWebSocketまでPlaywright経由の中継に変え、その接続がSSRF検証
-  // プロキシを通るかを確かめていないため入れていない。
+  // 確認画面の本文はguardMainFrameDocumentsが応答の段で止め、レンダラーへ渡さない(スクリプトが一度も走らない)。
+  // ここは、その後にcontextで出る要求を止めるための旗。CDPの段を通らない応答(キャッシュ等)で確認画面を見た場合にも立てる。
   const onResponse = (response: PlaywrightResponse): void => {
     if (!isMainFrame(response.request())) return;
     const headers = response.headers();
@@ -440,15 +437,21 @@ export async function navigateSafely(
     }
   };
 
-  const stopGuardingRedirects = await guardMainFrameRedirects(
+  const stopGuardingRedirects = await guardMainFrameDocuments(
     page,
     options.checkRobots,
     (error) => {
       blockedError = error;
     },
+    (error) => {
+      challengeSeen = true;
+      blockedError ??= error;
+    },
     () => challengeSeen,
   );
-  await page.route(NAVIGATION_ROUTE_PATTERN, handler);
+  // pageでなくcontextに掛けるのは、ページが開いたポップアップ(window.open)の要求も検証するため。
+  const context = page.context();
+  await context.route(NAVIGATION_ROUTE_PATTERN, handler);
   // ページ内からの遷移(location.href・meta refresh)を止めると、gotoは成功したままエラー画面に置き換わる。
   const assertNotBlocked = (): void => {
     if (blockedError) throw blockedError as AmenboError;
@@ -459,9 +462,9 @@ export async function navigateSafely(
   page.on("request", onRequest);
   page.on("response", onResponse);
   try {
-    // 応答ヘッダが届いた時点(commit)で止まり、エラーと bot 対策の確認画面を読み込みを待たずに弾く。
-    // commitの時点でもHTMLの解析とインラインのスクリプトは始まりうる(実測)。先方へ要求が出ないのは、
-    // 上のonResponseが以後の要求を止めるためで、ここでの判定は失敗として返すためのもの。
+    // 応答ヘッダが届いた時点(commit)で止まり、エラーを読み込みを待たずに弾く。commitの時点でもHTMLの解析と
+    // インラインのスクリプトは始まりうる(実測)ので、確認画面はここでなくguardMainFrameDocumentsが本文を渡す前に止める。
+    // ここでの判定は、CDPの段を通らなかった確認画面を失敗として返すためのもの。
     const response = await page.goto(url, { waitUntil: "commit", timeout: timeoutMs });
     responded = true;
     assertNotBlocked();
@@ -484,7 +487,7 @@ export async function navigateSafely(
     // 先にCDPで止めている段を失敗させる。判定の途中で時間切れになった段を、後から送らせないため。
     await stopGuardingRedirects();
     // 確認画面のときは止める handler を外さない。外すと、閉じるまでの間に確認画面のスクリプトの要求が先方へ届く(実測)。
-    if (!challengeSeen) await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
+    if (!challengeSeen) await context.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
     assertNotBlocked();
     if (cause instanceof AmenboError) throw cause;
     if (cause instanceof Error && /timeout/i.test(cause.message)) {
@@ -515,14 +518,19 @@ export interface SafeNavigation {
 }
 
 /**
- * メインフレームのリダイレクトの各ホップを、送る前にSSRF検証とrobots.txtの確認にかける。
- * 拒否したホップは送らずに失敗させ、onBlockedで理由を渡す。戻り値は止めるのをやめる関数で、そのとき判定の途中の
- * ホップは送らずに失敗させる。
+ * メインフレームの文書を、CDPのFetchドメインで2つの段で止める。
+ *   - 要求の段: リダイレクトの各ホップを、送る前にSSRF検証とrobots.txtの確認にかける。拒否したホップは
+ *     送らずに失敗させ、onBlockedで理由を渡す。
+ *   - 応答の段: 応答ヘッダが bot 対策の確認画面の印を持てば、本文をレンダラーへ渡さずに失敗させ、onChallengeで
+ *     理由を渡す。本文を渡すと、commitの前でもHTMLの解析が始まり、確認画面のスクリプトが走る(ポップアップ・
+ *     pagehideのsendBeacon・speculation rules・WebSocket・Service Workerは、要求を個別に止めても届いた。実測)。
+ * 戻り値は止めるのをやめる関数で、そのとき判定の途中のホップは送らずに失敗させる。
  */
-async function guardMainFrameRedirects(
+async function guardMainFrameDocuments(
   page: Page,
   checkRobots: ((url: string) => Promise<void>) | undefined,
   onBlocked: (error: AmenboError) => void,
+  onChallenge: (error: AmenboError) => void,
   /** trueを返す間は、止めた文書の要求をすべて送らずに失敗させる(bot 対策の確認画面の後)。 */
   isStopped: () => boolean,
 ): Promise<() => Promise<void>> {
@@ -536,6 +544,16 @@ async function guardMainFrameRedirects(
     void (async () => {
       if (isStopped()) {
         await fail(event.requestId);
+        return;
+      }
+      if (event.responseStatusCode !== undefined || event.responseErrorReason !== undefined) {
+        const challenge = event.frameId === mainFrameId && event.responseStatusCode !== undefined ? challengeResponseError(event) : null;
+        if (challenge) {
+          onChallenge(challenge);
+          await fail(event.requestId);
+          return;
+        }
+        await session.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {});
         return;
       }
       const hopUrl = event.request.url;
@@ -559,11 +577,38 @@ async function guardMainFrameRedirects(
       await session.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {});
     })();
   });
-  await session.send("Fetch.enable", { patterns: [{ resourceType: "Document", requestStage: "Request" }] });
+  await session.send("Fetch.enable", {
+    patterns: [
+      { resourceType: "Document", requestStage: "Request" },
+      { resourceType: "Document", requestStage: "Response" },
+    ],
+  });
   return async () => {
     await Promise.all([...checking].map(fail));
     await session.detach().catch(() => {});
   };
+}
+
+/**
+ * 応答の段で止めた文書が bot 対策の確認画面なら、HTTP経路と同じ型のエラーを返す(回数制限なら断られた扱い)。
+ * 確認画面でなければnull。
+ */
+function challengeResponseError(event: {
+  request: { url: string };
+  responseStatusCode?: number;
+  responseStatusText?: string;
+  responseHeaders?: Array<{ name: string; value: string }>;
+}): AmenboError | null {
+  const headers = new Map((event.responseHeaders ?? []).map((entry) => [entry.name.toLowerCase(), entry.value]));
+  const header = (name: string): string | undefined => headers.get(name);
+  if (!detectBotChallenge(header)) return null;
+  const status = event.responseStatusCode ?? 0;
+  try {
+    assertUsableResponse(event.request.url, { status, statusText: event.responseStatusText ?? "", ok: status < 400 }, header);
+  } catch (error) {
+    if (error instanceof AmenboError) return error;
+  }
+  return null;
 }
 
 export interface BrowserNavigation extends SafeNavigation {
