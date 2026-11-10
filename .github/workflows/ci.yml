@@ -5,7 +5,8 @@ on:
     branches: [main]
   pull_request:
 
-# unit/e2eではChromiumを使わない。実ブラウザのテストはbrowserジョブに分離する。
+# 実ブラウザのテストは、ブラウザが無ければ飛ばす形で全テストに含まれる(unitの各ジョブでも、ランナーにChromeが
+# あれば走る)。browserジョブは同梱Chromiumを入れて、実ブラウザのテストを必ず走らせる。
 jobs:
   unit:
     strategy:

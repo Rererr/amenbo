@@ -111,8 +111,8 @@ const ROBOTS_FETCH_TIMEOUT_MS = 5000;
 export const MAX_WAIT_MS = 60_000;
 /**
  * 呼び出しの途中(ブラウザへの昇格・linksのフォールバック等、2回目以降の要求)の待ちの上限。途中で断ると、
- * 取り直すたびに最初の要求だけが先方へ届いて完了しない。MCP stdioの既定の打ち切り(30分)を超える待ちは、
- * 待っても応答を返せないので断る(setTimeoutの上限もこれより長い)。
+ * 取り直すたびに最初の要求だけが先方へ届いて完了しない。Claude Codeの既定の打ち切り(stdioのMCPで
+ * 応答も進捗も無いまま30分)を超える待ちは、待っても応答を返せないので断る(setTimeoutの上限もこれより長い)。
  */
 export const MAX_FOLLOW_UP_WAIT_MS = 30 * 60_000;
 
