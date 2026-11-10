@@ -33,6 +33,19 @@ describe("フェンスコードブロックの判定(CommonMark準拠)", () => {
     expect(blocks.map((block) => block.text)).toEqual(["前の段落。", NESTED_FENCE, "後の段落。"]);
   });
 
+  it("リストの中で4字以上字下げされたフェンスもコードとして保護する(全角の英数を変えない)", () => {
+    const html = "<html><body><main><ol><li><p>手順です。</p><pre><code>ＡＢＣ = 1\n\nprint(ＡＢＣ)\n</code></pre></li></ol></main></body></html>";
+    const { markdown } = extractMarkdown(html, { selector: "main" });
+    expect(markdown).toMatch(/^ {4,}```$/m);
+    expect(markdown).toContain("ＡＢＣ = 1");
+    expect(markdown).toContain("print(ＡＢＣ)");
+  });
+
+  it("フェンスの文字の後ろに別の文字が続く行では閉じない", () => {
+    const markdown = ["## Example", "", "```", "# a", "``` not a closing fence", "# b", "```", "", "## Next"].join("\n");
+    expect(buildOutline(markdown).sections.map((section) => section.heading)).toEqual(["Example", "Next"]);
+  });
+
   it.each(["～～～～～", "｀｀｀"])("全角の区切り線「%s」は幅の統一の後もフェンスにならず、後ろの見出しを隠さない", (separator) => {
     const html = `<html><body><main><h2>はじめに</h2><p>前の段落です。</p><p>${separator}</p><h2>次の節</h2><p>本文です。</p><h2>最後の節</h2><p>おわりです。</p></main></body></html>`;
     const { markdown } = extractMarkdown(html, { selector: "main" });
