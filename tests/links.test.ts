@@ -500,3 +500,38 @@ describe("discoverLinks - 止めているホストで robots.txt のキャッシ
     expect(httpGetMock).not.toHaveBeenCalled();
   });
 });
+
+describe("discoverLinks - 待ちの上限と取り消し", () => {
+  it("sitemap の待ちが上限を超えたら、ページへ進まず、ログも出さずに次に取得できる時刻を返す", async () => {
+    const { WaitTooLongError } = await import("../src/errors.js");
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return htmlResult("User-agent: *\nCrawl-delay: 120\nSitemap: http://example.com/sitemap.xml\n");
+      throw new Error(`unexpected url: ${url}`);
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(discoverLinks("http://example.com/", makePoliteness())).rejects.toThrow(WaitTooLongError);
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(fetchPageMock).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("取り消されたら、sitemap から先へ進まず、ログも出さずに取り消しとして返す", async () => {
+    const { RequestCancelledError } = await import("../src/errors.js");
+    const { runCancellableBy } = await import("../src/politeness.js");
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return htmlResult("Sitemap: http://example.com/sitemap.xml\n");
+      throw new Error(`unexpected url: ${url}`);
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(runCancellableBy(controller.signal, () => discoverLinks("http://example.com/", makePoliteness()))).rejects.toThrow(
+      RequestCancelledError,
+    );
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(fetchPageMock).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+});
