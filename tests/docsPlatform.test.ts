@@ -153,6 +153,31 @@ describe("コードブロックの容れ物とReadabilityの負の語", () => {
   });
 });
 
+describe("本文と並ぶ関連記事の一覧(overflow-hiddenの容れ物)", () => {
+  const body = (n: number): string =>
+    Array.from(
+      { length: n },
+      (_, i) => `<p>Body paragraph ${i}. This article explains how the relay daemon delivers messages, why workers acknowledge them, and what happens when a delivery fails.</p>`,
+    ).join("");
+  const card = (i: number): string =>
+    `<div class="card"><h3><a href="/p/${i}">Post ${i} title</a></h3><p>Teaser ${i}: another post about scheduling, retries, and queues, with a short summary of what the reader will learn there.</p></div>`;
+  const page = (paragraphs: number, cards: number, containerClass: string): string =>
+    `<html><body><div class="mx-auto max-w-5xl"><div class="post-body"><h1>Title</h1>${body(paragraphs)}</div><div class="${containerClass}">${Array.from(
+      { length: cards },
+      (_, i) => card(i),
+    ).join("")}</div></div></body></html>`;
+
+  it.each([
+    [8, 4, "overflow-hidden rounded-lg"],
+    [8, 4, "flex overflow-x-scroll snap-x"],
+    [4, 16, "overflow-hidden rounded-lg"],
+  ])("本文%i段落・関連記事%i件(%s)で、関連記事は本文に混ざらない", (paragraphs, cards, containerClass) => {
+    const { markdown } = extractMarkdown(page(paragraphs, cards, containerClass), { url: "https://blog.example.com/post" });
+    expect(markdown).toContain("Body paragraph 0");
+    expect(markdown).not.toContain("Teaser 0");
+  });
+});
+
 describe("ユーティリティクラスの値でない名前(scroll-container)", () => {
   it("scroll-containerの関連記事の一覧は本文に混ざらない", () => {
     const body = Array.from(

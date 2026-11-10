@@ -1071,6 +1071,7 @@ export function normalizeRetainedTables(contentHtml: string): string {
 
 interface ClassElement {
   tagName: string;
+  childNodes: ArrayLike<{ nodeType: number; textContent: string | null }>;
   parentElement: ClassElement | null;
   textContent: string | null;
   children: ArrayLike<ClassElement>;
@@ -1085,8 +1086,7 @@ interface ClassHostElement {
 }
 
 // 値が負の語と重なるユーティリティクラス(overflow-hidden・lg:overflow-y-scroll!)。`scroll-container`の
-// ような意味のある名前は外さない。関連記事の一覧の容れ物がoverflow-hidden等を持つと、その一覧が
-// 本文に混ざりうる(手順や図の容れ物とclass名では区別できないため受け入れる)。
+// ような意味のある名前は外さない。
 const UTILITY_CLASS_TOKEN = /^(?:[^:\s]+:)*!?overflow(?:-[xy])?-(?:hidden|clip|scroll)!?$/;
 
 /**
@@ -1094,12 +1094,55 @@ const UTILITY_CLASS_TOKEN = /^(?:[^:\s]+:)*!?overflow(?:-[xy])?-(?:hidden|clip|s
  * 他のユーティリティクラスは外さない: `text-*`等は正の語(text・content)にも当たり、まとめて外すと
  * 本文の容れ物の加点まで失う。
  */
-function neutralizeUtilityClassTokens(root: ClassHostElement): void {
-  for (const el of Array.from(root.querySelectorAll("[class]"))) {
-    const tokens = (el.getAttribute("class") ?? "").split(/\s+/);
-    const kept = tokens.filter((token) => !UTILITY_CLASS_TOKEN.test(token));
-    if (kept.length !== tokens.length) el.setAttribute("class", kept.join(" "));
+function stripUtilityTokens(el: ClassElement): void {
+  const tokens = (el.getAttribute("class") ?? "").split(/\s+/);
+  const kept = tokens.filter((token) => !UTILITY_CLASS_TOKEN.test(token));
+  if (kept.length !== tokens.length) el.setAttribute("class", kept.join(" "));
+}
+
+// 段落とみなす直下の文字数。Readabilityが段落の採点に使う下限と同じ値にする(語数にしないのは、全要素で
+// 語分割を回すと大きなページで重いため。UIの短いラベルを除ければ足りる)。
+const PARAGRAPH_MIN_OWN_TEXT = 25;
+
+/**
+ * 本文の段落が最も集まる要素。自分の直下に文字(25字以上)を持つ要素を段落とみなし、その親に
+ * 文字数を足して最大のものを選ぶ(pに限らない)。祖父には足さない: 段落を1つずつ持つカードを
+ * 並べた関連記事の一覧が、本文より多くの段落を持つときに選ばれてしまう。
+ */
+function findParagraphHub(body: ClassElement): ClassElement | null {
+  const scores = new Map<ClassElement, number>();
+  const add = (el: ClassElement | null, score: number): void => {
+    if (el) scores.set(el, (scores.get(el) ?? 0) + score);
+  };
+  for (const el of Array.from(body.querySelectorAll("*"))) {
+    let own = 0;
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === TEXT_NODE_TYPE) own += visibleLength(node.textContent);
+    }
+    if (own < PARAGRAPH_MIN_OWN_TEXT) continue;
+    add(el.parentElement, own);
   }
+  let hub: ClassElement | null = null;
+  let best = 0;
+  for (const [el, score] of scores) {
+    if (score > best) {
+      best = score;
+      hub = el;
+    }
+  }
+  return hub;
+}
+
+/**
+ * 本文の段落が最も集まる要素とその部分木からだけ、ユーティリティクラスの値を外す。
+ * ページ全体からは外さない: 本文と並ぶ関連記事の一覧の容れ物もoverflow-hidden等を持ち、class名では
+ * 手順や図の容れ物と区別できないので、外すとその一覧まで本文に混ざる。
+ */
+function neutralizeUtilityClassTokens(root: ClassElement): void {
+  const hub = findParagraphHub(root);
+  if (!hub) return;
+  stripUtilityTokens(hub);
+  for (const el of Array.from(hub.querySelectorAll("[class]"))) stripUtilityTokens(el);
 }
 
 interface ReadabilityNamePatterns {
@@ -1328,7 +1371,7 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
       const droppedHeadings = document.body ? collectHeadings(document.body as unknown as HeadingQueryHost) : [];
 
       if (document.body) {
-        neutralizeUtilityClassTokens(document.body as unknown as ClassHostElement);
+        neutralizeUtilityClassTokens(document.body as unknown as ClassElement);
         dropScrollClassesAroundCode(document.body as unknown as ClassElement);
         const namePatterns = readabilityNamePatterns();
         if (namePatterns) dropUnlikelyIdsOfAnchorWrappers(document.body as unknown as ClassHostElement, namePatterns);
