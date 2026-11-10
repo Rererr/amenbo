@@ -9,7 +9,15 @@
  * が指すRSS/Atomフィード → 最終手段としてページ内の<a>リンク抽出。
  */
 import { parseHTML } from "linkedom";
-import { HostRefusedError, HttpStatusError, PrivateAddressError, RobotsDeniedError, UnsupportedContentError } from "./errors.js";
+import {
+  HostRefusedError,
+  HttpStatusError,
+  PrivateAddressError,
+  RequestCancelledError,
+  RobotsDeniedError,
+  UnsupportedContentError,
+  WaitTooLongError,
+} from "./errors.js";
 import { fetchPage } from "./fetcher/index.js";
 import { assertHttpScheme, httpGet } from "./fetcher/http.js";
 import type { PolitenessManager } from "./politeness.js";
@@ -23,12 +31,17 @@ import type { PolitenessManager } from "./politeness.js";
  * ページ内リンクへのフォールバックの主な発生源になっている)。これをAmenboError全般として
  * 再送出してしまうと、sitemap.xmlの無い(=大半の)サイトでlinksツールが丸ごと失敗する
  * 深刻な回帰になるため、再送出するのは拒否シグナルのみに絞る。
+ *
+ * 待ちの上限超過(WaitTooLongError)と取り消し(RequestCancelledError)も再送出する。同じホストへの
+ * 次の候補も同じ待ち行列に並ぶので、フォールバックしても同じ理由で止まるだけになる。
  */
 function isFallbackBlockingError(error: unknown): boolean {
   return (
     error instanceof PrivateAddressError ||
     error instanceof RobotsDeniedError ||
     error instanceof HostRefusedError ||
+    error instanceof WaitTooLongError ||
+    error instanceof RequestCancelledError ||
     (error instanceof HttpStatusError && error.isRefusal)
   );
 }
