@@ -462,12 +462,9 @@ export interface HttpGetOptions {
   /** レスポンスボディのサイズ上限(バイト)。既定は環境変数AMENBO_MAX_BODY_BYTES、未設定なら20MB。 */
   maxBytes?: number;
   /**
-   * レビュー指摘対応: リダイレクトで最初のオリジンと異なるオリジンへ着地した場合のみ、
-   * guardedFetch内から着地先URLで呼ばれるrobots.txt確認コールバック(politeness.checkRobotsAllowed相当)。
-   * SSRF検証(guardPublicAddress)は毎ホップ行っているのに対し、robots.txtは初回URLの
-   * politeness.guardでしか確認されず、別オリジンへの301/302で着地先がDisallow:/でも
-   * 取得してしまう非対称があったための対応。同一オリジン内リダイレクトは初回guardで
-   * 確認済みのため呼ばない。拒否時はRobotsDeniedErrorがそのまま伝播する。
+   * リダイレクトのたびに、guardedFetch内から次の転送先URLで呼ばれるrobots.txt確認コールバック
+   * (politeness.robotsCheckForThisCall等)。オリジンが同じかどうかに関わらず呼ぶ。
+   * 拒否時はRobotsDeniedErrorがそのまま伝播し、転送先へは要求を送らない。
    * robots.txt自体の取得(politeness.ts内のhttpGet呼び出し)には渡さないこと(無限再帰回避)。
    *
    * 着地先ホストへのレート制御待機はここでは行わない。この関数のタイムアウトはリダイレクト追跡
@@ -547,9 +544,8 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
         throw new InvalidUrlError(location, "リダイレクト先URLの形式が不正です");
       }
 
-      // レビュー指摘対応: 着地先が別オリジンの場合のみrobots.txtを再確認する
-      // (同一オリジン内リダイレクトは初回URLのpoliteness.guardで確認済みのため不要)。
-      if (options.checkRobots && nextUrl.origin !== new URL(currentUrl).origin) {
+      // 同一オリジンでも省かない。初回のguardが確かめたのは初回URLのパスで、着地先のパスではない。
+      if (options.checkRobots) {
         await options.checkRobots(nextUrl.toString());
       }
 

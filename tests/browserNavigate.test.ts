@@ -194,8 +194,8 @@ describe("navigateSafely", () => {
   });
 });
 
-describe("navigateSafely - 別オリジンへのリダイレクト時のrobots.txt確認", () => {
-  it("別オリジンへ着地する場合のみcheckRobotsが呼ばれる", async () => {
+describe("navigateSafely - リダイレクト時のrobots.txt確認", () => {
+  it("メインフレームの遷移ごとに、同一オリジンの転送先も含めてcheckRobotsが呼ばれる", async () => {
     const page = new FakePage();
     page.redirects.set("http://93.184.216.34/a", "http://93.184.216.34/b"); // 同一オリジン
     page.redirects.set("http://93.184.216.34/b", "http://8.8.8.8/c"); // 別オリジン
@@ -203,7 +203,19 @@ describe("navigateSafely - 別オリジンへのリダイレクト時のrobots.t
 
     await navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/a", 5000, { checkRobots });
 
-    expect(checkRobots.mock.calls.map((call) => call[0])).toEqual(["http://8.8.8.8/c"]);
+    expect(checkRobots.mock.calls.map((call) => call[0])).toEqual(["http://93.184.216.34/a", "http://93.184.216.34/b", "http://8.8.8.8/c"]);
+  });
+
+  it("同一オリジンの転送先がrobots.txtで拒否された場合もナビゲーションが失敗する", async () => {
+    const page = new FakePage();
+    page.redirects.set("http://93.184.216.34/go", "http://93.184.216.34/private/secret");
+    const checkRobots = vi.fn(async (url: string) => {
+      if (new URL(url).pathname.startsWith("/private/")) throw new RobotsDeniedError(url);
+    });
+
+    await expect(
+      navigateSafely(page as unknown as import("playwright").Page, "http://93.184.216.34/go", 5000, { checkRobots }),
+    ).rejects.toThrow(RobotsDeniedError);
   });
 
   it("着地先がrobots.txtで拒否された場合はナビゲーションが失敗する", async () => {

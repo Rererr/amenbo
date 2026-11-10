@@ -194,9 +194,7 @@ async function fetchAndExtract(
   conditionalHeaders: Record<string, string> | undefined,
   onProgress?: ((message: string) => void) | undefined,
 ): Promise<FetchAndExtractResult> {
-  // レビュー指摘対応: リダイレクトで別オリジンへ着地した場合、その着地先のrobots.txtも
-  // 確認する(guardedFetch内で着地先オリジンが変わった場合のみ呼ばれる。同一オリジン内
-  // リダイレクトや初回URLは呼び出し元のpoliteness.guardで確認済みのため二重チェックしない)。
+  // リダイレクトの転送先ごとにrobots.txtを確認する(初回URLは呼び出し元のpoliteness.guardが確認済み)。
   const checkRobots = politeness.robotsCheckForThisCall();
   // content-typeでしかPDFと分からないURLは、プレビュー読み(256KB)で返してもらうと
   // 専用経路が同じURLをもう一度全体取得することになる。この段階で全体を読み切ってもらい、
@@ -564,7 +562,7 @@ async function captureScreenshot(url: string, cacheKey: string, options: Resolve
   options.onProgress?.("スクリーンショットを撮影しています…");
   const captured = await captureTiledScreenshot(url, {
     ...options,
-    // ブラウザ層が別オリジンへリダイレクトした場合もrobots.txtを確認する(HTTP層と同じ扱い)。
+    // ブラウザ層がリダイレクトした場合も転送先のrobots.txtを確認する(HTTP層と同じ扱い)。
     checkRobots: politeness.robotsCheckForThisCall(),
   });
   cache.setScreenshot({

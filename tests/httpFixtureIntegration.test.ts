@@ -20,6 +20,7 @@ process.env.AMENBO_CACHE_DIR = cacheDir;
 process.env.AMENBO_CACHE_TTL_MS = "1";
 
 const { handleFetchTool, politeness, cache } = await import("../src/core.js");
+const { runIgnoringRobotsFor } = await import("../src/politeness.js");
 const { discoverLinks } = await import("../src/links.js");
 const { formatLinksResponse } = await import("../src/formatting.js");
 const { RobotsDeniedError } = await import("../src/errors.js");
@@ -96,6 +97,25 @@ describe("robots.txtによる拒否", () => {
 
     await expect(fetchText(deniedUrl)).rejects.toBeInstanceOf(RobotsDeniedError);
     expect(server.hits.get("/denied/secret.html")).toBeUndefined();
+  }, 30_000);
+
+  it("同一オリジン内の転送でDisallow配下へ誘導されても、転送先を取得せず拒否する", async () => {
+    const error = await fetchText(`${server.origin}/go-denied`).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(RobotsDeniedError);
+    expect((error as Error).message).toContain("/denied/secret.html");
+    expect(server.hits.get("/go-denied")).toBe(1);
+    expect(server.hits.get("/denied/secret.html")).toBeUndefined();
+  }, 30_000);
+
+  it("利用者がそのサイトの例外取得を許可した呼び出しでは、同一オリジン内の転送先も取得する", async () => {
+    const url = `${server.origin}/go-denied`;
+    const hitsBefore = server.hits.get("/denied/secret.html") ?? 0;
+
+    const content = await runIgnoringRobotsFor([url], () => handleFetchTool({ url, force_full: true }));
+
+    expect(server.hits.get("/denied/secret.html")).toBe(hitsBefore + 1);
+    expect(content.map((c) => (c.type === "text" ? c.text : "")).join("\n")).toContain("DENIED-SECRET");
   }, 30_000);
 });
 

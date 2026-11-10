@@ -132,8 +132,8 @@ describe("httpGet/httpGetBinary - M1: レスポンスボディのサイズ上限
   });
 });
 
-describe("httpGet - checkRobots(レビュー指摘対応: リダイレクト着地先の別オリジンrobots確認)", () => {
-  it("同一オリジン内リダイレクトはcheckRobotsを呼ばない(初回URLのpoliteness.guardで確認済みのため)", async () => {
+describe("httpGet - checkRobots(リダイレクトの転送先のrobots確認)", () => {
+  it("同一オリジン内リダイレクトでも転送先URLでcheckRobotsを呼ぶ(初回のguardが確かめたのは初回URLのパスだけ)", async () => {
     fetchMock
       .mockResolvedValueOnce(mockResponse(302, { location: "http://93.184.216.34/next" }) as never)
       .mockResolvedValueOnce(mockResponse(200, { "content-type": "text/html" }, "<html>ok</html>") as never);
@@ -141,7 +141,15 @@ describe("httpGet - checkRobots(レビュー指摘対応: リダイレクト着�
 
     await httpGet("http://93.184.216.34/", { timeoutMs: 5000, checkRobots });
 
-    expect(checkRobots).not.toHaveBeenCalled();
+    expect(checkRobots.mock.calls).toEqual([["http://93.184.216.34/next"]]);
+  });
+
+  it("同一オリジン内の転送先が拒否されたら、転送先へは要求を送らない", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(302, { location: "/private/secret" }) as never);
+    const checkRobots = vi.fn().mockRejectedValue(new RobotsDeniedError("http://93.184.216.34/private/secret"));
+
+    await expect(httpGet("http://93.184.216.34/go", { timeoutMs: 5000, checkRobots })).rejects.toThrow(RobotsDeniedError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("別オリジンへのリダイレクトは着地先URLでcheckRobotsを呼ぶ", async () => {

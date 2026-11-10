@@ -340,7 +340,6 @@ export async function navigateSafely(
   options: SafeNavigationOptions = {},
 ): Promise<PlaywrightResponse | null> {
   await guardPublicAddress(url);
-  const initialOrigin = new URL(url).origin;
 
   let blockedError: AmenboError | null = null;
   const hostGuardCache = new Map<string, Promise<void>>();
@@ -350,8 +349,8 @@ export async function navigateSafely(
     try {
       if (isMainFrameNavigation) {
         await guardPublicAddress(requestUrl);
-        // HTTP層と同じリダイレクト先のrobots.txt判定を保つ。レート制御の待機はタイムアウト予算を消費するため、ここでは行わない。
-        if (options.checkRobots && new URL(requestUrl).origin !== initialOrigin) {
+        // HTTP層と同じく、同一オリジンの転送先も確かめる。レート制御の待機はタイムアウト予算を消費するため、ここでは行わない。
+        if (options.checkRobots) {
           await options.checkRobots(requestUrl);
         }
       } else {
@@ -391,7 +390,7 @@ export interface BrowserNavigation {
 
 export interface SafeNavigationOptions {
   /**
-   * メインフレームが別オリジンへ遷移した際に呼ばれるrobots.txt確認
+   * メインフレームの遷移(初回とリダイレクトの各ホップ)ごとに呼ばれるrobots.txt確認
    * (fetcher/http.tsのHttpGetOptions.checkRobotsと同じ役割)。拒否時はそのまま伝播する。
    */
   checkRobots?: ((url: string) => Promise<void>) | undefined;

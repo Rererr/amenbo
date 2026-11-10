@@ -241,9 +241,14 @@ export async function startFixtureServer(): Promise<FixtureServer> {
         send(200, "text/html; charset=utf-8", article(`移動先(${marker})`, marker), headers);
         return;
       }
+      case "/go-denied":
+        // 同一オリジン内の転送で、robots.txtが拒否するパスへ誘導する
+        send(302, "text/plain; charset=utf-8", "", { Location: "/denied/secret.html" });
+        return;
       case "/denied/secret.html":
-        // robots.txtで拒否されるため、ここへ到達した時点で検証は失敗している
-        send(200, "text/html; charset=utf-8", "<html><body><p>到達してはいけない本文</p></body></html>");
+        // robots.txtで拒否されるため、利用者が例外取得を許可した呼び出し以外で到達した時点で検証は失敗している。
+        // 許可した呼び出しでブラウザ層へ昇格しないよう、本文抽出の対象になる分量にしておく。
+        send(200, "text/html; charset=utf-8", article("到達してはいけないページ", "DENIED-SECRET"));
         return;
       default: {
         const page = state.pages.get(path);
