@@ -8,13 +8,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PageCache } from "../src/cache.js";
 import { setAddressPolicyForTests } from "../src/fetcher/http.js";
 import { formatLinksResponse } from "../src/formatting.js";
-import { discoverLinks } from "../src/links.js";
+import { discoverLinks, parseLlmsTxt } from "../src/links.js";
 import { PolitenessManager } from "../src/politeness.js";
 import { cleanupCacheDir } from "./helpers/tempCache.js";
 
 /**
- * links の出典(sitemap・フィード・ページ)を、ローカルのフィクスチャサーバーと一時キャッシュで確かめる。
- * 見るのは先方への到着回数(filter を変えて呼び直しても取り直さない)と、
+ * links の出典(sitemap・フィード・ページ・llms.txt)を、ローカルのフィクスチャサーバーと一時キャッシュで確かめる。
+ * 見るのは先方への到着回数(filter を変えて呼び直しても取り直さない、知らされていない llms.txt を探しに行かない)と、
  * 読めなかった出典を黙らずに応答へ出すこと。
  */
 
@@ -173,5 +173,69 @@ describe("gzip の sitemap", () => {
     expect(result.source).toBe("page");
     expect(text).toContain(`warning: sitemapを読めませんでした: ${origin}${sitemapPath}`);
     expect(text).toContain(reason);
+  });
+});
+
+describe("llms.txt", () => {
+  const LLMS_TXT = `# Docs\n\n> サイトの要約\n\n## Docs\n\n- [Quickstart](/docs/quickstart.md): 最初の一歩\n- [API](https://example.com/docs/api.md)\n- [Bad](javascript:alert(1)): 除く\n`;
+
+  it("起点のページが知らせていれば llms.txt を出典にし、説明を名前に続ける", async () => {
+    const pagePath = fresh("/docs");
+    const llmsPath = fresh("/llms.txt");
+    site = {
+      robots: "User-agent: *\nAllow: /\n",
+      routes: {
+        [pagePath]: { headers: { "Content-Type": "text/html; charset=utf-8", Link: `<${llmsPath}>; rel="llms-txt"` }, body: page("") },
+        [llmsPath]: { headers: { "Content-Type": "text/plain; charset=utf-8" }, body: LLMS_TXT },
+      },
+    };
+    const start = `${origin}${pagePath}`;
+
+    const result = await discoverLinks(start, politeness, { cache });
+    const again = await discoverLinks(start, politeness, { cache, filter: "最初" });
+
+    expect(result.source).toBe("llms.txt");
+    expect(result.links).toEqual([
+      { url: `${origin}/docs/quickstart.md`, title: "Quickstart: 最初の一歩" },
+      { url: "https://example.com/docs/api.md", title: "API" },
+    ]);
+    expect(again.links.map((link) => link.title)).toEqual(["Quickstart: 最初の一歩"]);
+    expect(hits.get(llmsPath)).toBe(1);
+  });
+
+  it("fetch で取ったページが知らせていたと分かっていれば、sitemap より先に llms.txt を使い、sitemap は取らない", async () => {
+    const sitemapPath = fresh("/sitemap.xml");
+    const llmsPath = fresh("/llms.txt");
+    site = {
+      robots: `User-agent: *\nAllow: /\nSitemap: __ORIGIN__${sitemapPath}\n`,
+      routes: {
+        [sitemapPath]: { headers: { "Content-Type": "application/xml" }, body: SITEMAP },
+        [llmsPath]: { headers: { "Content-Type": "text/markdown" }, body: LLMS_TXT },
+      },
+    };
+    const start = `${origin}${fresh("/docs")}`;
+    cache.set({ url: start, etag: null, lastModified: null, markdown: "# 起点", metadata: { agentResources: { markdownAlternate: null, llmsTxt: `${origin}${llmsPath}` } } });
+
+    const result = await discoverLinks(start, politeness, { cache });
+
+    expect(result.source).toBe("llms.txt");
+    expect(hits.get(sitemapPath)).toBeUndefined();
+  });
+
+  it("知らされていなければ llms.txt を探しに行かない", async () => {
+    const pagePath = fresh("/plain");
+    site = { robots: "User-agent: *\nAllow: /\n", routes: { [pagePath]: { headers: { "Content-Type": "text/html; charset=utf-8" }, body: page("") }, "/llms.txt": { body: LLMS_TXT } } };
+
+    const result = await discoverLinks(`${origin}${pagePath}`, politeness, { cache });
+
+    expect(result.source).toBe("page");
+    expect(hits.get("/llms.txt")).toBeUndefined();
+  });
+
+  it("parseLlmsTxt は一覧の行だけを読み、http(s) 以外の URL を除く", () => {
+    expect(parseLlmsTxt(LLMS_TXT, "https://example.com/llms.txt").map((link) => link.url)).toEqual([
+      "https://example.com/docs/quickstart.md",
+      "https://example.com/docs/api.md",
+    ]);
   });
 });
