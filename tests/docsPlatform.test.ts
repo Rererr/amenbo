@@ -55,6 +55,24 @@ describe("ユーティリティクラスの値とReadabilityのclass名の採点
   });
 });
 
+describe("ユーティリティクラスの値でない名前(scroll-container)", () => {
+  it("scroll-containerの関連記事の一覧は本文に混ざらない", () => {
+    const body = Array.from(
+      { length: 8 },
+      (_, i) => `<p>Body paragraph ${i}. This article explains how the relay daemon delivers messages, why workers acknowledge them, and what happens when a delivery fails.</p>`,
+    ).join("");
+    const card = (i: number): string =>
+      `<div class="card"><p>Teaser ${i}: another post about scheduling, retries, and queues, with a short summary of what the reader will learn there.</p></div>`;
+    const html = `<html><body><div class="mx-auto max-w-5xl"><div class="post-body"><h1>Title</h1>${body}</div><div class="scroll-container">${Array.from(
+      { length: 4 },
+      (_, i) => card(i),
+    ).join("")}</div></div></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://blog.example.com/post" });
+    expect(markdown).toContain("Body paragraph 0");
+    expect(markdown).not.toContain("Teaser 0");
+  });
+});
+
 describe("見出しから作ったidとReadabilityの「本文らしくない名前」", () => {
   const section = (n: number, title: string): string =>
     `<section id="section-${n}"><h2>${n}. ${title}</h2>` +
