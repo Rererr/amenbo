@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { diffMarkdown } from "../src/diff.js";
 import { buildOutline, extractSection, findSection, formatBreadcrumb } from "../src/extract/outline.js";
+import { normalizeCjkText } from "../src/jp/normalize.js";
 
 const SAMPLE_MARKDOWN = [
   "# 大見出し",
@@ -286,6 +287,24 @@ describe("抜粋の文末判定(言語によらない)", () => {
   it("行末のコロンで終わる長い導入文は、後ろがコードやリストでなくても文末とみなす", () => {
     const markdown = ["## Files", "", "Subagent files use YAML frontmatter for configuration, followed by the prompt:", "", "The watcher reloads them. Edit freely."].join("\n");
     expect(buildOutline(markdown).sections[0]?.excerpt).toBe("Subagent files use YAML frontmatter for configuration, followed by the prompt:");
+  });
+
+  it("「，．」で書いた日本語は、幅の統一の後の「.」で文を切る", () => {
+    const markdown = normalizeCjkText(["## 手法", "", "本研究では，新しい手法を提案する．次に，その評価を示す．"].join("\n"));
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("本研究では,新しい手法を提案する.");
+  });
+
+  it.each([
+    ["名前の頭文字", "Roy T. Fielding wrote the dissertation in 2000.", "Roy T. Fielding wrote the dissertation in 2000."],
+    ["e.g.", "Use a tool, e.g. curl, to fetch it. Then check.", "Use a tool, e.g. curl, to fetch it."],
+    ["i.e.", "Pick one, i.e. the newest release. Then upgrade.", "Pick one, i.e. the newest release."],
+  ])("%sの後のピリオドでは切らない", (_label, sentence, excerpt) => {
+    expect(buildOutline(["## 節", "", sentence].join("\n")).sections[0]?.excerpt).toBe(excerpt);
+  });
+
+  it("行末のコロンの前が短いラベル(お問い合わせ先:)で、後ろが段落なら文末にしない", () => {
+    const markdown = ["## 窓口", "", "お問い合わせ先:", "", "総務課までご連絡ください。"].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("総務課までご連絡ください。");
   });
 
   it("後ろがリストなら、短い導入文の行末のコロンも文末とみなす", () => {

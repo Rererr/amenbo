@@ -11,6 +11,7 @@
  */
 import { createFenceScanner } from "../markdownFence.js";
 import { estimateTokens } from "../tokens.js";
+import { countWords } from "./pruning.js";
 
 export interface OutlineSection {
   id: string;
@@ -278,22 +279,33 @@ const SPACELESS_SCRIPT = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}]/u;
 const OPENING_OR_SPACE = /[\s\p{Ps}\p{Pi}]/u;
 // 行末のコロンの次の空でない行が、コードのフェンスかリストで始まる。
 const BLOCK_AFTER_COLON = /(?:[ \t]*\n)+[ \t]*(?:`{3}|~{3}|[-*+][ \t]|\d+[.)][ \t])/y;
-// 行末のコロンを文末とみなすのに要る、コロンまでの語の文字の数。ラベル(「最終更新日:」「**定員**:」)を除く。
+// 行末のコロンを文末とみなすのに要る、行頭からコロンまでの語の数(UAX#29の語分割。文字数だと
+// 分かち書きの有無で意味が言語ごとにずれる)。ラベル(「**定員**:」「お問い合わせ先:」)を除く。
 // 後ろがコードかリストなら短い導入文(「次のとおり:」)も認め、それ以外は文と呼べる長さを求める。
-const MIN_WORD_CHARS_BEFORE_COLON = 6;
-const MIN_WORD_CHARS_BEFORE_COLON_WITHOUT_BLOCK = 20;
+const MIN_WORDS_BEFORE_COLON_WITH_BLOCK = 2;
+const MIN_WORDS_BEFORE_COLON = 6;
+// ピリオドの直前が、略語の`e.g`・`i.e`か、名前の頭文字(`Roy T`)。
+const ABBREVIATION_BEFORE_PERIOD = /(?:^|[\s(])(?:[eE]\.[gG]|[iI]\.[eE]|\p{Lu})$/u;
 
 /**
- * 半角のピリオドは、直後が語の文字でなく、直前が空白や開き括弧でないときだけ文末にする
- * (`3.14`・`example.com`・`Apple Inc.の`・`「.」`は切らず、`document.¶`・`[RFC5234].`は切る)。半角の!?は、直後が語の文字でなければ
- * 文末にし、語の間に空白を置かない日本語・中国語の文字が続くときも文末にする(「完了!次に」)。
+ * 半角のピリオドは、直後が語の文字でなく、直前が空白や開き括弧でないときに文末にする
+ * (`3.14`・`example.com`・`Apple Inc.の`・`「.」`は切らず、`document.¶`・`[RFC5234].`は切る)。
+ * 略語と頭文字の後(`e.g.`・`Roy T.`)は切らない。前後がともに日本語・中国語の文字なら文末にする
+ * (全角の「．」は幅の統一で`.`になる)。半角の!?は、直後が語の文字でなければ文末にし、
+ * 語の間に空白を置かない日本語・中国語の文字が続くときも文末にする(「完了!次に」)。
  * 全角の記号はいつでも文末。
  */
-function endsWithTerminal(mark: string, previous: string | undefined, next: string | undefined): boolean {
+function endsWithTerminal(text: string, markStart: number, mark: string, previous: string | undefined, next: string | undefined): boolean {
   if (mark >= "\u0080") return true;
   const nextIsWord = next !== undefined && WORD_CHAR.test(next);
-  if (mark === ".") return previous !== undefined && !OPENING_OR_SPACE.test(previous) && !nextIsWord;
-  return !nextIsWord || SPACELESS_SCRIPT.test(next ?? "");
+  if (mark !== ".") return !nextIsWord || SPACELESS_SCRIPT.test(next ?? "");
+  if (previous !== undefined && next !== undefined && SPACELESS_SCRIPT.test(previous) && SPACELESS_SCRIPT.test(next)) return true;
+  if (previous === undefined || OPENING_OR_SPACE.test(previous) || nextIsWord) return false;
+  return !ABBREVIATION_BEFORE_PERIOD.test(text.slice(Math.max(0, markStart - 4), markStart));
+}
+
+function endsAtLineEnd(text: string, index: number): boolean {
+  return /^[ \t]*(?:\n|$)/.test(text.slice(index, index + 80));
 }
 
 /**
@@ -302,7 +314,7 @@ function endsWithTerminal(mark: string, previous: string | undefined, next: stri
  */
 function findSentenceEnd(text: string): number {
   let sawLetter = false;
-  let wordChars = 0;
+  let lineStart = 0;
   const charAt = (index: number): string | undefined => {
     const codePoint = text.codePointAt(index);
     return codePoint === undefined ? undefined : String.fromCodePoint(codePoint);
@@ -311,23 +323,24 @@ function findSentenceEnd(text: string): number {
   for (let i = 0; i < text.length; ) {
     const ch = charAt(i) ?? "";
     const before = previous;
+    const markStart = i;
     previous = ch;
     i += ch.length;
     if (ch === "\n") {
       sawLetter = false;
-      wordChars = 0;
-    } else if (WORD_CHAR.test(ch)) {
-      wordChars++;
-      if (LETTER.test(ch)) sawLetter = true;
-    } else if (!sawLetter) {
+      lineStart = i;
+    } else if (LETTER.test(ch)) {
+      sawLetter = true;
+    } else if (!sawLetter || WORD_CHAR.test(ch)) {
       continue;
     } else if (SENTENCE_TERMINAL.test(ch)) {
-      if (endsWithTerminal(ch, before, charAt(i))) return i;
-    } else if ((ch === ":" || ch === "：") && wordChars >= MIN_WORD_CHARS_BEFORE_COLON && /^[ \t]*(?:\n|$)/.test(text.slice(i, i + 80))) {
+      if (endsWithTerminal(text, markStart, ch, before, charAt(i))) return i;
+    } else if ((ch === ":" || ch === "：") && endsAtLineEnd(text, i)) {
       // 行末のコロンは、後ろのコードやリストを導く文の終わり(「looks like this:」)。
-      if (wordChars >= MIN_WORD_CHARS_BEFORE_COLON_WITHOUT_BLOCK) return i;
+      const words = countWords(text.slice(lineStart, markStart));
+      if (words >= MIN_WORDS_BEFORE_COLON) return i;
       BLOCK_AFTER_COLON.lastIndex = i;
-      if (BLOCK_AFTER_COLON.test(text)) return i;
+      if (words >= MIN_WORDS_BEFORE_COLON_WITH_BLOCK && BLOCK_AFTER_COLON.test(text)) return i;
     }
   }
   return -1;
