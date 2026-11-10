@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { PageCache } from "../../src/cache.js";
 
 /**
- * tests/cacheConcurrentWriters.test.ts の子プロセス。同じキャッシュを開いて "ready" を出し、
+ * tests/cacheConcurrentWriters.test.ts の子プロセス。開く直前に "opening"、同じキャッシュを開いたら "ready" を出し、
  * 標準入力に "go" が来たら書き込みを始める(全員の書き込みを親が持つロックの最中に揃えるため)。
  * 失敗はエラー文を標準エラーへ出して終了コード1で知らせる。
  */
@@ -13,6 +13,7 @@ if (!cacheDir || !writerId) {
 }
 
 try {
+  process.stdout.write("opening\n");
   const cache = new PageCache({ cacheDir });
   process.stdout.write("ready\n");
   const lines = createInterface({ input: process.stdin });
