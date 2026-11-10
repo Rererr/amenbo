@@ -133,3 +133,21 @@ describe("呼び出しの途中の待ち", () => {
     await expect(pm.rememberRefusals(() => pm.waitTurn(`${SITE}/b`))).rejects.toThrow(WaitTooLongError);
   });
 });
+
+describe("WaitTooLongError - 次に取得できる時刻の示し方", () => {
+  const now = Date.UTC(2026, 10, 10, 1, 0, 0);
+
+  it("1日以上先なら日数で示し、時刻はタイムゾーン名を付けて書く", () => {
+    const at = now + 3 * 24 * 60 * 60_000;
+    const message = new WaitTooLongError(`${SITE}/a`, "example.com", "x", at, now, 60_000).message;
+
+    expect(message).toContain(`次に取得できるのは約3日後(${new Date(at).toLocaleString("ja-JP", { timeZoneName: "short" })}頃)です`);
+  });
+
+  it("Dateで表せないほど先なら、時刻を書かず期間だけで示す(Invalid Date を出さない)", () => {
+    const message = new WaitTooLongError(`${SITE}/a`, "example.com", "x", now + 1e20, now, 60_000).message;
+
+    expect(message).not.toContain("Invalid Date");
+    expect(message).toMatch(/次に取得できるのは約\d+日後です。/);
+  });
+});
