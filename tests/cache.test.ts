@@ -172,6 +172,35 @@ describe("PageCache - prune間引き(CLIバルク収集での起動時掃除コ�
   });
 });
 
+describe("PageCache - 新鮮さと保持期間", () => {
+  it("バリデータを持つ行はTTLを過ぎても数日は掃除せず、条件付きGETに使える", () => {
+    const ttlMs = 900_000;
+    const day = 24 * 60 * 60 * 1000;
+    let now = 0;
+    const c1 = new PageCache({ dbPath, ttlMs, now: () => now });
+    c1.set({ url: "http://etag/", etag: '"v1"', lastModified: null, markdown: "E", metadata: {} });
+    c1.set({ url: "http://last-modified/", etag: null, lastModified: "Wed, 01 Jul 2026 00:00:00 GMT", markdown: "L", metadata: {} });
+    c1.set({ url: "http://none/", etag: null, lastModified: null, markdown: "N", metadata: {} });
+    c1.close();
+
+    // 1日後の起動時の掃除: バリデータの無い行だけが消える
+    now = day;
+    const c2 = new PageCache({ dbPath, ttlMs, now: () => now });
+    expect(c2.get("http://etag/")?.etag).toBe('"v1"');
+    expect(c2.isFresh(c2.get("http://etag/")!)).toBe(false);
+    expect(c2.get("http://last-modified/")?.lastModified).toBe("Wed, 01 Jul 2026 00:00:00 GMT");
+    expect(c2.get("http://none/")).toBeUndefined();
+    c2.close();
+
+    // 保持期間を過ぎれば消える(ディスクの無制限増加を防ぐ)
+    now = 30 * day;
+    const c3 = new PageCache({ dbPath, ttlMs, now: () => now });
+    expect(c3.get("http://etag/")).toBeUndefined();
+    expect(c3.get("http://last-modified/")).toBeUndefined();
+    c3.close();
+  });
+});
+
 describe("PageCache - スクリーンショットキャッシュ", () => {
   it("未キャッシュのcacheKeyはgetScreenshotでundefinedを返す", () => {
     const cache = new PageCache({ dbPath, cacheDir: dir });

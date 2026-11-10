@@ -5,6 +5,8 @@
  * URL毎にETag/Last-Modified/本文ハッシュ/変換済みMarkdown/取得時刻を保存する。
  * TTL内はローカル返却(fresh)、TTL超過時はIf-None-Match/If-Modified-Sinceで再検証し、
  * 304なら再変換せず返す(revalidated)。未キャッシュ/再検証不可はmiss。
+ * 新鮮さ(TTL)と保持期間は別で、ETag/Last-Modifiedを持つ行はTTLを過ぎても数日残し、
+ * 失効後の再取得を条件付きGET(304)で済ませられるようにする。
  *
  * スクリーンショット(screenshotツール/mode:auto→screenshot)もキャッシュ対象とする。
  * バイナリ本体はSQLiteに入れず、$AMENBO_CACHE_DIR/screenshots/配下にファイル保存し、
@@ -88,6 +90,8 @@ export function parseCacheControl(header: string | null): CacheControlDirectives
 }
 
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15分
+/** バリデータ(ETag/Last-Modified)を持つ行を、失効後も条件付きGETのために残しておく期間。 */
+const VALIDATOR_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 // 長い宣言をそのまま信じると変更検知が長期間止まるため、上限を設ける。
 const MAX_CACHE_CONTROL_TTL_MS = 24 * 60 * 60 * 1000;
 /** Phase 4テンプレート学習: 定型ブロック判定に使う「直近ページ数」の既定値。 */
@@ -366,7 +370,11 @@ export class PageCache {
   /** 全SQL文を一度だけprepareする(DDL適用後・prune前に呼ぶ)。 */
   private prepareStatements(): PreparedStatements {
     return {
-      deletePagesExpired: this.db.prepare("DELETE FROM pages WHERE COALESCE(json_extract(metadata, '$.freshUntilAt'), fetched_at + ?) < ?"),
+      deletePagesExpired: this.db.prepare(
+        `DELETE FROM pages
+         WHERE COALESCE(json_extract(metadata, '$.freshUntilAt'), fetched_at + @ttlMs) < @now
+           AND ((etag IS NULL AND last_modified IS NULL) OR fetched_at + @retentionMs < @now)`,
+      ),
       deleteDomainPagesExpired: this.db.prepare("DELETE FROM domain_pages WHERE fetched_at < ?"),
       deleteHostRequestsExpired: this.db.prepare("DELETE FROM host_requests WHERE last_request_at < ?"),
       deleteRobotsExpired: this.db.prepare("DELETE FROM robots_cache WHERE fetched_at < ?"),
@@ -443,7 +451,7 @@ export class PageCache {
    * 1コマンド=1プロセスでのバルク収集ループで毎回のプロセス起動に掃除コストが乗る。
    * prune直後のTTL窓ではほとんど新規失効が無いため、前回pruneからの経過がTTL未満なら
    * skipする(掃除間隔がTTL単位まで粗くなるだけで、ディスク無制限増加の防止という
-   * M3の目的は維持される。失効エントリの残留は最大でも約2×TTLに収まる)。
+   * M3の目的は維持される。バリデータの無い失効エントリの残留は最大でも約2×TTLに収まる)。
    * meta未記録(新規DB/初回起動)では必ず実行するため、起動時掃除のテストは従来通り成立する。
    */
   private maybePruneExpired(): void {
@@ -469,7 +477,7 @@ export class PageCache {
     const cutoff = now - this.ttlMs;
     const robotsCutoff = now - this.robotsTtlMs;
 
-    this.statements.deletePagesExpired.run(this.ttlMs, now);
+    this.statements.deletePagesExpired.run({ ttlMs: this.ttlMs, now, retentionMs: VALIDATOR_RETENTION_MS });
     this.statements.deleteDomainPagesExpired.run(cutoff);
     // code-reviewer指摘: host_requestsもM3の対象から漏れていた(訪問ホスト毎に1行増える
     // 無制限増加テーブルという点でdomain_pages等と同じ性質を持つため、他テーブルと一貫させる)。
