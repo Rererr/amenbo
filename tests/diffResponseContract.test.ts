@@ -83,14 +83,13 @@ function totalTokensOf(text: string): number {
 }
 
 describe("差分応答の契約(fetchツールのハンドラを通す)", () => {
-  it("本文を見ていない呼び出し元に返るunchangedは、全文の推定トークンと取り直しの案内を持つ", async () => {
+  it("このプロセスが本文を返した後の失効後の再取得はunchangedになり、全文の推定トークンと取り直しの案内を持つ", async () => {
     const url = `${server.origin}/v/unchanged`;
     server.pages.set("/v/unchanged", articleHtml("変わらないページ", [{ heading: "概要", marker: "UNCHANGED-BODY" }]));
 
-    // 呼び出し元Aが取得する(別のセッションやCLIでもキャッシュは共有される)。
     expect(await fetchText({ url })).toContain("UNCHANGED-BODY");
 
-    // 呼び出し元Bは初めてこのURLを取る。
+    // 同じプロセスの別の呼び出し元(サブエージェント等)とは区別できないので、案内で取り直しを促す。
     await expire();
     const second = await fetchText({ url });
 
@@ -161,15 +160,75 @@ describe("差分応答の契約(fetchツールのハンドラを通す)", () => 
     expect(estimateTokens(second)).toBeLessThan(400);
   }, 30_000);
 
-  it("outlineだけを見た後に全文を求めると、本文か取り直しの案内が返る", async () => {
+  it("outlineと1節だけを返した後に全文を求めると、差分ではなく本文を返す", async () => {
     const url = `${server.origin}/v/outline-then-full`;
-    server.pages.set("/v/outline-then-full", articleHtml("目次から読むページ", [{ heading: "本題", marker: "OUTLINE-BODY" }]));
+    server.pages.set(
+      "/v/outline-then-full",
+      articleHtml("目次から読むページ", [
+        { heading: "本題", marker: "OUTLINE-BODY" },
+        { heading: "補足", marker: "OUTLINE-NOTE" },
+      ]),
+    );
 
-    expect(await fetchText({ url, mode: "outline" })).toContain("mode_used: outline");
+    const outline = await fetchText({ url, mode: "outline" });
+    const sectionId = /\[(s\d+)\] ## 本題/.exec(outline)?.[1];
+    if (!sectionId) throw new Error(`outlineに「本題」の節がありません:\n${outline}`);
+    await expire();
+    expect(await fetchText({ url, section: sectionId })).toContain("OUTLINE-BODY");
     await expire();
     const full = await fetchText({ url, mode: "markdown" });
 
-    expect(full.includes("OUTLINE-BODY") || full.includes("force_full: true")).toBe(true);
+    expect(full).toContain("cache: miss");
+    expect(full).toContain("OUTLINE-BODY");
+    expect(full).toContain("OUTLINE-NOTE");
+  }, 30_000);
+
+  it("別のプロセスが取得して失効した行があっても、このプロセスが本文を返していなければ本文を返す", async () => {
+    // 毎回違うETagを返すので、行は失効後も保持期間のあいだ残り、別のプロセスの起動時の掃除でも消えない。
+    const url = `${server.origin}/v-etag/other-process`;
+    server.pages.set("/v-etag/other-process", articleHtml("別のプロセスが取ったページ", [{ heading: "概要", marker: "OTHER-PROCESS-BODY" }]));
+    expect(await fetchText({ url })).toContain("OTHER-PROCESS-BODY");
+
+    // 同じキャッシュを開く別のプロセス(別のセッションのMCPサーバー)を、モジュールを読み直して作る。
+    vi.resetModules();
+    const other = await import("../src/core.js");
+    const otherHttp = await import("../src/fetcher/http.js");
+    otherHttp.setAddressPolicyForTests(() => false);
+    vi.spyOn(other.politeness, "guard").mockResolvedValue(undefined);
+    vi.spyOn(other.politeness, "waitTurn").mockResolvedValue(undefined);
+    try {
+      await expire();
+      const text = textOf(await other.handleFetchTool({ url }));
+
+      expect(text).toContain("cache: miss");
+      expect(text).toContain("OTHER-PROCESS-BODY");
+    } finally {
+      otherHttp.setAddressPolicyForTests(null);
+      other.cache.close();
+    }
+  }, 30_000);
+
+  it("unchangedのtotal_tokensは、案内どおりforce_fullで取り直したときの量(定型ブロックを除く前)を示す", async () => {
+    // 同じドメインの直近3ページに共通するフッタの段落を、定型ブロックとして学習させる。
+    const footer = "<p>TEMPLATE-FOOTER このサイトの全ページに出る共通の案内文です。お問い合わせは窓口までお願いします。</p></article>";
+    const withFooter = (title: string, marker: string) => articleHtml(title, [{ heading: "概要", marker }]).replace("</article>", footer);
+    for (const name of ["a", "b"]) {
+      server.pages.set(`/v/footer-${name}`, withFooter(`フッタのあるページ${name}`, `FOOTER-${name}`));
+      await fetchText({ url: `${server.origin}/v/footer-${name}` });
+    }
+    const url = `${server.origin}/v/total-tokens`;
+    server.pages.set("/v/total-tokens", withFooter("定型を含むページ", "TOTAL-TOKENS"));
+    const first = await fetchText({ url });
+    expect(first).toMatch(/^template_blocks_removed: \d+$/m);
+
+    await expire();
+    const unchanged = await fetchText({ url });
+    await expire();
+    const refetched = await fetchText({ url, force_full: true });
+
+    expect(unchanged).toContain("cache: unchanged");
+    expect(refetched).toContain("page: 1 of 1");
+    expect(totalTokensOf(unchanged)).toBe(Number(/^tokens: (\d+)$/m.exec(refetched)?.[1]));
   }, 30_000);
 
   it("失効後の2ページ目の要求は、差分ではなくそのページの中身を返す", async () => {
