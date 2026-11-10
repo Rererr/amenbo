@@ -245,7 +245,7 @@ export class BrowserUnavailableError extends AmenboError {
   constructor(options?: { cause?: unknown }) {
     super(
       "この操作にはブラウザが必要ですが、Google Chromeも同梱Chromiumも見つかりません。" +
-        "Google Chromeをインストールするか、`npx -y amenbo install-browser` を実行してください(初回のみ、約170MBのダウンロード)。" +
+        "Google Chromeをインストールするか、`npx -y amenbo install-browser` を実行してください(初回のみ。ダウンロード約300MB、ディスク約570MB。macOS arm64での実測で、環境によって異なります)。" +
         "通常のHTTP取得(mode: markdown/outline等)はブラウザなしで動作します。",
       options,
     );
