@@ -52,6 +52,7 @@ beforeAll(async () => {
     }
     if (path === "/go") return void res.writeHead(302, { location: "/private/secret" }).end();
     if (path === "/to-other") return void res.writeHead(302, { location: `${otherOrigin}/fine` }).end();
+    if (path === "/to-other-private") return void res.writeHead(302, { location: `${otherOrigin}/private/x` }).end();
     if (path === "/a") return void res.writeHead(301, { location: "/b" }).end();
     if (path === "/b") return void res.writeHead(307, { location: "/ok" }).end();
     if (path === "/js") return html(page("JS", `<script>location.href='/private/js'</script>`));
@@ -145,6 +146,20 @@ describe("ブラウザ経路のrobots.txt確認(実Chromium)", () => {
     } finally {
       await navigation.context.close();
     }
+  }, 30_000);
+
+  itWithBrowser("別オリジンへの転送では、転送先のオリジンのrobots.txtで確かめる(拒否なら送らない)", async () => {
+    otherArrivals.length = 0;
+
+    await expect(fetchWithBrowser(`${origin}/to-other-private`, 10_000, { checkRobots: checkRobots() })).rejects.toThrow(RobotsDeniedError);
+    expect(otherArrivals).toEqual(["/robots.txt"]);
+  }, 30_000);
+
+  itWithBrowser("別オリジンへの転送で許可されていれば、転送先の本文を返す", async () => {
+    const result = await fetchWithBrowser(`${origin}/to-other`, 10_000, { checkRobots: checkRobots() });
+
+    expect(result.finalUrl).toBe(`${otherOrigin}/fine`);
+    expect(result.html).toContain("OTHER/fine");
   }, 30_000);
 
   itWithBrowser("転送の段の判定の途中で時間切れになったら、その段を後から送らない", async () => {
