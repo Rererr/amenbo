@@ -131,7 +131,8 @@ export class HttpStatusError extends AmenboError {
   ) {
     const retryAfterMs = parseRetryAfterMs(retryAfter);
     const isRefusal = status === 429 || retryAfterMs !== null;
-    super(`HTTPエラー(${status} ${statusText}): ${url}${isRefusal ? REFUSAL_HINT : ""}`);
+    // HTTP/2の応答には説明句(reason phrase)が無く、そのまま埋めると「HTTPエラー(403 )」になる。
+    super(`HTTPエラー(${statusText ? `${status} ${statusText}` : status}): ${url}${isRefusal ? REFUSAL_HINT : ""}`);
     this.retryAfterMs = retryAfterMs;
     this.isRefusal = isRefusal;
   }
@@ -154,6 +155,18 @@ export class BotChallengeError extends AmenboError {
     super(
       `bot 対策の確認画面が返りました(${marker}、HTTP ${status}): ${url} — 本文ではないため返しません。amenbo は確認画面を通過する操作をしないので、取り直さずにそのまま報告してください`,
     );
+  }
+}
+
+/** リダイレクトの回数が上限を超えた(転送がループしている可能性が高い)。 */
+export class TooManyRedirectsError extends AmenboError {
+  readonly code = "TOO_MANY_REDIRECTS";
+
+  constructor(
+    readonly url: string,
+    readonly maxRedirects: number,
+  ) {
+    super(`リダイレクトが上限(${maxRedirects}回)を超えました(転送がループしている可能性があります): ${url}`);
   }
 }
 
@@ -324,6 +337,29 @@ function classifyNetworkErrorCode(code: string): NetworkErrorKind | null {
   return null;
 }
 
+/**
+ * Chromium(Playwright)の `net::ERR_*` を、HTTP経路と同じ dns/tls/connection に振り分ける。
+ * 一覧に無いもの(ERR_ABORTED・ERR_FAILED 等、原因を特定できないもの)は unknown のまま名前を出す。
+ */
+const BROWSER_CONNECTION_ERROR_CODES = new Set([
+  "ERR_TUNNEL_CONNECTION_FAILED",
+  "ERR_EMPTY_RESPONSE",
+  "ERR_ADDRESS_UNREACHABLE",
+  "ERR_TIMED_OUT",
+  "ERR_INTERNET_DISCONNECTED",
+  "ERR_NETWORK_CHANGED",
+  "ERR_PROXY_CONNECTION_FAILED",
+  "ERR_SOCKET_NOT_CONNECTED",
+  "ERR_QUIC_PROTOCOL_ERROR",
+]);
+
+function classifyBrowserNetErrorCode(code: string): NetworkErrorKind {
+  if (code === "ERR_NAME_NOT_RESOLVED" || code === "ERR_NAME_RESOLUTION_FAILED" || code.startsWith("ERR_DNS_")) return "dns";
+  if (code.startsWith("ERR_CERT_") || code.startsWith("ERR_SSL_") || code === "ERR_BAD_SSL_CLIENT_AUTH_CERT") return "tls";
+  if (code.startsWith("ERR_CONNECTION_") || code.startsWith("ERR_HTTP2_") || BROWSER_CONNECTION_ERROR_CODES.has(code)) return "connection";
+  return "unknown";
+}
+
 interface CauseChainNode {
   code?: unknown;
   message?: unknown;
@@ -384,6 +420,19 @@ export class NetworkError extends AmenboError {
       .find((message): message is string => typeof message === "string");
     const rawMessage = deepestMessage ?? String(cause);
     return new NetworkError(url, "unknown", buildNetworkErrorMessage(url, "unknown", rawMessage), { cause });
+  }
+
+  /**
+   * ブラウザ経路の遷移の失敗(Playwrightが投げる `net::ERR_*` を含むメッセージ)から生成する。`net::ERR_*` を
+   * 含まない失敗はnull(呼び出し側がそのまま投げ直す)。ブラウザ経由の再試行の案内は付けない(既にブラウザで失敗している)。
+   */
+  static fromBrowserNavigation(url: string, cause: unknown): NetworkError | null {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const code = /net::(ERR_[A-Z0-9_]+)/.exec(message)?.[1];
+    if (!code) return null;
+    const kind = classifyBrowserNetErrorCode(code);
+    const detail = kind === "unknown" ? `net::${code}` : `${NETWORK_ERROR_KIND_LABELS[kind]}、net::${code}`;
+    return new NetworkError(url, kind, `ブラウザでの接続に失敗しました(${detail}): ${url}`, { cause });
   }
 }
 
