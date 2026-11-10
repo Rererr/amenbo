@@ -392,11 +392,36 @@ function resolveDeclaredCharset(label: string | null, source: "header" | "meta")
 }
 
 /**
- * Latin-1系(iso-8859-1・us-ascii等はWHATWGでwindows-1252に正規化される)のヘッダ宣言は、サーバーの
- * 既定値がそのまま付いていることが多いため、文書内のmeta宣言があればそちらを優先する。
+ * 弱い宣言: Latin-1系(iso-8859-1・us-ascii等はWHATWGでwindows-1252に正規化される)と、BOMの無いUTF-16系。
+ * サーバーやテンプレートの既定値がそのまま付いていることが多く、日本語のページに付いていても
+ * ブラウザ以外では気づかれにくい。ヘッダの弱い宣言より文書内のmeta宣言を優先し、それでも弱ければ中身を見る。
  */
-function isWeakHeaderDeclaration(declared: DeclaredDecoding): boolean {
-  return declared.kind === "whatwg" && declared.decoder.encoding === "windows-1252";
+function isWeakDeclaration(declared: DeclaredDecoding, bytes: Uint8Array): boolean {
+  if (declared.kind !== "whatwg") return false;
+  const { encoding } = declared.decoder;
+  if (encoding === "windows-1252") return true;
+  const hasUtf16Bom = bytes.length >= 2 && ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff));
+  return encoding.startsWith("utf-16") && !hasUtf16Bom;
+}
+
+const KANA_RE = /[\u3040-\u30ff]/u;
+
+/**
+ * 弱い宣言のときに、宣言より確かな読み方が中身から分かるか。UTF-8として厳密に読めればUTF-8、
+ * 日本語の符号化と判定でき、読んだ結果にかなを含めばそれを使う。
+ * かなを条件にするのは、本物のLatin-1の文を自動判定がShift_JISと取り違えるため
+ * (実測: 仏独西葡伊蘭丁瑞氷の42例中2例がShift_JIS判定、うちかなを含んだものは0例。厳密なUTF-8で読めたものも0例)。
+ */
+function sniffOverWeakDeclaration(bytes: Uint8Array): DecodedHtml | null {
+  try {
+    return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), encoding: "UTF-8" };
+  } catch {
+    // UTF-8として読めない。日本語の符号化かを次に見る。
+  }
+  const detected = Encoding.detect(bytes);
+  if (detected !== "SJIS" && detected !== "EUCJP" && detected !== "JIS") return null;
+  const text = decodeWithEncoding(bytes, detected);
+  return KANA_RE.test(text) ? { text, encoding: AUTO_DETECT_DISPLAY_NAME[detected] } : null;
 }
 
 export interface DecodedHtml {
@@ -407,12 +432,13 @@ export interface DecodedHtml {
 
 /**
  * J1: Content-Typeヘッダ→metaタグ→encoding-japanese自動判定の順でHTMLをデコードする。
- * 宣言されたラベルはTextDecoderが知るものなら全て従う(日本語以外の旧来の符号化を、
+ * 宣言されたラベルはTextDecoderが知るものなら従う(日本語以外の旧来の符号化を、
  * 自動判定がEUC-JP等と取り違えて化けさせないため)。自動判定は宣言が無いか未知のときだけ。
+ * ただし弱い宣言(isWeakDeclaration)は、中身がUTF-8か日本語と分かればそちらを採る。
  */
 export function decodeHtmlBytes(bytes: Uint8Array, contentTypeHeader: string | null): DecodedHtml {
   let declared = resolveDeclaredCharset(charsetFromContentType(contentTypeHeader), "header");
-  if (!declared || isWeakHeaderDeclaration(declared)) {
+  if (!declared || isWeakDeclaration(declared, bytes)) {
     declared = resolveDeclaredCharset(charsetFromMetaTag(bytes), "meta") ?? declared;
   }
 
@@ -420,7 +446,8 @@ export function decodeHtmlBytes(bytes: Uint8Array, contentTypeHeader: string | n
     return { text: decodeWithEncoding(bytes, declared.encoding), encoding: declared.displayName };
   }
   if (declared?.kind === "whatwg") {
-    return { text: declared.decoder.decode(bytes), encoding: declared.decoder.encoding };
+    const sniffed = isWeakDeclaration(declared, bytes) ? sniffOverWeakDeclaration(bytes) : null;
+    return sniffed ?? { text: declared.decoder.decode(bytes), encoding: declared.decoder.encoding };
   }
 
   const detected = Encoding.detect(bytes);
