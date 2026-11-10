@@ -526,6 +526,43 @@ describe("extractMarkdown - Readability経路のノイズ除去", () => {
   });
 });
 
+describe("extractMarkdown - asideで書かれた脚注(Readability経路)", () => {
+  const paragraph = `<p>${"名前空間はスコープの規則と深く関わるため、先に用語を整理しておきます。".repeat(4)}<a class="footnote-reference brackets" href="#id2" id="id1" role="doc-noteref">[1]</a></p>`;
+  const footnote = `<aside class="footnote brackets" id="id2" role="doc-footnote">
+    <span class="label">[<a role="doc-backlink" href="#id1">1</a>]</span>
+    <p>例外が一つあります。モジュールには読み取り専用の秘密の属性があり、名前空間の辞書を返します。</p>
+  </aside>`;
+  const page = (extra: string): string => `<!DOCTYPE html><html lang="ja"><head><title>クラス</title></head><body>
+    <div class="document"><div class="body" role="main"><section id="classes">
+      <h1>クラス</h1>
+      ${paragraph}${paragraph}${paragraph}
+      ${extra}
+      <p class="rubric">脚注</p>
+      <aside class="footnote-list brackets">${footnote}</aside>
+    </section></div></div></body></html>`;
+
+  it("脚注の本文を脚注の見出しの後に残す", () => {
+    const result = extractMarkdown(page(""), { url: "https://example.com/tutorial/classes.html" });
+    expect(result.extractionMethod).toBe("readability");
+    expect(result.markdown).toMatch(/脚注\n\n\\\[\[1\]\(#id1\)\\\]\n\n例外が一つあります。/);
+  });
+
+  it("脚注の印を持たない本文中のasideは本文に混ぜない", () => {
+    const sidebar = `<aside class="sidebar"><p class="sidebar-title">関連する話題</p><p>${"この囲みは本文と別に読む補足の説明です。".repeat(3)}</p></aside>
+      <aside>${"子要素を持たない文字だけの広告枠です。".repeat(3)}</aside>`;
+    const result = extractMarkdown(page(sidebar), { url: "https://example.com/tutorial/classes.html" });
+    expect(result.markdown).toContain("例外が一つあります。");
+    expect(result.markdown).not.toContain("補足の説明");
+    expect(result.markdown).not.toContain("広告枠");
+  });
+
+  it("脚注を含んでいても脚注以外も持つasideは本文に混ぜない", () => {
+    const sidebar = `<aside class="sidebar"><p>${"この囲みは本文と別に読む補足の説明です。".repeat(3)}</p>${footnote.replace(/id2/g, "id9")}</aside>`;
+    const result = extractMarkdown(page(sidebar), { url: "https://example.com/tutorial/classes.html" });
+    expect(result.markdown).not.toContain("補足の説明");
+  });
+});
+
 describe("文字情報を持たない画像・リンクの除去", () => {
   const paragraph = `<p>${"本文の段落です。".repeat(20)}</p>`;
 
