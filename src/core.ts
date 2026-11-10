@@ -36,7 +36,7 @@ import {
 import { PolitenessManager } from "./politeness.js";
 import { captureTiledScreenshot, DEFAULT_TILE_WIDTH } from "./screenshot.js";
 import { computeBlockHashes, removeTemplateBlocks } from "./templateLearning.js";
-import { paginateMarkdown } from "./tokens.js";
+import { estimateTokens, paginateMarkdown } from "./tokens.js";
 
 /** N1: package.jsonのversionを読み込む(以前はここに"0.3.0"を直書きしておりpackage.json(0.1.0)と不整合だった)。 */
 export function resolvePackageVersion(): string {
@@ -735,6 +735,8 @@ export interface FetchToolInput {
   page?: number | undefined;
   max_tokens?: number | undefined;
   force_full?: boolean | undefined;
+  /** 差分応答(unchanged/diff)だけを切る内部の口(CLI用)。force_fullと違い定型ブロック除去は残す。 */
+  disableDiff?: boolean | undefined;
   /** MCP progress notifications用(server.tsがprogressToken有無に応じて組み立てて渡す。CLIは渡さない)。 */
   onProgress?: ((message: string) => void) | undefined;
 }
@@ -854,14 +856,22 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
 
   // §3-3 差分応答: selector無し・force_full無し・新規フェッチ(cacheStatus==='miss')かつ旧キャッシュがある場合のみ
   // 比較にはview(テンプレート除去後)を使う。定型ブロックの有無で誤って差分検知しないようにするため。
-  const diffEligible = !input.selector && !input.force_full && resolved.cacheStatus === "miss" && view.previousMarkdown !== null;
+  // 2ページ目以降は差分にしない: 求めているのはそのページの中身で、前回どこで区切って見たかは分からない。
+  const diffEligible =
+    !input.selector &&
+    !input.force_full &&
+    !input.disableDiff &&
+    page === DEFAULT_PAGE &&
+    resolved.cacheStatus === "miss" &&
+    view.previousMarkdown !== null;
   if (diffEligible) {
+    const totalTokens = estimateTokens(view.markdown);
     if (view.previousMarkdown === view.markdown) {
-      return [{ type: "text", text: formatUnchangedResponse(view) }];
+      return [{ type: "text", text: formatUnchangedResponse(view, totalTokens) }];
     }
     const diff = diffMarkdown(view.previousMarkdown ?? "", view.markdown);
     if (diff.sections.length > 0 && !diff.allSectionsChanged) {
-      return [{ type: "text", text: formatDiffResponse(view, diff.sections, templateRemovedCount) }];
+      return [{ type: "text", text: formatDiffResponse(view, diff.sections, templateRemovedCount, totalTokens) }];
     }
     // 全節変更、または差分検出不能な場合は通常の全文応答へフォールバックする
   }

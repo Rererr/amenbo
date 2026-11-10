@@ -124,15 +124,21 @@ export interface FixtureServer {
   redirectTarget: string;
   /** /pdf-moving のリダイレクト先パス(PDF経路で同じ検証をするため)。 */
   pdfRedirectTarget: string;
+  /**
+   * テストが置くHTML(パス→本文)。ETagもLast-ModifiedもCache-Controlも返さないので、
+   * TTL超過後の再取得は毎回200になり、旧キャッシュとの差分応答の経路に入る。
+   */
+  pages: Map<string, string>;
   close(): Promise<void>;
 }
 
 export async function startFixtureServer(): Promise<FixtureServer> {
-  const state: Pick<FixtureServer, "hits" | "lastIfNoneMatch" | "redirectTarget" | "pdfRedirectTarget"> = {
+  const state: Pick<FixtureServer, "hits" | "lastIfNoneMatch" | "redirectTarget" | "pdfRedirectTarget" | "pages"> = {
     hits: new Map(),
     lastIfNoneMatch: undefined,
     redirectTarget: "/target-a",
     pdfRedirectTarget: "/pdf-a",
+    pages: new Map(),
   };
 
   const server: Server = createServer((req, res) => {
@@ -226,8 +232,14 @@ export async function startFixtureServer(): Promise<FixtureServer> {
         // robots.txtで拒否されるため、ここへ到達した時点で検証は失敗している
         send(200, "text/html; charset=utf-8", "<html><body><p>到達してはいけない本文</p></body></html>");
         return;
-      default:
+      default: {
+        const page = state.pages.get(path);
+        if (page !== undefined) {
+          send(200, "text/html; charset=utf-8", page);
+          return;
+        }
         send(404, "text/plain; charset=utf-8", "not found");
+      }
     }
   });
 
@@ -253,6 +265,9 @@ export async function startFixtureServer(): Promise<FixtureServer> {
     },
     set pdfRedirectTarget(target: string) {
       state.pdfRedirectTarget = target;
+    },
+    get pages() {
+      return state.pages;
     },
     close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
   };

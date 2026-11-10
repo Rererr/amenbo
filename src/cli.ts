@@ -276,7 +276,7 @@ function fetchHelpText(): string {
     "  --section <id>                              outlineで得たsection ID。その節のMarkdownのみ返す",
     "  --page <n>                                  ページ番号(既定 1)",
     "  --max-tokens <n>                             1ページの概算トークン上限(既定 8000)",
-    "  --force-full                                 差分応答(unchanged/diff)と定型ブロック除去を無効化し常に全文を返す",
+    "  --force-full                                 定型ブロック除去を無効化する(CLIは差分応答(unchanged/diff)を返さない)。--max-tokensによるページ分割は働くため、全文が要るときは--max-tokensを大きくする",
     "  --out-dir <dir>                              screenshot切替時の画像保存先(既定 $AMENBO_CACHE_DIR/screenshots-cli/、未設定時は ~/.cache/amenbo/screenshots-cli/)",
     "  --ask-robots-override                        robots.txt が拒否したとき、端末で利用者に y/N を確認し、許可されたらこの1回だけ取得する(端末が無いときは拒否)",
   ].join("\n");
@@ -377,6 +377,7 @@ async function dispatch(command: ParsedFetchCommand | ParsedLinksCommand | Parse
   if (command.kind === "fetch") {
     const input: FetchToolInput = {
       url: command.url,
+      disableDiff: true,
       ...(command.mode !== undefined ? { mode: command.mode } : {}),
       ...(command.selector !== undefined ? { selector: command.selector } : {}),
       ...(command.section !== undefined ? { section: command.section } : {}),
