@@ -31,6 +31,7 @@ import {
 import { AmenboError } from "./errors.js";
 import { formatLinksResponse } from "./formatting.js";
 import { discoverLinks } from "./links.js";
+import { runCancellableBy } from "./politeness.js";
 import { type ProtocolEra, robotsConsentStateCodec, runWithRobotsConsent } from "./robotsConsent.js";
 
 /**
@@ -143,8 +144,10 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
     async ({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull, ask_robots_override: askOverride }, ctx) => {
       try {
         const onProgress = buildProgressNotifier(ctx);
-        const result = await runWithRobotsConsent(robotsConsentContext(ctx, url, askOverride), () =>
-          handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull, onProgress }),
+        const result = await runCancellableBy(ctx.mcpReq.signal, () =>
+          runWithRobotsConsent(robotsConsentContext(ctx, url, askOverride), () =>
+            handleFetchTool({ url, mode, selector, section, page, max_tokens: maxTokens, force_full: forceFull, onProgress }),
+          ),
         );
         return Array.isArray(result) ? { content: result } : result;
       } catch (error) {
@@ -177,7 +180,7 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
     async ({ url, filter }, ctx) => {
       try {
         const onProgress = buildProgressNotifier(ctx);
-        const result = await discoverLinks(url, politeness, { ...(filter ? { filter } : {}), onProgress });
+        const result = await runCancellableBy(ctx.mcpReq.signal, () => discoverLinks(url, politeness, { ...(filter ? { filter } : {}), onProgress }));
         return { content: [{ type: "text" as const, text: formatLinksResponse(url, result) }] };
       } catch (error) {
         const message = error instanceof AmenboError ? error.message : `予期しないエラーが発生しました: ${String(error)}`;
@@ -217,8 +220,8 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
     async ({ url, fullPage, width, scale, ask_robots_override: askOverride }, ctx) => {
       try {
         const onProgress = buildProgressNotifier(ctx);
-        const result = await runWithRobotsConsent(robotsConsentContext(ctx, url, askOverride), () =>
-          handleScreenshotTool({ url, fullPage, width, scale, onProgress }),
+        const result = await runCancellableBy(ctx.mcpReq.signal, () =>
+          runWithRobotsConsent(robotsConsentContext(ctx, url, askOverride), () => handleScreenshotTool({ url, fullPage, width, scale, onProgress })),
         );
         return Array.isArray(result) ? { content: result } : result;
       } catch (error) {

@@ -25,7 +25,16 @@ import Encoding from "encoding-japanese";
 // 実行時に落ちる(Node 26は同梱undiciがv8系のため問題が顕在化しなかった)。
 // fetchとAgentを同一のundiciパッケージ由来に揃えることで、Nodeバージョンに依存しなくする。
 import { Agent as UndiciAgent, fetch as undiciFetch, type Dispatcher, type Headers, type Response } from "undici";
-import { AmenboError, FetchTimeoutError, HttpStatusError, InvalidUrlError, NetworkError, PayloadTooLargeError, PrivateAddressError } from "../errors.js";
+import {
+  AmenboError,
+  FetchTimeoutError,
+  HttpStatusError,
+  InvalidUrlError,
+  NetworkError,
+  PayloadTooLargeError,
+  PrivateAddressError,
+  RequestCancelledError,
+} from "../errors.js";
 
 export const USER_AGENT = "amenbo/0.7 (+https://github.com/Rererr/amenbo)";
 
@@ -481,6 +490,17 @@ export interface HttpGetOptions {
    * 専用経路が同じURLをもう一度全体取得することになり、先方へ2回取りにいってしまう。
    */
   fullReadMaxBytes?: (contentType: string | null, finalUrl: string) => number | null;
+  /** 呼び出し元の取り消し。取り消されたら要求を中止し(まだ送っていなければ送らず)、RequestCancelledErrorを投げる。 */
+  signal?: AbortSignal | undefined;
+}
+
+/** signalの取り消しをcontrollerへ伝える。戻り値は伝えるのをやめる関数。取り消し済みなら何も送らずに投げる。 */
+function followCancellation(url: string, signal: AbortSignal | undefined, controller: AbortController): () => void {
+  if (signal === undefined) return () => {};
+  if (signal.aborted) throw new RequestCancelledError(url);
+  const onAbort = (): void => controller.abort();
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
 }
 
 export interface HttpGetResult {
@@ -567,6 +587,7 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
 export async function httpGet(url: string, options: HttpGetOptions = {}): Promise<HttpGetResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
+  const stopFollowingCancellation = followCancellation(url, options.signal, controller);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -591,8 +612,12 @@ export async function httpGet(url: string, options: HttpGetOptions = {}): Promis
       html: decoded.text,
       encoding: decoded.encoding,
     };
+  } catch (error) {
+    // 取り消しで中止した要求は、タイムアウトや接続断に見えても取り消しとして返す。
+    throw options.signal?.aborted ? new RequestCancelledError(url) : error;
   } finally {
     clearTimeout(timer);
+    stopFollowingCancellation();
   }
 }
 
@@ -615,6 +640,7 @@ export interface HttpGetBinaryResult {
 export async function httpGetBinary(url: string, options: HttpGetBinaryOptions = {}): Promise<HttpGetBinaryResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
+  const stopFollowingCancellation = followCancellation(url, options.signal, controller);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -633,8 +659,12 @@ export async function httpGetBinary(url: string, options: HttpGetBinaryOptions =
     });
 
     return { finalUrl, status: response.status, headers: response.headers, bytes, contentType: response.headers.get("content-type") };
+  } catch (error) {
+    // 取り消しで中止した要求は、タイムアウトや接続断に見えても取り消しとして返す。
+    throw options.signal?.aborted ? new RequestCancelledError(url) : error;
   } finally {
     clearTimeout(timer);
+    stopFollowingCancellation();
   }
 }
 
@@ -722,6 +752,7 @@ export type HttpGetRoutedResult =
 export async function httpGetRouted(url: string, options: HttpGetOptions = {}): Promise<HttpGetRoutedResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
+  const stopFollowingCancellation = followCancellation(url, options.signal, controller);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -753,7 +784,11 @@ export async function httpGetRouted(url: string, options: HttpGetOptions = {}): 
 
     const { bytes, truncated } = await readBodyPreview(response, finalUrl, HANDOFF_PREVIEW_BYTES, timeout);
     return { kind: "handoff", status: response.status, finalUrl, headers: response.headers, contentType, bytes, declaredSize, truncated };
+  } catch (error) {
+    // 取り消しで中止した要求は、タイムアウトや接続断に見えても取り消しとして返す。
+    throw options.signal?.aborted ? new RequestCancelledError(url) : error;
   } finally {
     clearTimeout(timer);
+    stopFollowingCancellation();
   }
 }

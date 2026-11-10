@@ -169,6 +169,15 @@ export class WaitTooLongError extends AmenboError {
   }
 }
 
+/** 呼び出し元(MCPクライアント)が取り消したため、取得を中止した。 */
+export class RequestCancelledError extends AmenboError {
+  readonly code = "REQUEST_CANCELLED";
+
+  constructor(readonly url: string) {
+    super(`呼び出しが取り消されたため、取得を中止しました: ${url}`);
+  }
+}
+
 /** Playwrightブラウザの起動・操作に失敗した。 */
 export class BrowserLaunchError extends AmenboError {
   readonly code = "BROWSER_LAUNCH_FAILED";

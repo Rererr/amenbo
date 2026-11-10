@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * 自分の番を待つ時間の上限。上限を超える待ちは、待たずに「次に取得できる時刻」を理由つきで返す。
- * 上限以下の待ちは今までどおり待つ。
+ * 同じホストへの待ち行列(waitTurn)の仕様。
+ * - 並んだときの通知: 前の要求が残っていれば、前の件数と目安の秒数を1回知らせる
+ * - 待ちの上限: 上限を超える待ちは、待たずに「次に取得できる時刻」を理由つきで返す。上限以下は今までどおり待つ
+ * - 取り消し: 取り消された呼び出しは待たずに抜け、要求を記録しない。後ろの呼び出しの順番は崩さない
  */
 const httpGetMock = vi.fn();
 
@@ -11,8 +13,8 @@ vi.mock("../src/fetcher/http.js", async (importOriginal) => {
   return { ...actual, httpGet: (...args: Parameters<typeof actual.httpGet>) => httpGetMock(...args) };
 });
 
-const { MAX_WAIT_MS, PolitenessManager } = await import("../src/politeness.js");
-const { WaitTooLongError } = await import("../src/errors.js");
+const { MAX_WAIT_MS, PolitenessManager, runCancellableBy } = await import("../src/politeness.js");
+const { RequestCancelledError, WaitTooLongError } = await import("../src/errors.js");
 
 function mockRobots(body: string): void {
   httpGetMock.mockResolvedValue({ finalUrl: "http://example.com/robots.txt", status: 200, headers: new Headers(), html: body, encoding: "UTF-8" });
@@ -151,5 +153,80 @@ describe("PolitenessManager - 待ちの上限", () => {
 
     await expect(pm.waitTurn("http://example.com/a")).rejects.toThrow(WaitTooLongError);
     expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe("PolitenessManager - 取り消し", () => {
+  /** 待ちを1件ずつ手で終わらせる sleep。 */
+  function manualSleep(clock: ReturnType<typeof createClock>) {
+    const pending: Array<() => void> = [];
+    return {
+      pending,
+      sleep: (ms: number) =>
+        new Promise<void>((resolve) => {
+          pending.push(() => {
+            void clock.sleep(ms);
+            resolve();
+          });
+        }),
+    };
+  }
+
+  function recordingStore() {
+    const recorded: string[] = [];
+    return { recorded, store: { getLastRequestAt: () => null, setLastRequestAt: (host: string) => void recorded.push(host) } };
+  }
+
+  it("番を待っている間に取り消されたら、待たずに抜けて要求を記録しない。後ろの呼び出しは前の呼び出しの後に進む", async () => {
+    mockRobots("");
+    const clock = createClock();
+    const manual = manualSleep(clock);
+    const { recorded, store } = recordingStore();
+    const pm = new PolitenessManager({ now: clock.now, sleep: manual.sleep, store });
+    const controller = new AbortController();
+
+    const first = pm.waitTurn("http://example.com/a");
+    const cancelled = runCancellableBy(controller.signal, () => pm.waitTurn("http://example.com/b")).catch((e: unknown) => e);
+    const third = pm.waitTurn("http://example.com/c");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(manual.pending).toHaveLength(1); // first だけが間隔の待機に入っている
+
+    controller.abort();
+    expect(await cancelled).toBeInstanceOf(RequestCancelledError);
+    expect(await isStillPending(third)).toBe(true); // first の番が終わるまで third は進まない
+
+    manual.pending.shift()!();
+    await first;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    manual.pending.shift()!();
+    await third;
+
+    expect(recorded).toHaveLength(3); // robots.txt、first、third。取り消した呼び出しは記録しない
+  });
+
+  it("間隔の待機中に取り消されたら、待ち終わりを待たずに抜けて要求を記録しない", async () => {
+    mockRobots("");
+    const clock = createClock();
+    const { recorded, store } = recordingStore();
+    const pm = new PolitenessManager({ now: clock.now, sleep: sleepForever, store });
+    const controller = new AbortController();
+
+    const call = runCancellableBy(controller.signal, () => pm.waitTurn("http://example.com/a")).catch((e: unknown) => e);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+
+    expect(await call).toBeInstanceOf(RequestCancelledError);
+    expect(recorded).toHaveLength(1); // robots.txt だけ
+  });
+
+  it("取り消しの文脈の外(CLI等)では、今までどおり待って記録する", async () => {
+    mockRobots("");
+    const clock = createClock();
+    const { recorded, store } = recordingStore();
+    const pm = new PolitenessManager({ now: clock.now, sleep: clock.sleep, store });
+
+    await pm.waitTurn("http://example.com/a");
+
+    expect(recorded).toHaveLength(2);
   });
 });
