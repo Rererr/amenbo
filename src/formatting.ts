@@ -7,6 +7,7 @@ import type { SectionDiff } from "./diff.js";
 import type { ExtractionMethod } from "./extract/markdown.js";
 import type { OutlineResult } from "./extract/outline.js";
 import { buildHandoffPreview } from "./extract/preview.js";
+import type { AgentResources } from "./fetcher/agentResources.js";
 import { resolveDefaultMaxBodyBytes } from "./fetcher/http.js";
 import type { HandoffResult } from "./fetcher/index.js";
 import type { LinksResult } from "./links.js";
@@ -35,6 +36,14 @@ function budgetExceededLine(paginated: PaginatedResult): string[] {
   return paginated.exceededBudget ? [`budget_exceeded: true(単一ブロックがmax_tokensを超過しています)`] : [];
 }
 
+/** ページが知らせるMarkdown版と llms.txt の在りか(知らされていなければ何も足さない=トークン増ゼロ)。 */
+function agentResourceLines(resources: AgentResources | undefined): string[] {
+  return [
+    ...(resources?.markdownAlternate ? [`markdown_alternate: ${resources.markdownAlternate}`] : []),
+    ...(resources?.llmsTxt ? [`llms_txt: ${resources.llmsTxt}`] : []),
+  ];
+}
+
 /** 機能C: 構造化データリンクのヒント(検出ゼロなら空文字=トークン増ゼロ)。 */
 export function dataSourcesSection(hints: string[]): string {
   return hints.length > 0 ? `\n\ndata_sources:\n${hints.join("\n")}` : "";
@@ -50,6 +59,7 @@ export function formatMarkdownResponse(
   const header = [
     `title: ${page.title ?? "(なし)"}`,
     `url: ${page.finalUrl}`,
+    ...agentResourceLines(page.agentResources),
     `mode_used: markdown`,
     ...(sectionId ? [`section: ${sectionId}`] : []),
     // leaf節を単独取得したとき、この節が属する上位見出しの連なりを補い文脈喪失を防ぐ。
@@ -100,6 +110,7 @@ export function formatDiffResponse(page: ResolvedPage, sections: SectionDiff[], 
   const header = [
     `title: ${page.title ?? "(なし)"}`,
     `url: ${page.finalUrl}`,
+    ...agentResourceLines(page.agentResources),
     `mode_used: markdown`,
     `cache: diff`,
     `changed_sections: ${sections.length}(追加${counts.added}/変更${counts.changed}/削除${counts.removed})`,
@@ -118,6 +129,7 @@ export function formatOutlineResponse(page: ResolvedPage, outline: OutlineResult
   const header = [
     `title: ${page.title ?? "(なし)"}`,
     `url: ${page.finalUrl}`,
+    ...agentResourceLines(page.agentResources),
     `mode_used: outline`,
     `cache: ${page.cacheStatus}`,
     `total_tokens: ${outline.totalTokens}`,
@@ -136,13 +148,15 @@ export function formatOutlineResponse(page: ResolvedPage, outline: OutlineResult
 }
 
 export function buildScreenshotContent(
-  page: { title: string | null },
+  page: { title: string | null; agentResources?: AgentResources },
   screenshot: ResolvedScreenshot,
   reason: string | null,
 ): Array<TextBlock | ImageBlock> {
   const header = [
     `title: ${page.title ?? "(なし)"}`,
     `url: ${screenshot.finalUrl}`,
+    // 抽出の品質が低く画面写真へ切り替えたときこそ、サイトが用意したMarkdown版が次の一手になる。
+    ...agentResourceLines(page.agentResources),
     `mode_used: screenshot`,
     `cache: ${screenshot.cacheStatus}`,
     `reason: ${reason ?? "明示的にscreenshotが指定されました"}`,

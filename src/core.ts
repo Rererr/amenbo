@@ -28,6 +28,7 @@ import { extractMarkdown, type ExtractionMethod } from "./extract/markdown.js";
 import { buildOutline, findSection, formatBreadcrumb } from "./extract/outline.js";
 import { DEFAULT_PDF_MAX_BYTES, extractPdfText, looksLikePdf, markdownFromPdfText, renderPdfPages, type PdfPageImage } from "./extract/pdf.js";
 import { evaluateQuality } from "./extract/qualityScore.js";
+import { agentResourcesFromMetadata, type AgentResources } from "./fetcher/agentResources.js";
 import { closeBrowser } from "./fetcher/browser.js";
 import { fetchPage, type FetchTier, type HandoffResult } from "./fetcher/index.js";
 import { assertHttpScheme, httpGetBinary } from "./fetcher/http.js";
@@ -180,6 +181,7 @@ interface ExtractedPage {
   extractionMethod: ExtractionMethod;
   /** 機能C: ページ内の構造化データリンクから作った最大5件のヒント行(検出ゼロなら空配列)。 */
   dataSourceHints: string[];
+  agentResources: AgentResources;
 }
 
 type FetchAndExtractResult =
@@ -270,6 +272,7 @@ async function fetchAndExtract(
     adapterName: extracted.adapterName,
     extractionMethod: extracted.extractionMethod,
     dataSourceHints,
+    agentResources: finalFetchResult.agentResources,
   };
 }
 
@@ -288,6 +291,8 @@ export interface ResolvedPage {
   previousMarkdown: string | null;
   /** 機能C: ページ内の構造化データリンクから作った最大5件のヒント行(検出ゼロなら空配列)。 */
   dataSourceHints: string[];
+  /** ページが知らせるMarkdown版と llms.txt の在りか(応答の頭に示す。amenboは取りに行かない)。 */
+  agentResources: AgentResources;
 }
 
 /** 機能B: 非HTMLコンテンツはMarkdown化・キャッシュ対象外のため、ResolvedPageとは別枝で扱う。 */
@@ -309,6 +314,7 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
     extractionMethod: (metadata.extractionMethod as ExtractionMethod | undefined) ?? "readability",
     previousMarkdown: null,
     dataSourceHints,
+    agentResources: agentResourcesFromMetadata(metadata.agentResources),
   };
 }
 
@@ -422,6 +428,7 @@ async function resolvePage(
       extractionMethod: result.extractionMethod,
       previousMarkdown: null,
       dataSourceHints: result.dataSourceHints,
+      agentResources: result.agentResources,
     };
   }
 
@@ -491,6 +498,7 @@ async function fetchAndResolvePage(
       adapterName: result.adapterName,
       extractionMethod: result.extractionMethod,
       dataSourceHints: result.dataSourceHints,
+      agentResources: result.agentResources,
     },
   });
 
@@ -514,6 +522,7 @@ async function fetchAndResolvePage(
     extractionMethod: result.extractionMethod,
     previousMarkdown,
     dataSourceHints: result.dataSourceHints,
+    agentResources: result.agentResources,
   };
 }
 
