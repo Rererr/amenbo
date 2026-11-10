@@ -147,6 +147,30 @@ describe("decodeHtmlBytes - 弱い宣言(Latin-1 系・BOM の無い UTF-16 系)
     expect(result.text).toContain(sentence);
   });
 
+  it.each(["utf-16le", "utf-16"])("BOM の無い英字だけの UTF-16LE は、UTF-8 として読めても NUL 混じりの読み方を採らず、宣言(%s)どおり読む", (label) => {
+    const text = "<html><body><p>English only page</p></body></html>";
+    const bytes = Uint8Array.from(Array.from(text).flatMap((ch) => [ch.charCodeAt(0), 0]));
+    const result = decodeHtmlBytes(bytes, `text/html; charset=${label}`);
+    expect(result.text).toContain("English only page");
+    expect(result.text).not.toContain("\u0000");
+  });
+
+  it("BOM の無い英字だけの UTF-16BE も、宣言どおり UTF-16BE で読む", () => {
+    const text = "<html><body><p>English only page</p></body></html>";
+    const bytes = Uint8Array.from(Array.from(text).flatMap((ch) => [0, ch.charCodeAt(0)]));
+    expect(decodeHtmlBytes(bytes, "text/html; charset=utf-16be").text).toContain("English only page");
+  });
+
+  // 限界(仕様として残す): かなを条件にしているので、漢字だけの Shift_JIS の本文に Latin-1 の宣言が付くと、
+  // 日本語と判定せず宣言どおり windows-1252 で読む(基点の版は自動判定で読めていた)。かなを条件にしないと、
+  // 本物の Latin-1 の文を Shift_JIS と取り違える(実測で独語の文)ため、こちらを採った。
+  it("限界: かなを含まない(漢字だけの)Shift_JIS の本文は、Latin-1 の宣言があると日本語として読まない", () => {
+    const kanjiOnly = "東京都千代田区丸之内一丁目";
+    const result = decodeHtmlBytes(toBytes(`<html><body><p>${kanjiOnly}</p></body></html>`, "SJIS"), "text/html; charset=iso-8859-1");
+    expect(result.encoding).toBe("windows-1252");
+    expect(result.text).not.toContain(kanjiOnly);
+  });
+
   it("BOM のある UTF-16 は宣言どおり UTF-16 で読む", () => {
     const text = `<html><body><p>${SAMPLE_TEXT}</p></body></html>`;
     const bytes = Uint8Array.from([0xff, 0xfe, ...Array.from(text).flatMap((ch) => [ch.charCodeAt(0) & 0xff, ch.charCodeAt(0) >> 8])]);
