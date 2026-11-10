@@ -23,6 +23,8 @@ import { closeSharedSsrfProxy, getSharedSsrfProxyUrl } from "./ssrfProxy.js";
 export type { PageGeometrySnapshot } from "../extract/geometry.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+/** load の後に networkidle(500msの無通信)を待つ上限。来なくても読み込みは済んでいるので先へ進む。 */
+const NETWORK_IDLE_WAIT_MS = 5_000;
 
 let browserPromise: Promise<Browser> | null = null;
 let cleanupRegistered = false;
@@ -383,8 +385,23 @@ export async function navigateSafely(
   const assertNotBlocked = (): void => {
     if (blockedError) throw blockedError as AmenboError;
   };
+  const deadline = Date.now() + timeoutMs;
+  const remainingMs = (): number => Math.max(1, deadline - Date.now());
   try {
-    const response = await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
+    // 応答ヘッダが届いた時点で一度止まり、エラーと bot 対策の確認画面を読み込みの前に弾く
+    // (loadまで待つと、確認画面のスクリプトがブラウザで走ってしまう)。
+    const response = await page.goto(url, { waitUntil: "commit", timeout: timeoutMs });
+    assertNotBlocked();
+    if (response) {
+      const headers = response.headers();
+      const status = response.status();
+      // HTTP経路(httpGet)と同じく、400以上と bot 対策の確認画面は失敗にする(取得成功として返さないため)。
+      assertUsableResponse(page.url(), { status, statusText: response.statusText(), ok: status < 400 }, (name) => headers[name]);
+    }
+    await page.waitForLoadState("load", { timeout: remainingMs() });
+    // 解析のビーコンやロングポーリングで通信が途切れないページは networkidle が来ない。中身は読めているので、
+    // 短く待って来なければそのまま進む(networkidleを必須にすると、読めたページを毎回タイムアウトにする)。
+    await page.waitForLoadState("networkidle", { timeout: Math.min(NETWORK_IDLE_WAIT_MS, remainingMs()) }).catch(() => {});
     assertNotBlocked();
     // 成功しても検証は外さない。gotoが返った後のページ内の遷移も止めるため(外すのはcontextを閉じるとき)。
     return { response, assertNotBlocked };
@@ -393,6 +410,7 @@ export async function navigateSafely(
     await stopGuardingRedirects();
     await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
     assertNotBlocked();
+    if (cause instanceof AmenboError) throw cause;
     if (cause instanceof Error && /timeout/i.test(cause.message)) {
       throw new FetchTimeoutError(url, timeoutMs, "browser");
     }
@@ -478,12 +496,6 @@ export async function openPageAndNavigate(
   try {
     const page = await context.newPage();
     const { response, assertNotBlocked } = await navigateSafely(page, url, timeoutMs, navigationOptions);
-    // HTTP経路(httpGet)と同じく、400以上と bot 対策の確認画面は失敗にする(取得成功として返さないため)。
-    if (response) {
-      const headers = response.headers();
-      const status = response.status();
-      assertUsableResponse(page.url(), { status, statusText: response.statusText(), ok: status < 400 }, (name) => headers[name]);
-    }
     return { context, page, response, assertNotBlocked };
   } catch (error) {
     await context.close().catch(() => {});

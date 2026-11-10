@@ -48,6 +48,7 @@ function createFakePage(gotoImpl: (url: string) => Promise<GotoResult>, landedUr
     context: () => ({ newCDPSession: async () => cdpSession }),
     route: async () => {},
     unroute: async () => {},
+    waitForLoadState: async () => {},
     goto: async (url: string) => {
       const result = await gotoImpl(url);
       finalUrl = landedUrl ?? url;

@@ -32,6 +32,15 @@ const SCREENSHOT_RETRY_HINT =
  */
 export type FetchTimeoutStage = "response" | "body" | "browser";
 
+function describeTimeout(url: string, timeoutMs: number, stage: FetchTimeoutStage): string {
+  if (stage === "browser") {
+    return `ブラウザで開いたページの読み込みが${timeoutMs}ms以内に終わりませんでした(loadイベントが来ない): ${url}`;
+  }
+  const detail = stage === "response" ? `${timeoutMs}ms、応答なし` : `${timeoutMs}ms`;
+  const hint = stage === "response" ? SCREENSHOT_RETRY_HINT : "";
+  return `取得がタイムアウトしました(${detail}): ${url}${hint}`;
+}
+
 /** HTTP/ブラウザ取得がタイムアウトした。 */
 export class FetchTimeoutError extends AmenboError {
   readonly code = "FETCH_TIMEOUT";
@@ -41,9 +50,7 @@ export class FetchTimeoutError extends AmenboError {
     readonly timeoutMs: number,
     readonly stage: FetchTimeoutStage,
   ) {
-    const detail = stage === "response" ? `${timeoutMs}ms、応答なし` : `${timeoutMs}ms`;
-    const hint = stage === "response" ? SCREENSHOT_RETRY_HINT : "";
-    super(`取得がタイムアウトしました(${detail}): ${url}${hint}`);
+    super(describeTimeout(url, timeoutMs, stage));
   }
 }
 
