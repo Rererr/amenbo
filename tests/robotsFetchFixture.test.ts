@@ -46,6 +46,33 @@ function storeSpy() {
   return { get: () => null, set: vi.fn<(origin: string, body: string, fetchedAt: number) => void>() };
 }
 
+describe("新しいサイトへの同時の取得", () => {
+  it("異なるURLへ5件同時に始めても、robots.txt の取得は1回にまとまる", async () => {
+    handleRobots = (_req, res) => {
+      // 取得中に後続の呼び出しが重なるよう、少し遅らせて返す
+      setTimeout(() => res.end("User-agent: *\nDisallow: /private/\n"), 50);
+    };
+    const pm = new PolitenessManager({ sleep: async () => {} });
+
+    const results = await Promise.allSettled([1, 2, 3, 4, 5].map((n) => pm.guard(`${origin}/page/${n}`)));
+
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "fulfilled", "fulfilled", "fulfilled"]);
+    expect(robotsArrivals).toHaveLength(1);
+    await expect(pm.checkRobotsAllowed(`${origin}/private/x`)).rejects.toThrow(RobotsDeniedError);
+    expect(robotsArrivals).toHaveLength(1);
+  });
+
+  it("まとめた取得が届かなかったら、相乗りした呼び出しもすべて全面拒否になる", async () => {
+    handleRobots = (req) => setTimeout(() => req.socket.destroy(), 50);
+    const pm = new PolitenessManager({ sleep: async () => {} });
+
+    const results = await Promise.allSettled([1, 2, 3].map((n) => pm.checkRobotsAllowed(`${origin}/page/${n}`)));
+
+    expect(results.every((r) => r.status === "rejected" && r.reason instanceof RobotsDeniedError)).toBe(true);
+    expect(robotsArrivals).toHaveLength(1);
+  });
+});
+
 describe("robots.txt に届かないとき(RFC 9309 2.3.1.4)", () => {
   it("接続を切られたら全面拒否とし、理由を示し、プロセス間のストアに残さない", async () => {
     handleRobots = (req) => req.socket.destroy();
