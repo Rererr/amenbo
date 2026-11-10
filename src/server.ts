@@ -21,20 +21,32 @@ import { McpServer } from "@modelcontextprotocol/server";
 import type { ServerContext } from "@modelcontextprotocol/server";
 import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
-import {
-  cache,
-  handleFetchTool,
-  handleScreenshotTool,
-  politeness,
-  registerCoreShutdownHandlers,
-  resolvePackageVersion,
-} from "./core.js";
+import { CacheFileUnreadableError } from "./cache.js";
 import { AmenboError } from "./errors.js";
 import { closeBrowser } from "./fetcher/browser.js";
 import { formatLinksResponse } from "./formatting.js";
 import { discoverLinks } from "./links.js";
 import { runCancellableBy } from "./politeness.js";
 import { type ProtocolEra, robotsConsentStateCodec, runWithRobotsConsent } from "./robotsConsent.js";
+
+/**
+ * core.tsは読み込んだ時点でキャッシュを開くので、静的にimportすると、このファイルを直接起動したとき
+ * (README記載の `node dist/server.js`)に開けないキャッシュの案内がスタックトレースになる。
+ * 直接起動のときだけ、CLI(cli.ts)と同じく文言1行と終了コード1で終える。テストからのimportは投げ直す。
+ */
+async function loadCore(): Promise<typeof import("./core.js")> {
+  try {
+    return await import("./core.js");
+  } catch (error) {
+    if (error instanceof CacheFileUnreadableError && isDirectlyExecuted()) {
+      process.stderr.write(`${error.message}\n`);
+      process.exit(1);
+    }
+    throw error;
+  }
+}
+
+const { cache, handleFetchTool, handleScreenshotTool, politeness, registerCoreShutdownHandlers, resolvePackageVersion } = await loadCore();
 
 /**
  * MCP progress notifications: リクエストにprogressToken(_meta.progressToken)が付いている
