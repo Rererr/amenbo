@@ -159,11 +159,14 @@ export class WaitTooLongError extends AmenboError {
     now: number,
     limitMs: number,
   ) {
-    // HostRefusedErrorと同じく、LLMが現在時刻を知らなくても判断できるよう残り時間も示す。
+    // HostRefusedErrorと同じく、LLMが現在時刻を知らなくても判断できるよう残り時間も示す。時刻はプロセスのタイムゾーンで、名前を付けて書く。
     const minutesLeft = Math.max(1, Math.ceil((availableAt - now) / 60_000));
-    const at = new Date(availableAt).toLocaleString("ja-JP", { timeZoneName: "short" });
+    const left = minutesLeft < 24 * 60 ? `約${minutesLeft}分後` : `約${Math.ceil(minutesLeft / (24 * 60))}日後`;
+    // Dateで表せないほど先(Crawl-delayが極端に大きい)なら、時刻は書かず期間だけで示す。
+    const atDate = new Date(availableAt);
+    const at = Number.isNaN(atDate.getTime()) ? "" : `(${atDate.toLocaleString("ja-JP", { timeZoneName: "short" })}頃)`;
     super(
-      `このサイト(${host})へは${reason}のため、次に取得できるのは約${minutesLeft}分後(${at}頃)です。` +
+      `このサイト(${host})へは${reason}のため、次に取得できるのは${left}${at}です。` +
         `amenbo は${limitMs < 120_000 ? `${limitMs / 1000}秒` : `${limitMs / 60_000}分`}を超えて待たずに中止しました。その時刻以降に取り直してください: ${url}`,
     );
   }
