@@ -2,6 +2,8 @@
 
 記事「[エージェントのWeb取得、ツール次第でトークンが5000倍違った話](https://zenn.dev/rererr_engineer/articles/e571e5b6eb1d53)」の実測に使ったハーネスと生ログ。最新版は [docs/article-updated-2026-07-12.md](../docs/article-updated-2026-07-12.md)。最新の再計測は [logs-2026-09-02/](logs-2026-09-02/)。
 
+注意: 各ログの公式 fetch(mcp-server-fetch)の挙動(Shift_JIS の文字化けなど)は、記録した時点のものです。その後 mcp-server-fetch が meta の charset を読むようになったとの報告があり(未確認)、2026-11 時点では古くなっている恐れがあり、再計測していません。対外の文言に使う前に再計測してください。
+
 ## 使い方
 
 ```bash
