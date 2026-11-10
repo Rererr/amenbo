@@ -55,6 +55,38 @@ describe("ユーティリティクラスの値とReadabilityのclass名の採点
   });
 });
 
+describe("コードブロックの容れ物とReadabilityの負の語", () => {
+  it("スクロール領域の部品名(scroll)を持つ容れ物の中のコードブロックがフェンスで残る", () => {
+    // Mintlify型のコードグループ。スクロール領域の部品名がclassに残る(言語のタブの側と本体の側)。
+    const scrollArea = "size-full rounded-[inherit] [--scroll-area-fade-size:32px] base-ui-disable-scrollbar";
+    const codeGroup =
+      `<div class="code-group mt-5 mb-8 not-prose rounded-2xl"><div class="flex items-center"><div class="min-w-0 flex-1"><div class="${scrollArea} overflow-y-hidden!">` +
+      '<div role="tablist" class="text-xs flex"><button type="button">bash</button></div></div></div></div>' +
+      `<div class="flex flex-1"><div role="tabpanel" class="w-full min-w-full relative"><div class="${scrollArea} py-3.5 px-4">` +
+      '<div class="font-mono whitespace-pre"><pre class="shiki"><code>relayd --config /etc/relayd.toml --workers 4</code></pre></div></div></div></div></div>';
+    const intro = Array.from(
+      { length: 5 },
+      (_, i) => `<p>Paragraph ${i} explains how the relay daemon delivers messages, why workers acknowledge them, and what happens on failure.</p>`,
+    ).join("");
+    const html = `<!DOCTYPE html><html><body><article><h1>Relay guide</h1>${intro}<h2>Run</h2><p>Start the daemon with the configuration file:</p>${codeGroup}${intro}</article></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://docs.example.com/relay" });
+    expect(markdown).toContain("```\nrelayd --config /etc/relayd.toml --workers 4\n```");
+  });
+
+  it("コード以外の文字を多く持つ祖先(コメント欄)の負の語は外さない", () => {
+    const article = Array.from({ length: 8 }, (_, i) => `<p>Body paragraph ${i}. This article explains how the relay daemon delivers messages and what happens when a delivery fails.</p>`).join("");
+    const comment = (i: number): string =>
+      `<div class="comment-body"><p>Reader ${i} says the guide helped and shares the command that worked on their machine after a long search.</p><pre><code>relayd --workers ${i}</code></pre></div>`;
+    const html = `<!DOCTYPE html><html><body><div><article><h1>Relay guide</h1>${article}</article><div class="comment-list">${Array.from(
+      { length: 4 },
+      (_, i) => comment(i),
+    ).join("")}</div></div></body></html>`;
+    const { markdown } = extractMarkdown(html, { url: "https://blog.example.com/relay" });
+    expect(markdown).toContain("Body paragraph 0");
+    expect(markdown).not.toContain("Reader 0 says");
+  });
+});
+
 describe("ユーティリティクラスの値でない名前(scroll-container)", () => {
   it("scroll-containerの関連記事の一覧は本文に混ざらない", () => {
     const body = Array.from(
@@ -141,6 +173,7 @@ describe("見出しから作ったidとReadabilityの「本文らしくない名
   it("名前の判定はReadabilityの同じ版から借りている(版の更新で消えたらここで気づく)", () => {
     const regexps = (Readability.prototype as unknown as { REGEXPS?: Record<string, unknown> }).REGEXPS;
     expect(regexps?.unlikelyCandidates).toBeInstanceOf(RegExp);
+    expect(regexps?.negative).toBeInstanceOf(RegExp);
   });
 
   it("Readabilityの版が変わって名前の判定を借りられなくても、抽出は失敗しない", () => {
