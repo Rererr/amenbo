@@ -82,7 +82,7 @@ describe("robots.txt に届かないとき(RFC 9309 2.3.1.4)", () => {
     const error = await pm.guard(`${origin}/page`).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(RobotsDeniedError);
-    expect((error as Error).message).toContain("robots.txt に接続できず規則を確認できないため、全面拒否として扱います(RFC 9309)");
+    expect((error as Error).message).toMatch(/robots\.txt に接続できず\(.+\)規則を確認できないため、全面拒否として扱います\(RFC 9309\)/);
     expect(robotsStore.set).not.toHaveBeenCalled();
   });
 

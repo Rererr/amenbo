@@ -15,6 +15,7 @@ import {
   FetchTimeoutError,
   HostRefusedError,
   HttpStatusError,
+  NETWORK_ERROR_KIND_LABELS,
   NetworkError,
   PrivateAddressError,
   RequestCancelledError,
@@ -182,7 +183,10 @@ export interface PolitenessOptions {
 function describeUnreachableRobots(error: unknown): string | null {
   if (error instanceof HttpStatusError && error.status >= 500) return `robots.txt が ${error.status} を返し規則を確認できない`;
   if (error instanceof FetchTimeoutError) return `robots.txt が ${error.timeoutMs / 1000} 秒以内に応答せず規則を確認できない`;
-  if (error instanceof NetworkError) return "robots.txt に接続できず規則を確認できない";
+  if (error instanceof NetworkError) {
+    const kind = error.kind === "unknown" ? "原因不明" : NETWORK_ERROR_KIND_LABELS[error.kind];
+    return `robots.txt に接続できず(${kind})規則を確認できない`;
+  }
   return null;
 }
 
@@ -482,6 +486,8 @@ export class PolitenessManager {
       // robots.txt不在の慣習的な扱い(=制限なし)としてそのまま静かに継続する
       // (ログも出さない。頻出するため公開ツールとしてノイズになる)。
       if (error instanceof PrivateAddressError) throw error;
+      // 名前が解決できないなら先方へは何も届いていない。robots.txtの拒否と取り違えて例外取得の確認を出さないよう、そのまま返す。
+      if (error instanceof NetworkError && error.kind === "dns") throw error;
       // robots.txt への応答で断られたら、規則が読めないまま取りに行かず、ページの取得と同じく引く。
       if (error instanceof HttpStatusError && error.isRefusal) throw error;
       // RFC 9309: サーバーかネットワークのエラーで robots.txt に届かないときは全面拒否とみなす。一時的な障害で
