@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { computeScreenshotCacheKey, PageCache, type CacheStatus, type ScreenshotCacheStatus } from "./cache.js";
+import { computeScreenshotCacheKey, PageCache, withoutDocumentFragment, type CacheStatus, type ScreenshotCacheStatus } from "./cache.js";
 import { diffMarkdown } from "./diff.js";
 import { AmenboError, SectionNotFoundError } from "./errors.js";
 import { detectDataSources } from "./extract/dataSources.js";
@@ -760,11 +760,14 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
   // 各経路(resolvePage/handlePdfFetch/resolveScreenshot)の内部で、必要な箇所にのみ
   // 個別に行う設計へ変更した(このファイル内の各所コメント参照)。
   assertHttpScheme(input.url);
+  // HTTPはフラグメントを先方へ送らないので、`#見出し`違いを別の取得・別のキャッシュ行にしない。
+  // 画面写真の経路はフラグメントで表示位置が変わるため input.url のまま渡す。
+  const documentUrl = withoutDocumentFragment(input.url);
 
   // URL拡張子に現れないPDF(`/download?id=123`型)は初回取得後にPDFとしてキャッシュされる。
   // その記録も入口判定に使わないと、2回目以降だけHTMLページの応答形式で返ってしまう。
-  if (looksLikePdf(input.url, null) || isCachedAsPdf(input.url)) {
-    return handlePdfFetch(input.url, page, maxTokens, input.onProgress);
+  if (looksLikePdf(documentUrl, null) || isCachedAsPdf(documentUrl)) {
+    return handlePdfFetch(documentUrl, page, maxTokens, input.onProgress);
   }
 
   // 公開品質バグ修正: mode: screenshot(section未指定時)はMarkdown抽出結果を一切使わないため、
@@ -783,7 +786,7 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
     return buildScreenshotContent({ title: null }, screenshot, null);
   }
 
-  const resolvedOrHandoff = await resolvePage(input.url, input.selector, input.onProgress);
+  const resolvedOrHandoff = await resolvePage(documentUrl, input.selector, input.onProgress);
 
   // 機能B: 非HTMLコンテンツはMarkdown抽出・キャッシュ・mode/selector/section等を適用せず、
   // メタデータ+プレビュー+curl誘導のハンドオフ応答を返す(PDFのURL判定と同様の独立経路)。
@@ -797,7 +800,7 @@ async function fetchToolOnce(input: FetchToolInput): Promise<Array<TextBlock | I
     const { handoff } = resolvedOrHandoff;
     if (looksLikePdf(handoff.finalUrl, handoff.contentType)) {
       // fullReadMaxBytesで本体を読み切っているため、ここで取得し直さない。
-      return handlePdfFetch(input.url, page, maxTokens, input.onProgress, {
+      return handlePdfFetch(documentUrl, page, maxTokens, input.onProgress, {
         bytes: handoff.bytes,
         finalUrl: handoff.finalUrl,
         etag: handoff.etag,

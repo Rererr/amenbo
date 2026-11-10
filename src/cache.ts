@@ -200,6 +200,17 @@ interface PreparedStatements {
   setMeta: StatementSync;
 }
 
+/**
+ * キャッシュ・同時取得のまとめ・定型学習のキーにするURL(フラグメントを外す)。
+ * `#/` と `#!` で始まるものはSPAが画面を切り替えるルートなので、別の文書として残す。
+ */
+export function withoutDocumentFragment(url: string): string {
+  const hashIndex = url.indexOf("#");
+  if (hashIndex === -1) return url;
+  const fragment = url.slice(hashIndex + 1);
+  return fragment.startsWith("/") || fragment.startsWith("!") ? url : url.slice(0, hashIndex);
+}
+
 export function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
