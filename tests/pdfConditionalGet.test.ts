@@ -99,6 +99,30 @@ describe("handlePdfFetch - 条件付きGET(ETag/Last-Modified)によるPDF再検
     });
   });
 
+  it("304が新しいETagを返したら、保存済みのETagをその値で置き換える", async () => {
+    const url = "https://example.com/report-rotating.pdf";
+    cache.set({
+      url,
+      etag: '"v1"',
+      lastModified: null,
+      markdown: "## ページ 1\n\nキャッシュ済み本文",
+      metadata: { title: "既存タイトル", finalUrl: url, pdfPageCount: 1 },
+    });
+    await sleep(60); // TTL(50ms)失効を待つ
+
+    httpGetBinaryMock.mockResolvedValue({
+      finalUrl: url,
+      status: 304,
+      headers: new Headers({ etag: '"v2"' }),
+      bytes: new Uint8Array(0),
+      contentType: null,
+    });
+
+    await handleFetchTool({ url });
+
+    expect(cache.get(url)?.etag).toBe('"v2"');
+  });
+
   it("TTL失効後200が返れば従来通りフル抽出しキャッシュを更新する", async () => {
     const url = "https://example.com/report-changed.pdf";
     cache.set({

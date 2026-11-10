@@ -85,6 +85,18 @@ describe("PageCache", () => {
     cache.close();
   });
 
+  it("touchは304が持つ新しいバリデータで置き換え、持たない値は保存済みのものを残す", () => {
+    const cache = new PageCache({ dbPath });
+    cache.set({ url: "http://example.com/", etag: "\"v1\"", lastModified: "Wed, 01 Jul 2026 00:00:00 GMT", markdown: "本文", metadata: {} });
+
+    cache.touch("http://example.com/", null, { etag: "\"v2\"", lastModified: null });
+
+    const entry = cache.get("http://example.com/");
+    expect(entry?.etag).toBe("\"v2\"");
+    expect(entry?.lastModified).toBe("Wed, 01 Jul 2026 00:00:00 GMT");
+    cache.close();
+  });
+
   it("同一URLへの再setは上書きされる", () => {
     const cache = new PageCache({ dbPath });
     cache.set({ url: "http://example.com/", etag: "\"v1\"", lastModified: null, markdown: "旧本文", metadata: {} });

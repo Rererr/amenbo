@@ -182,6 +182,17 @@ export async function startFixtureServer(): Promise<FixtureServer> {
         send(200, "text/html; charset=utf-8", ETAG_HTML, headers);
         return;
       }
+      case "/etag-rotating.html": {
+        // 304と一緒に新しいETagを返す(RFC 9111 4.3.4: 受け取った側は保存済みのバリデータを更新する)。
+        const ifNoneMatch = req.headers["if-none-match"];
+        state.lastIfNoneMatch = ifNoneMatch;
+        if (ifNoneMatch === '"rotating-v1"' || ifNoneMatch === '"rotating-v2"') {
+          send(304, "text/html; charset=utf-8", "", { ETag: '"rotating-v2"' });
+          return;
+        }
+        send(200, "text/html; charset=utf-8", article("バリデータが変わるページ", "ROTATING"), { ETag: '"rotating-v1"' });
+        return;
+      }
       case "/download":
         // URL拡張子にPDFが現れない配布エンドポイント(官公庁の /download?id=123 型)。
         // content-typeで判明した時点で全体を読み切っているかを、取得回数で判定する。
