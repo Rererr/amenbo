@@ -33,7 +33,8 @@ import type { PolitenessManager } from "./politeness.js";
  * 深刻な回帰になるため、再送出するのは拒否シグナルのみに絞る。
  *
  * 待ちの上限超過(WaitTooLongError)と取り消し(RequestCancelledError)も再送出する。同じホストへの
- * 次の候補も同じ待ち行列に並ぶので、フォールバックしても同じ理由で止まるだけになる。
+ * 次の候補も同じ待ち行列に並ぶので、フォールバックしても同じ理由で止まるだけになる。ただしsitemap・フィードが
+ * ページと別のホストにあるときの待ちの上限超過は、ページのホストへは進めるので、discoverLinksOnceが飛ばす。
  */
 function isFallbackBlockingError(error: unknown): boolean {
   return (
@@ -289,12 +290,17 @@ async function discoverLinksOnce(url: string, politeness: PolitenessManager, opt
   politeness.assertNotRefused(url);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const origin = new URL(url).origin;
+  const pageHost = new URL(url).host;
+  const skipWaitOnOtherHost = (error: unknown): null => {
+    if (error instanceof WaitTooLongError && error.host !== pageHost) return null;
+    throw error;
+  };
 
   // 1. sitemap優先(robots.txtのSitemap宣言 → 見つからなければ慣例パス)
   const declaredSitemaps = await politeness.getSitemaps(url);
   const candidateSitemaps = declaredSitemaps.length > 0 ? declaredSitemaps : [`${origin}/sitemap.xml`];
   for (const sitemapUrl of candidateSitemaps) {
-    const links = await tryParseSitemap(sitemapUrl, politeness, timeoutMs, 0, options.onProgress);
+    const links = await tryParseSitemap(sitemapUrl, politeness, timeoutMs, 0, options.onProgress).catch(skipWaitOnOtherHost);
     if (links && links.length > 0) {
       return finalize("sitemap", links, options.filter);
     }
@@ -324,7 +330,7 @@ async function discoverLinksOnce(url: string, politeness: PolitenessManager, opt
   const feedHref = feedLinkEl?.getAttribute("href");
   if (feedHref) {
     const feedUrl = new URL(feedHref, pageResult.finalUrl).toString();
-    const feedLinks = await tryParseFeed(feedUrl, politeness, timeoutMs, options.onProgress);
+    const feedLinks = await tryParseFeed(feedUrl, politeness, timeoutMs, options.onProgress).catch(skipWaitOnOtherHost);
     if (feedLinks && feedLinks.length > 0) {
       return finalize("rss", feedLinks, options.filter);
     }

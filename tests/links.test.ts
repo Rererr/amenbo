@@ -516,6 +516,20 @@ describe("discoverLinks - 待ちの上限と取り消し", () => {
     consoleError.mockRestore();
   });
 
+  it("別ホストの sitemap の待ちが上限を超えても、ページ自身のホストのリンクへはフォールバックする", async () => {
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url === "http://example.com/robots.txt") return htmlResult("Sitemap: http://sitemaps.example.net/sitemap.xml\n");
+      if (url === "http://sitemaps.example.net/robots.txt") return htmlResult("User-agent: *\nCrawl-delay: 120\n");
+      throw new Error(`unexpected url: ${url}`);
+    });
+    fetchPageMock.mockResolvedValue(htmlResult(`<html><body><a href="http://example.com/a">A</a></body></html>`));
+
+    const result = await discoverLinks("http://example.com/", makePoliteness());
+
+    expect(result.source).toBe("page");
+    expect(result.links.map((l) => l.url)).toEqual(["http://example.com/a"]);
+  });
+
   it("取り消されたら、sitemap から先へ進まず、ログも出さずに取り消しとして返す", async () => {
     const { RequestCancelledError } = await import("../src/errors.js");
     const { runCancellableBy } = await import("../src/politeness.js");
