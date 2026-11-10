@@ -56,3 +56,56 @@ describe("decodeHtmlBytes", () => {
     expect(result.text).toContain(SAMPLE_TEXT);
   });
 });
+
+describe("decodeHtmlBytes - 日本語以外の charset 宣言", () => {
+  function htmlBytes(body: number[], head = ""): Uint8Array {
+    const encoder = new TextEncoder();
+    return Uint8Array.from([...encoder.encode(`<html><head>${head}</head><body><p>`), ...body, ...encoder.encode("</p></body></html>")]);
+  }
+
+  // 自動判定に回すと、EUC-KR・GB系・Big5 はバイトの範囲が重なる EUC-JP と取り違え、Latin-1 系は Shift_JIS と取り違えていた。
+  it.each([
+    ["windows-1252", [0x63, 0x61, 0x66, 0xe9], "café"],
+    ["iso-8859-1", [0x6e, 0x61, 0xef, 0x76, 0x65], "naïve"],
+    ["euc-kr", [0xc7, 0xd1, 0xb1, 0xb9, 0xbe, 0xee], "한국어"],
+    ["gbk", [0xd6, 0xd0, 0xce, 0xc4], "中文"],
+    ["gb2312", [0xd6, 0xd0, 0xce, 0xc4], "中文"],
+    ["big5", [0xa4, 0xa4, 0xa4, 0xe5], "中文"],
+  ])("ヘッダで %s と宣言されたバイト列を宣言どおりに読む", (label, body, expected) => {
+    const result = decodeHtmlBytes(htmlBytes(body), `text/html; charset=${label}`);
+    expect(result.text).toContain(expected);
+  });
+
+  it("meta で宣言された日本語以外の charset にも従う", () => {
+    const result = decodeHtmlBytes(htmlBytes([0xc7, 0xd1, 0xb1, 0xb9, 0xbe, 0xee], '<meta charset="euc-kr">'), null);
+    expect(result.text).toContain("한국어");
+    expect(result.encoding).toBe("euc-kr");
+  });
+
+  it("ヘッダの Latin-1 宣言(サーバーの既定値になりがち)より、文書内の Shift_JIS 宣言を優先する", () => {
+    const bytes = toBytes(htmlWithMetaCharset(SAMPLE_TEXT, "Shift_JIS"), "SJIS");
+    const result = decodeHtmlBytes(bytes, "text/html; charset=ISO-8859-1");
+    expect(result.encoding).toBe("Shift_JIS");
+    expect(result.text).toContain(SAMPLE_TEXT);
+  });
+
+  it("TextDecoder も知らないラベルは、従来どおり自動判定へ回す", () => {
+    const bytes = toBytes(`<html><body>${SAMPLE_TEXT}</body></html>`, "SJIS");
+    const result = decodeHtmlBytes(bytes, "text/html; charset=x-no-such-charset");
+    expect(result.encoding).toBe("Shift_JIS");
+    expect(result.text).toContain(SAMPLE_TEXT);
+  });
+
+  it("TextDecoder の別名で書かれた日本語の宣言(csShiftJIS)も Shift_JIS として読む", () => {
+    const bytes = toBytes(`<html><body>${SAMPLE_TEXT}</body></html>`, "SJIS");
+    const result = decodeHtmlBytes(bytes, "text/html; charset=csShiftJIS");
+    expect(result.encoding).toBe("Shift_JIS");
+    expect(result.text).toContain(SAMPLE_TEXT);
+  });
+
+  it("meta の UTF-16 宣言は(ASCII として読めている以上)UTF-8 として扱う", () => {
+    const bytes = new TextEncoder().encode(`<html><head><meta charset="utf-16"></head><body>${SAMPLE_TEXT}</body></html>`);
+    const result = decodeHtmlBytes(bytes, null);
+    expect(result.text).toContain(SAMPLE_TEXT);
+  });
+});
