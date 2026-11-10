@@ -273,7 +273,7 @@ function fetchHelpText(): string {
     "Options:",
     "  --mode <auto|markdown|outline|screenshot>   取得モード(既定 auto)",
     "  --selector <css>                            本文を絞り込むCSSセレクタ",
-    "  --section <id>                              outlineで得たsection ID。その節のMarkdownのみ返す",
+    "  --section <id>                              outlineで得たsection ID。その節のMarkdownのみ返す(IDは見出しの位置で振るので、outlineを取ったときと--selectorと--force-fullを揃える)",
     "  --page <n>                                  ページ番号(既定 1)",
     "  --max-tokens <n>                             1ページの概算トークン上限(既定 8000)",
     "  --force-full                                 定型ブロック除去を無効化する(CLIは差分応答(unchanged/diff)を返さない)。--max-tokensによるページ分割は働くため、全文が要るときは--max-tokensを大きくする",

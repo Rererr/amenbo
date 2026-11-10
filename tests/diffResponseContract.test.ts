@@ -22,6 +22,7 @@ process.env.AMENBO_CACHE_TTL_MS = "1";
 const { handleFetchTool, politeness, cache } = await import("../src/core.js");
 const { setAddressPolicyForTests } = await import("../src/fetcher/http.js");
 const { estimateTokens } = await import("../src/tokens.js");
+const { SectionNotFoundError } = await import("../src/errors.js");
 
 setAddressPolicyForTests(() => false);
 const server = await startFixtureServer();
@@ -186,5 +187,23 @@ describe("差分応答の契約(fetchツールのハンドラを通す)", () => 
     expect(second).toContain(`page: 2 of ${totalPages}`);
     expect(second).not.toContain("cache: unchanged");
     expect(second).not.toContain("cache: diff");
+  }, 30_000);
+});
+
+describe("sectionの契約(fetchツールのハンドラを通す)", () => {
+  it("存在しないsection IDは、IDの振り方と揃えるべき引数を案内するエラーになる", async () => {
+    const url = `${server.origin}/v/sections`;
+    server.pages.set("/v/sections", articleHtml("節のあるページ", [{ heading: "唯一の節", marker: "SECTION-ONLY" }]));
+
+    const error = await handleFetchTool({ url, section: "s99" }).then(
+      () => null,
+      (rejected: unknown) => rejected,
+    );
+
+    expect(error).toBeInstanceOf(SectionNotFoundError);
+    const message = (error as Error).message;
+    expect(message).toContain("selector");
+    expect(message).toContain("force_full");
+    expect(message).toContain("outline");
   }, 30_000);
 });

@@ -194,7 +194,10 @@ export class SectionNotFoundError extends AmenboError {
     readonly url: string,
     readonly sectionId: string,
   ) {
-    super(`指定されたsectionが見つかりません: ${url} (section=${sectionId})`);
+    super(
+      `指定されたsectionが見つかりません: ${url} (section=${sectionId})。` +
+        "section IDは見出しの出現位置で振るので、outlineを取ったときとselectorとforce_fullを揃えて指定してください。揃えても見つからなければ、ページが変わった可能性があるのでoutlineを取り直してください",
+    );
   }
 }
 

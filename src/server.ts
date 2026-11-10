@@ -121,7 +121,10 @@ export function createServer(era: ProtocolEra = "legacy"): McpServer {
         url: z.string().url().describe("Target URL (http/https only; PDF supported)"),
         mode: z.enum(["auto", "markdown", "outline", "screenshot"]).optional().describe("Default: auto"),
         selector: z.string().optional().describe("CSS selector to narrow the content"),
-        section: z.string().optional().describe("Section ID obtained from outline mode; returns only that section's Markdown"),
+        section: z
+          .string()
+          .optional()
+          .describe("Section ID obtained from outline mode; returns only that section's Markdown. IDs are assigned by heading position, so pass the same selector and force_full as the outline call"),
         page: z.number().int().positive().optional().describe("Page number (default 1)"),
         max_tokens: z.number().int().positive().optional().describe("Approximate token budget per page (default 8000)"),
         force_full: z.boolean().optional().describe("Default false. If true, disables diff responses (unchanged/diff) and boilerplate-block removal (pagination by max_tokens still applies). Set it when you got unchanged/diff but have not read the whole content yourself"),
