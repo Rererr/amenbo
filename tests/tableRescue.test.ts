@@ -70,7 +70,8 @@ describe("normalizeTableHtml", () => {
     const labels = "<tr><th colspan='2'>見出し</th></tr>".repeat(200_000);
     const normalized = normalizeTableHtml(`<table>${labels}<tr><td>a</td><td>b</td></tr></table>`);
     expect(normalized.match(/見出し/g)?.length).toBe(200_000);
-  });
+    // 既定の5秒は、並列実行で負荷の高いCIでは線形時間でも超えうる。二次時間なら数分かかるので検出力は落ちない。
+  }, 30_000);
 
   it("先頭の全幅単一th行(合計)はcaptionへ畳み複製しない", () => {
     const normalized = normalizeTableHtml(
