@@ -85,7 +85,30 @@ function createTurndownService(): TurndownService {
       !Array.from(node.querySelectorAll("img")).some(isInformativeImage),
     replacement: () => "",
   });
+  // 見出しの中の同じページ内を指すリンク(パーマリンク)は、文字を持てば文字だけを残し、
+  // 記号やゼロ幅空白だけなら落とす(Sphinxの`¶`、Mintlifyの`​`+アイコン)。
+  service.addRule("headingSelfLink", {
+    filter: (node) => node.nodeName === "A" && (node.getAttribute("href") ?? "").startsWith("#") && hasHeadingAncestor(node),
+    replacement: (content, node) => (/[\p{L}\p{N}]/u.test(node.textContent ?? "") ? content : ""),
+  });
+  // turndownの既定は見出しの中身の改行をそのまま出すため、中にブロック要素(div等)がある
+  // 見出しは`## `だけの行と次の行の文字列に分かれる。中身を1行に畳み、空なら見出しを出さない。
+  service.addRule("headingSingleLine", {
+    filter: ["h1", "h2", "h3", "h4", "h5", "h6"],
+    replacement: (content, node) => {
+      // `/\s*\n\s*/g`は改行の無い長い空白の連続で二次時間になる。
+      const text = content.replace(/\s+/g, (run) => (run.includes("\n") ? " " : run)).trim();
+      return text ? `\n\n${"#".repeat(Number(node.nodeName.charAt(1)))} ${text}\n\n` : "";
+    },
+  });
   return service;
+}
+
+function hasHeadingAncestor(node: Node): boolean {
+  for (let current = node.parentNode; current; current = current.parentNode) {
+    if (/^H[1-6]$/.test(current.nodeName)) return true;
+  }
+  return false;
 }
 
 interface QualityElement {
