@@ -50,6 +50,60 @@ describe("機能B: buildHandoffPreview - text/plain", () => {
   });
 });
 
+describe("buildHandoffPreview - max_tokens を超えたテキストのページ送り", () => {
+  const lines = Array.from({ length: 400 }, (_, i) => `line ${i}: 取得範囲の本文を max_tokens ごとに区切って続きを読めるか確かめる行`);
+  const text = lines.join("\n");
+
+  function allPages(maxTokens: number): { bodies: string[]; totalPages: number } {
+    const first = buildHandoffPreview(toBytes(text), "text/markdown", maxTokens, false, 1)!;
+    const bodies = [first.body];
+    for (let page = 2; page <= first.totalPages; page++) {
+      bodies.push(buildHandoffPreview(toBytes(text), "text/markdown", maxTokens, false, page)!.body);
+    }
+    return { bodies, totalPages: first.totalPages };
+  }
+
+  it("2ページ目以降で続きを返し、全ページをつなぐと取得した本文に戻る", () => {
+    const { bodies, totalPages } = allPages(500);
+
+    expect(totalPages).toBeGreaterThan(1);
+    expect(bodies[1]).not.toBe(bodies[0]);
+    expect(bodies.join("")).toBe(text);
+    expect(bodies.join("")).toContain("line 399:");
+  });
+
+  it("途中のページは続きのページ番号を注記し、最後のページは注記しない", () => {
+    const first = buildHandoffPreview(toBytes(text), "text/plain", 500, false, 1)!;
+    const last = buildHandoffPreview(toBytes(text), "text/plain", 500, false, first.totalPages)!;
+
+    expect(first.note).toContain("page: 2");
+    expect(last.page).toBe(first.totalPages);
+    expect(last.note).toBeNull();
+  });
+
+  it("範囲外のページは最後のページへ丸める", () => {
+    const first = buildHandoffPreview(toBytes(text), "text/plain", 500, false, 1)!;
+    const beyond = buildHandoffPreview(toBytes(text), "text/plain", 500, false, 999)!;
+
+    expect(beyond.page).toBe(first.totalPages);
+  });
+
+  it("行の途中では切らない(後半に改行があるとき)", () => {
+    const { bodies } = allPages(500);
+    for (const body of bodies.slice(0, -1)) expect(body.endsWith("\n")).toBe(true);
+  });
+
+  it("極端に小さい予算でも先へ進み、時間が爆発しない", () => {
+    const big = "word ".repeat(50_000);
+    const started = Date.now();
+    const preview = buildHandoffPreview(toBytes(big), "text/plain", 1, false, 3)!;
+
+    expect(preview.totalPages).toBeGreaterThan(1000);
+    expect(preview.body.length).toBeGreaterThan(0);
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
 describe("機能B: buildHandoffPreview - sourceTruncated(ネットワーク層のプレビュー上限で打ち切り済み)", () => {
   it("max_tokens予算内に収まっていても、ネットワーク層で打ち切り済み(sourceTruncated)なら部分プレビューである旨を注記する", () => {
     const preview = buildHandoffPreview(toBytes("hello world"), "text/plain", 1000, true);

@@ -211,20 +211,22 @@ export function shellQuoteSingle(value: string): string {
  * ファイル全体がAMENBO_MAX_BODY_BYTESを超える場合(Content-Length既知時)は
  * プレビュー自体を省略し、メタデータ+誘導のみを返す。
  */
-export function formatHandoffResponse(handoff: HandoffResult, maxTokens: number): string {
+export function formatHandoffResponse(handoff: HandoffResult, maxTokens: number, page: number = 1): string {
   const filename = guessFilename(handoff.finalUrl);
   const sizeKnown = handoff.declaredSize !== null;
   const sizeLabel = sizeKnown ? `${handoff.declaredSize}` : `${handoff.bytes.length}(取得分。Content-Lengthヘッダ無し)`;
   const oversized = sizeKnown && (handoff.declaredSize as number) > resolveDefaultMaxBodyBytes();
+
+  const preview = oversized ? null : buildHandoffPreview(handoff.bytes, handoff.contentType, maxTokens, handoff.truncated, page);
 
   const header = [
     `content_type: ${handoff.contentType ?? "(不明)"}`,
     `size: ${sizeLabel}`,
     `url: ${handoff.finalUrl}`,
     `mode_used: handoff`,
+    ...(preview && preview.totalPages > 1 ? [`page: ${preview.page} of ${preview.totalPages}`] : []),
   ].join("\n");
 
-  const preview = oversized ? null : buildHandoffPreview(handoff.bytes, handoff.contentType, maxTokens, handoff.truncated);
   const previewBlock = preview ? `\n\n${preview.body}${preview.note ? `\n\n(${preview.note})` : ""}` : "";
 
   const hint = `\n\nhint: このファイルはamenboの本文抽出対象外です。全体の取得は curl -L -o ${filename} ${shellQuoteSingle(handoff.finalUrl)} を推奨します`;
