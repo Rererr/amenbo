@@ -26,7 +26,7 @@ export interface DiffResult {
   /** 差分として報告する節一覧(内容が同一の節は含まない)。 */
   sections: SectionDiff[];
   /**
-   * true: 旧新間で内容が完全一致する節が1つも無い(実質的に全面書き換え)。
+   * true: 旧新間で内容が完全一致する節が、冒頭(s0)のほかに1つも無い(実質的に全面書き換え)。
    * 呼び出し側はこの場合、差分応答ではなく通常の全文応答へフォールバックすべき
    * (plan.md「全節変更なら通常応答にフォールバック」)。
    */
@@ -78,7 +78,9 @@ export function diffMarkdown(oldMarkdown: string, newMarkdown: string): DiffResu
       // 比較にはownContent(子見出しを含まない直接の内容)を使う。contentは子節の変更でも
       // 変わってしまうため、子の変更が親にも伝播して誤ってchanged扱いになるのを防ぐ。
       sections.push({ type: "changed", level: section.level, heading: section.heading, content: section.ownContent });
-    } else {
+    } else if (section.id !== "s0") {
+      // 冒頭(パンくず・日付など)だけが変わらないページは全面書き換えとみなす。冒頭を数えると、
+      // 全節を並べた差分の応答になり、通常の応答より長くなる。
       unchangedCount++;
     }
   });
