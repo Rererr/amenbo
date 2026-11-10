@@ -442,6 +442,17 @@ describe("discoverLinks - サイトに断られたホスト", () => {
 });
 
 describe("discoverLinks - sitemap や feed、転送先で断られたとき", () => {
+  it("sitemap が bot 対策の確認画面を返したら、ページへは進まずに失敗する", async () => {
+    const { BotChallengeError } = await import("../src/errors.js");
+    httpGetMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/robots.txt")) return htmlResult("Sitemap: http://example.com/sitemap.xml\n");
+      throw new BotChallengeError(url, 403, "cf-mitigated: challenge");
+    });
+
+    await expect(discoverLinks("http://example.com/", makePoliteness())).rejects.toThrow(BotChallengeError);
+    expect(fetchPageMock).not.toHaveBeenCalled();
+  });
+
   it("sitemap が 429 を返したら、ページへは進まずに失敗し、次の links は robots.txt にも届かない", async () => {
     const { HostRefusedError, HttpStatusError } = await import("../src/errors.js");
     httpGetMock.mockImplementation(async (url: string) => {

@@ -10,6 +10,7 @@
  */
 import { parseHTML } from "linkedom";
 import {
+  BotChallengeError,
   HostRefusedError,
   HttpStatusError,
   PrivateAddressError,
@@ -43,6 +44,7 @@ function isFallbackBlockingError(error: unknown): boolean {
     error instanceof HostRefusedError ||
     error instanceof WaitTooLongError ||
     error instanceof RequestCancelledError ||
+    error instanceof BotChallengeError ||
     (error instanceof HttpStatusError && error.isRefusal)
   );
 }

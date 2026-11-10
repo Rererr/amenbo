@@ -51,7 +51,8 @@ function createFakePage(gotoImpl: (url: string) => Promise<GotoResult>, landedUr
     goto: async (url: string) => {
       const result = await gotoImpl(url);
       finalUrl = landedUrl ?? url;
-      return result;
+      // 実物のPlaywright Responseは常にstatusText/headersを持つ。テストが省いた分を補う。
+      return result ? { statusText: () => "", headers: () => ({}), ...result } : result;
     },
     url: () => finalUrl,
   };
@@ -110,7 +111,8 @@ describe("openPageAndNavigate", () => {
     const { HttpStatusError } = await import("../src/errors.js");
 
     const error = await openPageAndNavigate("https://example.com/", 5000).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(HttpStatusError);
+    // http.jsをモック越しに読み込むため、エラーのクラスは別のモジュールインスタンスになりうる。名前で確かめる。
+    expect(error).toMatchObject({ name: HttpStatusError.name });
     // 記録するのは転送後に着いたホスト(断ってきた相手)。
     expect(error).toMatchObject({ status: 429, retryAfterMs: 60_000, url: "https://www.example.com/sorry" });
     expect(closedContexts).toBe(1);
@@ -123,7 +125,19 @@ describe("openPageAndNavigate", () => {
     const { openPageAndNavigate } = await import("../src/fetcher/browser.js");
     const { HttpStatusError } = await import("../src/errors.js");
 
-    await expect(openPageAndNavigate("https://example.com/", 5000)).rejects.toThrow(HttpStatusError);
+    await expect(openPageAndNavigate("https://example.com/", 5000)).rejects.toMatchObject({ name: HttpStatusError.name, status });
+  });
+
+  it("bot 対策の確認画面の印(cf-mitigated)がある応答は、200 でも確認画面の失敗にしてcontextを閉じる", async () => {
+    let closedContexts = 0;
+    const challenge = async (): Promise<GotoResult> => ({ status: () => 200, headers: () => ({ "cf-mitigated": "challenge" }) });
+    launchMock.mockImplementation(async () => createFakeBrowser(challenge, () => closedContexts++));
+
+    const { openPageAndNavigate } = await import("../src/fetcher/browser.js");
+    const { BotChallengeError } = await import("../src/errors.js");
+
+    await expect(openPageAndNavigate("https://example.com/", 5000)).rejects.toMatchObject({ name: BotChallengeError.name, marker: "cf-mitigated: challenge" });
+    expect(closedContexts).toBe(1);
   });
 
   it("399 以下は成功として返す", async () => {

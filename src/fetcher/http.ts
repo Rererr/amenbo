@@ -27,6 +27,7 @@ import Encoding from "encoding-japanese";
 import { Agent as UndiciAgent, fetch as undiciFetch, type Dispatcher, type Headers, type Response } from "undici";
 import {
   AmenboError,
+  BotChallengeError,
   FetchTimeoutError,
   HttpStatusError,
   InvalidUrlError,
@@ -580,6 +581,36 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
 }
 
 /**
+ * bot 対策の確認画面であることを示す応答ヘッダ(Cloudflare と AWS WAF が公式に付ける印)を探す。
+ * 見つかれば根拠を "名前: 値" で返す。本文の文言では判定しない(言語やサイトごとの分岐が要るうえ、
+ * 誤検知すると正当な本文を捨てることになるため)。
+ */
+export function detectBotChallenge(header: (name: string) => string | null | undefined): string | null {
+  const cfMitigated = header("cf-mitigated")?.trim();
+  if (cfMitigated && /challenge/i.test(cfMitigated)) return `cf-mitigated: ${cfMitigated}`;
+  const wafAction = header("x-amzn-waf-action")?.trim();
+  if (wafAction) return `x-amzn-waf-action: ${wafAction}`;
+  return null;
+}
+
+/**
+ * 最終応答を本文として扱えるか確かめ、扱えなければ型付きエラーにする(304は呼び出し側で先に除く)。
+ * 回数制限(429・Retry-After)は確認画面の印が付いていても「断られた」として扱い、ホストを止める側に倒す。
+ */
+export function assertUsableResponse(
+  finalUrl: string,
+  response: { status: number; statusText: string; ok: boolean },
+  header: (name: string) => string | null | undefined,
+): void {
+  const { status } = response;
+  const statusError = response.ok ? null : new HttpStatusError(finalUrl, status, response.statusText, header("retry-after"));
+  if (statusError?.isRefusal) throw statusError;
+  const marker = detectBotChallenge(header);
+  if (marker) throw new BotChallengeError(finalUrl, status, marker);
+  if (statusError) throw statusError;
+}
+
+/**
  * SSRF対策付きの素のHTTP GET(テキスト/HTML用)。リダイレクトは手動で追跡し、毎ホップでSSRFガードを行う。
  * status 304(未変更)はエラーにせずそのまま返す(キャッシュ再検証用)。
  * 200以外(304を除く)の非2xxはHttpStatusErrorを投げる。
@@ -596,9 +627,7 @@ export async function httpGet(url: string, options: HttpGetOptions = {}): Promis
     if (response.status === 304) {
       return { finalUrl, status: 304, headers: response.headers, html: "", encoding: "" };
     }
-    if (!response.ok) {
-      throw new HttpStatusError(finalUrl, response.status, response.statusText, response.headers.get("retry-after"));
-    }
+    assertUsableResponse(finalUrl, response, (name) => response.headers.get(name));
 
     const buffer = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes(), {
       signal: controller.signal,
@@ -649,9 +678,7 @@ export async function httpGetBinary(url: string, options: HttpGetBinaryOptions =
     if (response.status === 304) {
       return { finalUrl, status: 304, headers: response.headers, bytes: new Uint8Array(0), contentType: null };
     }
-    if (!response.ok) {
-      throw new HttpStatusError(finalUrl, response.status, response.statusText, response.headers.get("retry-after"));
-    }
+    assertUsableResponse(finalUrl, response, (name) => response.headers.get(name));
 
     const bytes = await readBodyWithLimit(response, finalUrl, options.maxBytes ?? resolveDefaultMaxBodyBytes(), {
       signal: controller.signal,
@@ -772,9 +799,7 @@ export async function httpGetRouted(url: string, options: HttpGetOptions = {}): 
     if (response.status === 304) {
       return { kind: "notModified", status: 304, finalUrl, headers: response.headers };
     }
-    if (!response.ok) {
-      throw new HttpStatusError(finalUrl, response.status, response.statusText, response.headers.get("retry-after"));
-    }
+    assertUsableResponse(finalUrl, response, (name) => response.headers.get(name));
 
     const timeout = { signal: controller.signal, timeoutMs };
     const contentType = response.headers.get("content-type");
