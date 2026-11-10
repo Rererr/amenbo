@@ -129,11 +129,18 @@ describe("機能C: detectDataSources - レビュー指摘対応: API語彙の誤
     expect(hints).toHaveLength(1);
   });
 
-  it("URLパスに/api/セグメントを含む正当なエンドポイントは従来通り検出する", () => {
-    const html = `<html><body><a href="/api/data">データ取得</a></body></html>`;
-    const hints = detectDataSources(html, "https://example.jp/");
-    expect(hints).toHaveLength(1);
-    expect(hints[0]).toContain("データ取得");
+  it("URLにだけapiを含むリンク(docsの説明ページ・題名をクエリに持つ共有ボタン)は検出しない", () => {
+    const html = `<html><body>
+      <a href="/docs/api-playground/troubleshooting">Troubleshooting</a>
+      <a href="https://developers.example.com/api/docs/mcp/">ChatGPT</a>
+      <a href="https://twitter.com/intent/tweet?text=API%E3%81%AE%E8%A9%B1">ポスト</a>
+    </body></html>`;
+    expect(detectDataSources(html, "https://docs.example.com/")).toEqual([]);
+  });
+
+  it("官公庁サイトのグローバルナビの「API」(統計APIへの導線)は検出する", () => {
+    const html = `<html><body><a class="gnav-title" href="/api" target="_blank">API</a></body></html>`;
+    expect(detectDataSources(html, "https://www.stat.example.go.jp/")).toEqual(["- API — https://www.stat.example.go.jp/api"]);
   });
 });
 
