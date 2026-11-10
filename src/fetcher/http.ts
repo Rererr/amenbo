@@ -35,6 +35,7 @@ import {
   PayloadTooLargeError,
   PrivateAddressError,
   RequestCancelledError,
+  TooManyRedirectsError,
 } from "../errors.js";
 
 export const USER_AGENT = "amenbo/0.7 (+https://github.com/Rererr/amenbo)";
@@ -624,7 +625,7 @@ async function guardedFetch(url: string, options: HttpGetOptions, controller: Ab
     return { finalUrl: currentUrl, response };
   }
 
-  throw new HttpStatusError(url, 310, "Too Many Redirects");
+  throw new TooManyRedirectsError(url, MAX_REDIRECTS);
 }
 
 /**

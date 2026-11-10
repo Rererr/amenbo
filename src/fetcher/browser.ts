@@ -14,11 +14,11 @@ import {
   type Response as PlaywrightResponse,
   type Route,
 } from "playwright";
-import { AmenboError, BrowserLaunchError, BrowserUnavailableError, FetchTimeoutError, InvalidUrlError } from "../errors.js";
+import { AmenboError, BrowserLaunchError, BrowserUnavailableError, FetchTimeoutError, InvalidUrlError, NetworkError, PrivateAddressError } from "../errors.js";
 import type { PageGeometrySnapshot } from "../extract/geometry.js";
 import { CONSENT_BANNER_RULES } from "../jp/consentBanner.js";
 import { assertUsableResponse, guardPublicAddress, USER_AGENT } from "./http.js";
-import { closeSharedSsrfProxy, getSharedSsrfProxyUrl } from "./ssrfProxy.js";
+import { closeSharedSsrfProxy, getSharedSsrfProxyUrl, takeRecentProxyBlock } from "./ssrfProxy.js";
 
 export type { PageGeometrySnapshot } from "../extract/geometry.js";
 
@@ -351,12 +351,14 @@ export async function navigateSafely(
   await guardPublicAddress(url);
 
   let blockedError: AmenboError | null = null;
+  let lastMainFrameUrl = url;
   const hostGuardCache = new Map<string, Promise<void>>();
   const handler = async (route: Route, request: Request): Promise<void> => {
     const requestUrl = request.url();
     const isMainFrameNavigation = request.isNavigationRequest() && request.frame() === page.mainFrame();
     try {
       if (isMainFrameNavigation) {
+        lastMainFrameUrl = requestUrl;
         await guardPublicAddress(requestUrl);
         // ページ内からの遷移も、同一オリジンを含めて確かめる。レート制御の待機はタイムアウト予算を消費するため、ここでは行わない。
         if (options.checkRobots) {
@@ -395,6 +397,7 @@ export async function navigateSafely(
     if (response) {
       const headers = response.headers();
       const status = response.status();
+      if (status === 403 && takeRecentProxyBlock(new URL(page.url()).hostname)) throw proxyBlockedError(page.url());
       // HTTP経路(httpGet)と同じく、400以上と bot 対策の確認画面は失敗にする(取得成功として返さないため)。
       assertUsableResponse(page.url(), { status, statusText: response.statusText(), ok: status < 400 }, (name) => headers[name]);
     }
@@ -414,8 +417,16 @@ export async function navigateSafely(
     if (cause instanceof Error && /timeout/i.test(cause.message)) {
       throw new FetchTimeoutError(url, timeoutMs, "browser");
     }
-    throw cause;
+    if (cause instanceof Error && cause.message.includes("ERR_TUNNEL_CONNECTION_FAILED") && takeRecentProxyBlock(new URL(lastMainFrameUrl).hostname)) {
+      throw proxyBlockedError(lastMainFrameUrl);
+    }
+    throw NetworkError.fromBrowserNavigation(lastMainFrameUrl, cause) ?? cause;
   }
+}
+
+/** 事前検証を通った後、ブラウザの接続時の再解決(SSRF検証プロキシ)で予約アドレスへの接続を拒否した。 */
+function proxyBlockedError(url: string): PrivateAddressError {
+  return new PrivateAddressError(url, "接続時の名前解決で予約アドレス、または解決できないホストと判定");
 }
 
 export interface SafeNavigation {

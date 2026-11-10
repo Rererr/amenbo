@@ -17,6 +17,7 @@ vi.mock("playwright", () => ({
 vi.mock("../src/fetcher/ssrfProxy.js", () => ({
   closeSharedSsrfProxy: vi.fn(),
   getSharedSsrfProxyUrl: proxyUrlMock,
+  takeRecentProxyBlock: () => false,
 }));
 
 // navigateSafely内部のguardPublicAddress(fetcher/http.ts)は実SSRFガードのままだと
@@ -148,13 +149,16 @@ describe("openPageAndNavigate", () => {
     await expect(openPageAndNavigate("https://example.com/", 5000)).resolves.toMatchObject({ page: expect.anything() });
   });
 
-  it("遷移に失敗したらcontextを閉じて元のエラーを投げ、別のブラウザで取り直さない", async () => {
+  it("遷移に失敗したらcontextを閉じ、net::ERR_* をHTTP経路と同じ分類のエラーにして投げ、別のブラウザで取り直さない", async () => {
     let closedContexts = 0;
     launchMock.mockImplementation(async () => createFakeBrowser(failWith(HTTP2_ERROR_MESSAGE), () => closedContexts++));
 
     const { openPageAndNavigate } = await import("../src/fetcher/browser.js");
+    const { NetworkError } = await import("../src/errors.js");
 
-    await expect(openPageAndNavigate("https://example.com/", 5000)).rejects.toThrow(HTTP2_ERROR_MESSAGE);
+    const error = await openPageAndNavigate("https://example.com/", 5000).catch((e: unknown) => e);
+    expect(error).toMatchObject({ name: NetworkError.name, kind: "connection" });
+    expect((error as Error).message).toContain("net::ERR_HTTP2_PROTOCOL_ERROR");
     expect(closedContexts).toBe(1);
     expect(launchMock).toHaveBeenCalledTimes(1);
   });

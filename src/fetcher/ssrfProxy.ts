@@ -68,6 +68,8 @@ function splitHostPort(hostPort: string, defaultPort: number): { host: string; p
 export interface SsrfProxyOptions {
   /** テスト用: ホスト解決を差し替える(既定はresolveSafeAddress = 実DNS + 予約IP判定)。 */
   resolve?: (host: string) => Promise<ResolvedTarget | null>;
+  /** 接続先を拒否したときに呼ばれる(ブラウザ側が「サイトの403」や接続失敗と区別するため)。 */
+  onBlocked?: (host: string) => void;
 }
 
 /**
@@ -77,10 +79,12 @@ export interface SsrfProxyOptions {
 export class SsrfProxy {
   private readonly server: Server;
   private readonly resolve: (host: string) => Promise<ResolvedTarget | null>;
+  private readonly onBlocked: (host: string) => void;
   private started = false;
 
   constructor(options: SsrfProxyOptions = {}) {
     this.resolve = options.resolve ?? resolveSafeAddress;
+    this.onBlocked = options.onBlocked ?? (() => {});
     // 要求の処理で投げられた例外はここで止める。漏れると未処理のrejectとしてプロセスごと落ち、
     // 同じMCPサーバーを使う全セッションの取得が止まる。
     this.server = createServer((clientReq, clientRes) => {
@@ -99,6 +103,7 @@ export class SsrfProxy {
         }
         const safe = await this.resolve(target.hostname);
         if (!safe) {
+          this.onBlocked(target.hostname);
           clientRes.writeHead(403).end("blocked by amenbo SSRF proxy");
           return;
         }
@@ -138,6 +143,7 @@ export class SsrfProxy {
         }
         const safe = await this.resolve(target.host);
         if (!safe) {
+          this.onBlocked(target.host);
           clientSocket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
           return;
         }
@@ -183,10 +189,41 @@ export class SsrfProxy {
 let sharedProxy: SsrfProxy | null = null;
 let sharedProxyUrlPromise: Promise<string> | null = null;
 
+/**
+ * 共有プロキシが最近拒否したホスト(拒否した時刻)。Chromiumはプロキシの拒否を、平文HTTPでは
+ * サイトの403と、HTTPSではトンネルの接続失敗(net::ERR_TUNNEL_CONNECTION_FAILED)と同じ形でしか
+ * 伝えないため、ブラウザ側はこれを引いてSSRFの拒否と見分ける。
+ */
+const recentBlocks = new Map<string, number>();
+const RECENT_BLOCK_WINDOW_MS = 30_000;
+const MAX_RECENT_BLOCKS = 64;
+
+function normalizeHost(host: string): string {
+  return host.replace(/^\[|\]$/g, "").toLowerCase();
+}
+
+function rememberBlock(host: string): void {
+  const key = normalizeHost(host);
+  recentBlocks.delete(key);
+  recentBlocks.set(key, Date.now());
+  if (recentBlocks.size > MAX_RECENT_BLOCKS) {
+    const oldest = recentBlocks.keys().next().value;
+    if (oldest !== undefined) recentBlocks.delete(oldest);
+  }
+}
+
+/** 共有プロキシが直前にこのホストへの接続を拒否していたか(引いた記録は消す)。 */
+export function takeRecentProxyBlock(host: string): boolean {
+  const key = normalizeHost(host);
+  const blockedAt = recentBlocks.get(key);
+  recentBlocks.delete(key);
+  return blockedAt !== undefined && Date.now() - blockedAt < RECENT_BLOCK_WINDOW_MS;
+}
+
 /** browser tierが使うSSRF検証プロキシのURL(http://127.0.0.1:PORT)を遅延起動して返す。 */
 export function getSharedSsrfProxyUrl(): Promise<string> {
   if (!sharedProxyUrlPromise) {
-    sharedProxy = new SsrfProxy();
+    sharedProxy = new SsrfProxy({ onBlocked: rememberBlock });
     sharedProxyUrlPromise = sharedProxy.start().then((port) => `http://127.0.0.1:${port}`);
   }
   return sharedProxyUrlPromise;
