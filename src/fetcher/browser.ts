@@ -9,6 +9,7 @@ import {
   type Browser,
   type BrowserContext,
   type BrowserContextOptions,
+  type Frame,
   type Page,
   type Request,
   type Response as PlaywrightResponse,
@@ -391,7 +392,18 @@ export async function navigateSafely(
   let lastMainFrameUrl = url;
   let challengeSeen = false;
   const hostGuardCache = new Map<string, Promise<void>>();
-  const isMainFrame = (request: Request): boolean => request.isNavigationRequest() && request.frame() === page.mainFrame();
+  // ページが開いたポップアップの最初のナビゲーション要求は、フレームが作られる前に届き、frame()が例外を投げる
+  // (contextに掛けたrouteには届く。CIで発生)。その要求はフレームが無いもの(null)として扱う。
+  const frameOf = (request: Request): Frame | null => {
+    try {
+      return request.frame();
+    } catch {
+      return null;
+    }
+  };
+  const isMainFrame = (request: Request): boolean => request.isNavigationRequest() && frameOf(request) === page.mainFrame();
+  // 新しいページ(ポップアップ)の最初の遷移も、先方へ文書を求める遷移なので、メインフレームと同じくrobots.txtも確かめる。
+  const isNewPageNavigation = (request: Request): boolean => request.isNavigationRequest() && frameOf(request) === null;
   // routeのhandlerは転送の最初のURLでしか呼ばれない(実測)ので、転送のたびに発火するrequestで着地先を追う。
   const onRequest = (request: Request): void => {
     if (isMainFrame(request)) lastMainFrameUrl = request.url();
@@ -411,7 +423,7 @@ export async function navigateSafely(
     const requestUrl = request.url();
     const isMainFrameNavigation = isMainFrame(request);
     try {
-      if (isMainFrameNavigation) {
+      if (isMainFrameNavigation || isNewPageNavigation(request)) {
         await guardPublicAddress(requestUrl);
         // ページ内からの遷移も、同一オリジンを含めて確かめる。レート制御の待機はタイムアウト予算を消費するため、ここでは行わない。
         if (options.checkRobots) {
