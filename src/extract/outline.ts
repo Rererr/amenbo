@@ -273,19 +273,25 @@ const LETTER = /\p{L}/u;
 const SENTENCE_TERMINAL = /\p{Sentence_Terminal}/u;
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 const SPACELESS_SCRIPT = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}]/u;
+const OPENING_OR_SPACE = /[\s\p{Ps}\p{Pi}]/u;
+// 行末のコロンの次の空でない行が、コードのフェンスかリストで始まる。
+const BLOCK_AFTER_COLON = /(?:[ \t]*\n)+[ \t]*(?:`{3}|~{3}|[-*+][ \t]|\d+[.)][ \t])/y;
+// 行末のコロンを文末とみなすのに要る、コロンまでの語の文字の数。ラベル(「最終更新日:」「**定員**:」)を除く。
+// 後ろがコードかリストなら短い導入文(「次のとおり:」)も認め、それ以外は文と呼べる長さを求める。
+const MIN_WORD_CHARS_BEFORE_COLON = 6;
+const MIN_WORD_CHARS_BEFORE_COLON_WITHOUT_BLOCK = 20;
 
 /**
- * 半角の文末記号の直後に語の文字が続くなら、語の中の記号とみなす(`3.14`・`example.com`・`v1.2`)。
- * 語の間に空白を置かない日本語・中国語の文字が続く場合は文末とする(「完了!次に」)。
+ * 半角のピリオドは、直後が語の文字でなく、直前が空白や開き括弧でないときだけ文末にする
+ * (`3.14`・`example.com`・`Apple Inc.の`・`「.」`は切らず、`document.¶`・`[RFC5234].`は切る)。半角の!?は、直後が語の文字でなければ
+ * 文末にし、語の間に空白を置かない日本語・中国語の文字が続くときも文末にする(「完了!次に」)。
+ * 全角の記号はいつでも文末。
  */
-function continuesWord(mark: string, next: string | undefined): boolean {
-  return mark < "\u0080" && next !== undefined && WORD_CHAR.test(next) && !SPACELESS_SCRIPT.test(next);
-}
-
-function endsSentence(ch: string, next: string | undefined): boolean {
-  if (SENTENCE_TERMINAL.test(ch)) return !continuesWord(ch, next);
-  // 行末のコロンは、後ろのコードやリストを導く文の終わり(「looks like this:」「次のとおり:」)。
-  return (ch === ":" || ch === "：") && (next === undefined || next === "\n");
+function endsWithTerminal(mark: string, previous: string | undefined, next: string | undefined): boolean {
+  if (mark >= "\u0080") return true;
+  const nextIsWord = next !== undefined && WORD_CHAR.test(next);
+  if (mark === ".") return previous !== undefined && !OPENING_OR_SPACE.test(previous) && !nextIsWord;
+  return !nextIsWord || SPACELESS_SCRIPT.test(next ?? "");
 }
 
 /**
@@ -294,16 +300,33 @@ function endsSentence(ch: string, next: string | undefined): boolean {
  */
 function findSentenceEnd(text: string): number {
   let sawLetter = false;
+  let wordChars = 0;
   const charAt = (index: number): string | undefined => {
     const codePoint = text.codePointAt(index);
     return codePoint === undefined ? undefined : String.fromCodePoint(codePoint);
   };
+  let previous: string | undefined;
   for (let i = 0; i < text.length; ) {
     const ch = charAt(i) ?? "";
+    const before = previous;
+    previous = ch;
     i += ch.length;
-    if (ch === "\n") sawLetter = false;
-    else if (LETTER.test(ch)) sawLetter = true;
-    else if (sawLetter && endsSentence(ch, charAt(i))) return i;
+    if (ch === "\n") {
+      sawLetter = false;
+      wordChars = 0;
+    } else if (WORD_CHAR.test(ch)) {
+      wordChars++;
+      if (LETTER.test(ch)) sawLetter = true;
+    } else if (!sawLetter) {
+      continue;
+    } else if (SENTENCE_TERMINAL.test(ch)) {
+      if (endsWithTerminal(ch, before, charAt(i))) return i;
+    } else if ((ch === ":" || ch === "：") && wordChars >= MIN_WORD_CHARS_BEFORE_COLON && /^[ \t]*(?:\n|$)/.test(text.slice(i, i + 80))) {
+      // 行末のコロンは、後ろのコードやリストを導く文の終わり(「looks like this:」)。
+      if (wordChars >= MIN_WORD_CHARS_BEFORE_COLON_WITHOUT_BLOCK) return i;
+      BLOCK_AFTER_COLON.lastIndex = i;
+      if (BLOCK_AFTER_COLON.test(text)) return i;
+    }
   }
   return -1;
 }

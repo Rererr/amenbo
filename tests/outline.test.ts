@@ -263,6 +263,36 @@ describe("抜粋の文末判定(言語によらない)", () => {
     expect(buildOutline(markdown).sections[0]?.excerpt).toBe("The simplest form looks like this:");
   });
 
+  it.each([
+    ["ラベルの行(最終更新日:)", ["最終更新日:", "", "2026年4月1日", "", "制度の概要を説明します。"]],
+    ["太字のラベルの後のリスト(**定員**:)", ["**定員**:", "", "- 20名", "", "応募は先着順です。"]],
+  ])("行末のコロンでも、%sは文末にしない", (_label, lines) => {
+    const excerpt = buildOutline(["## 節", "", ...lines].join("\n")).sections[0]?.excerpt;
+    expect(excerpt).toBe(lines[lines.length - 1]);
+  });
+
+  it("行末のコロンで終わる長い導入文は、後ろがコードやリストでなくても文末とみなす", () => {
+    const markdown = ["## Files", "", "Subagent files use YAML frontmatter for configuration, followed by the prompt:", "", "The watcher reloads them. Edit freely."].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("Subagent files use YAML frontmatter for configuration, followed by the prompt:");
+  });
+
+  it("後ろがリストなら、短い導入文の行末のコロンも文末とみなす", () => {
+    const markdown = ["## 手順", "", "設定は次のとおり:", "", "- 名前", "- 期限", "", "保存して終わります。"].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("設定は次のとおり:");
+  });
+
+  it("行の途中のコロンでは切らない", () => {
+    const markdown = ["## Notes", "", "An important caveat for watchers: they cover existing directories. Restart after adding one."].join("\n");
+    expect(buildOutline(markdown).sections[0]?.excerpt).toBe("An important caveat for watchers: they cover existing directories.");
+  });
+
+  it.each([
+    ["括弧の中の半角のピリオド", "文の区切りには「.」(ピリオド)を使います。"],
+    ["日本語の文中の略称のピリオド", "Apple Inc.の本社はクパチーノにあります。"],
+  ])("%sでは切らない", (_label, sentence) => {
+    expect(buildOutline(["## 節", "", `${sentence}次の文です。`].join("\n")).sections[0]?.excerpt).toBe(sentence);
+  });
+
   it("番号付きリストの番号の点は文末にしない", () => {
     const markdown = ["## 手順", "", "1. 設定ファイルを開きます。", "2. 保存します。"].join("\n");
     expect(buildOutline(markdown).sections[0]?.excerpt).toBe("1. 設定ファイルを開きます。");
