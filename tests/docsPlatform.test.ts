@@ -109,6 +109,35 @@ describe("コードブロックの容れ物とReadabilityの負の語", () => {
     expect(markdown).toContain("```\nrelayd --config /etc/relayd.toml --workers 4\n```");
   });
 
+  describe("短いコードを含む部品", () => {
+    const page = (inner: string): string => {
+      const body = (n: number, word: string): string =>
+        Array.from({ length: n }, (_, i) => `<p>${word} paragraph ${i}. This article explains how the relay daemon delivers messages and what happens when a delivery fails.</p>`).join("");
+      const html = `<html><body><div class="wrap"><article class="post"><h1>Title</h1>${body(6, "Body")}${inner}${body(3, "Tail")}</article></div></body></html>`;
+      return extractMarkdown(html, { url: "https://blog.example.com/relay" }).markdown;
+    };
+    const code = "<pre><code>npm install relay-daemon --save-dev</code></pre>";
+    const count = (markdown: string, needle: string): number => markdown.split(needle).length - 1;
+
+    it.each([
+      ["コメント欄", `<div class="comment"><p>Try this:</p>${code}</div>`, "Try this"],
+      ["サイドバー", '<div class="sidebar-widget"><p>Install</p><pre><code>brew install relay</code></pre></div>', "brew install"],
+    ])("%sは、コードを含んでも本文に入らない", (_label, inner, needle) => {
+      expect(count(page(inner), needle)).toBe(0);
+    });
+
+    it("画面幅ごとに出し分ける同じコード(hidden md:blockとmd:hidden)は1つだけ出す", () => {
+      expect(count(page(`<div class="hidden md:block">${code}</div><div class="md:hidden">${code}</div>`), "npm install relay")).toBe(1);
+    });
+
+    it("隠れたタブ(hidden)のコードは出さない", () => {
+      const tabs = `<div class="tabs"><div class="tab-panel">${code}</div><div class="tab-panel hidden"><pre><code>pnpm add relay-daemon -D</code></pre></div></div>`;
+      const markdown = page(tabs);
+      expect(count(markdown, "npm install relay")).toBe(1);
+      expect(count(markdown, "pnpm add")).toBe(0);
+    });
+  });
+
   it("コード以外の文字を多く持つ祖先(コメント欄)の負の語は外さない", () => {
     const article = Array.from({ length: 8 }, (_, i) => `<p>Body paragraph ${i}. This article explains how the relay daemon delivers messages and what happens when a delivery fails.</p>`).join("");
     const comment = (i: number): string =>

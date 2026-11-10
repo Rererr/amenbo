@@ -1144,13 +1144,25 @@ function visibleLength(text: string | null): number {
   return (text ?? "").replace(/\s+/g, "").length;
 }
 
+// 表示を切り替えるユーティリティクラス。画面幅ごとに同じコードを出し分けるページ
+// (`hidden md:block`と`md:hidden`)で、両方を残すと同じコードが二重に出る。
+const HIDDEN_UTILITY = /^hidden$/;
+const BREAKPOINT_HIDDEN_UTILITY = /^(?:sm|md|lg|xl|2xl):hidden$/;
+const BREAKPOINT_SHOWN_UTILITY = /^(?:sm|md|lg|xl|2xl):(?:block|inline|inline-block|flex|inline-flex|grid|inline-grid|table|contents)$/;
+
+/** 広い画面(ブラウザで撮るときの幅)では表示されないclassの組み合わせか。 */
+function isHiddenAtWideScreen(tokens: readonly string[]): boolean {
+  if (tokens.some((token) => BREAKPOINT_HIDDEN_UTILITY.test(token))) return true;
+  return tokens.some((token) => HIDDEN_UTILITY.test(token)) && !tokens.some((token) => BREAKPOINT_SHOWN_UTILITY.test(token));
+}
+
 /**
  * コードブロック(pre)と、ほぼコードだけを持つその祖先から、Readabilityの負の語に当たるclassを外す。
  * スクロール領域の部品名(`[--scroll-area-fade-size:32px]`・`base-ui-disable-scrollbar`)が`scroll`に
  * 当たり、コードブロックが採点で捨てられていた。コード以外の文字を多く持つ祖先(コメント欄など)では
  * 止める: そこまで外すと、コードを含むだけの本文でない部品まで残る。
  */
-function dropNegativeClassesAroundCode(body: ClassHostElement, negative: RegExp): void {
+function dropNegativeClassesAroundCode(body: ClassElement, patterns: ReadabilityNamePatterns): void {
   const lengths = new Map<ClassElement, { text: number; code: number }>();
   const measure = (el: ClassElement): { text: number; code: number } => {
     const known = lengths.get(el);
@@ -1162,11 +1174,14 @@ function dropNegativeClassesAroundCode(body: ClassHostElement, negative: RegExp)
     return measured;
   };
   for (const pre of Array.from(body.querySelectorAll("pre"))) {
-    for (let el: ClassElement | null = pre; el && el !== (body as unknown); el = el.parentElement) {
+    for (let el: ClassElement | null = pre; el && el !== body; el = el.parentElement) {
       const { text, code } = measure(el);
       if (text - code > CODE_CHROME_MAX_LENGTH) break;
       const tokens = (el.getAttribute("class") ?? "").split(/\s+/);
-      const kept = tokens.filter((token) => !negative.test(token));
+      if (isHiddenAtWideScreen(tokens)) continue;
+      // 採点の前に要素ごと捨てる語(comment・sidebar・related等)は外さない: 外すと、短いコードを
+      // 含むだけのコメント欄やサイドバーが本文に入る。
+      const kept = tokens.filter((token) => !patterns.negative.test(token) || patterns.unlikelyCandidates.test(token));
       if (kept.length !== tokens.length) el.setAttribute("class", kept.join(" "));
     }
   }
@@ -1308,7 +1323,7 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
         const namePatterns = readabilityNamePatterns();
         if (namePatterns) {
           dropUnlikelyIdsOfAnchorWrappers(document.body as unknown as ClassHostElement, namePatterns);
-          dropNegativeClassesAroundCode(document.body as unknown as ClassHostElement, namePatterns.negative);
+          dropNegativeClassesAroundCode(document.body as unknown as ClassElement, namePatterns);
         }
       }
       const article = new Readability(document).parse();
