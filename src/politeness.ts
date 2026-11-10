@@ -10,7 +10,16 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import robotsParserImport from "robots-parser";
-import { FetchTimeoutError, HostRefusedError, HttpStatusError, NetworkError, PrivateAddressError, RobotsDeniedError, WaitTooLongError } from "./errors.js";
+import {
+  FetchTimeoutError,
+  HostRefusedError,
+  HttpStatusError,
+  NetworkError,
+  PrivateAddressError,
+  RequestCancelledError,
+  RobotsDeniedError,
+  WaitTooLongError,
+} from "./errors.js";
 import { httpGet, USER_AGENT } from "./fetcher/http.js";
 import { DEFAULT_ROBOTS_TTL_MS } from "./ttl.js";
 
@@ -24,6 +33,38 @@ const robotsOverrideScope = new AsyncLocalStorage<ReadonlySet<string>>();
  */
 export function runIgnoringRobotsFor<T>(approvedUrls: readonly string[], fn: () => Promise<T>): Promise<T> {
   return robotsOverrideScope.run(new Set(approvedUrls.map((url) => new URL(url).origin)), fn);
+}
+
+/** 呼び出し元(MCPのツール呼び出し)の取り消し。 */
+const cancellationScope = new AsyncLocalStorage<AbortSignal>();
+
+/**
+ * fnの実行中、待ち行列の待機(guard/waitTurn)をsignalの取り消しで打ち切る。引数で渡さないのは、待ち行列に
+ * 入る経路(fetch・screenshot・links・PDF)の関数すべてに通すことになるため(許可の範囲と同じく文脈に載せる)。
+ */
+export function runCancellableBy<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+  return cancellationScope.run(signal, fn);
+}
+
+/** 今の呼び出しの取り消し。HTTP取得へはこれを明示的に渡す。取り消しの文脈の外ではundefined。 */
+export function currentCancellation(): AbortSignal | undefined {
+  return cancellationScope.getStore();
+}
+
+/** promiseの完了を待つ。先に取り消されたらRequestCancelledErrorで抜ける(promise自体は止めない)。 */
+async function unlessCancelled<T>(promise: Promise<T>, url: string, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) throw new RequestCancelledError(url);
+  let onAbort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new RequestCancelledError(url));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, cancelled]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 function isOverriddenIn(approvedOrigins: ReadonlySet<string> | undefined, url: string): boolean {
@@ -260,6 +301,7 @@ export class PolitenessManager {
     const host = new URL(url).host;
     const crawlDelayMs = await this.getCrawlDelayMs(url);
     const intervalMs = Math.max(this.minIntervalMs, crawlDelayMs);
+    const signal = cancellationScope.getStore();
 
     const pace = { url, host, intervalMs, crawlDelayMs };
     // 番が来てから断ると、そこまで待たせてしまう。先に並んでいる件数から目安を出し、並ぶ前に断る。
@@ -278,14 +320,15 @@ export class PolitenessManager {
     this.locks.set(host, entry);
     this.queued.set(host, ahead + 1);
 
-    await previous;
     try {
+      // 取り消されたら番を待たずに抜け、後ろの呼び出しを先へ進める(finallyで自分の番を手放す)。
+      await unlessCancelled(previous, url, signal);
       const elapsed = this.now() - this.lastRequestAtOf(host);
       if (elapsed < intervalMs) {
         // 並んでいる間に別プロセスが同じホストへの要求を記録していると、目安より長くなりうる。
         this.assertWaitWithinLimit(pace, intervalMs - elapsed, 0);
         onProgress?.("アクセス間隔を確保するため待機しています…");
-        await this.sleep(intervalMs - elapsed);
+        await unlessCancelled(this.sleep(intervalMs - elapsed), url, signal);
       }
       // 待っている間に、先に並んでいた同じホストへの取得が断られていることがある。
       this.assertNotRefused(url);

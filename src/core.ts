@@ -42,7 +42,7 @@ import {
   formatPdfTextResponse,
   formatUnchangedResponse,
 } from "./formatting.js";
-import { PolitenessManager } from "./politeness.js";
+import { currentCancellation, PolitenessManager, runCancellableBy } from "./politeness.js";
 import { captureTiledScreenshot, DEFAULT_TILE_WIDTH } from "./screenshot.js";
 import { computeBlockHashes, removeTemplateBlocks } from "./templateLearning.js";
 import { estimateTokens, paginateMarkdown } from "./tokens.js";
@@ -202,7 +202,7 @@ async function fetchAndExtract(
   const fullReadMaxBytes = (contentType: string | null, finalUrl: string): number | null =>
     looksLikePdf(finalUrl, contentType) ? DEFAULT_PDF_MAX_BYTES : null;
   const waitTurn = (targetUrl: string) => politeness.waitTurn(targetUrl, onProgress);
-  const baseOptions = { onProgress, checkRobots, waitTurn, fullReadMaxBytes };
+  const baseOptions = { onProgress, checkRobots, waitTurn, fullReadMaxBytes, signal: currentCancellation() };
   const fetchResult = await fetchPage(url, conditionalHeaders ? { ...baseOptions, headers: conditionalHeaders } : baseOptions);
   if ("notModified" in fetchResult) {
     return {
@@ -330,14 +330,19 @@ function pageFromCacheEntry(url: string, cached: ReturnType<PageCache["get"]>, c
  *
  * 進捗通知は相乗りした呼び出しにも配る。まとめた先頭の呼び出しにprogressTokenが無く、
  * 後から相乗りした呼び出しにだけある場合でも、通知が届かなくならないようにするため。
+ *
+ * 取り消しは、相乗りした呼び出しが全員取り消したときだけ処理に伝える。先頭の呼び出しの取り消しで
+ * 止めると、取り消していない呼び出しまで失敗する。取り消せない呼び出し(CLI等)が1つでもあれば止めない。
  */
 class SharedOperations<T> {
-  private readonly running = new Map<string, { promise: Promise<T>; listeners: Set<(message: string) => void> }>();
+  private readonly running = new Map<string, { promise: Promise<T>; listeners: Set<(message: string) => void>; join: (signal: AbortSignal | undefined) => void }>();
 
   run(key: string, onProgress: ((message: string) => void) | undefined, operation: (notify: (message: string) => void) => Promise<T>): Promise<T> {
+    const signal = currentCancellation();
     const existing = this.running.get(key);
     if (existing) {
       if (onProgress) existing.listeners.add(onProgress);
+      existing.join(signal);
       return existing.promise;
     }
 
@@ -346,8 +351,34 @@ class SharedOperations<T> {
     const notify = (message: string): void => {
       for (const listener of listeners) listener(message);
     };
-    const promise = operation(notify).finally(() => this.running.delete(key));
-    this.running.set(key, { promise, listeners });
+    const shared = new AbortController();
+    let activeCancellable = 0;
+    let uncancellable = false;
+    const join = (participant: AbortSignal | undefined): void => {
+      if (participant === undefined) {
+        uncancellable = true;
+        return;
+      }
+      if (participant.aborted) return;
+      activeCancellable += 1;
+      participant.addEventListener(
+        "abort",
+        () => {
+          activeCancellable -= 1;
+          if (activeCancellable > 0 || uncancellable) return;
+          // 止めた処理には相乗りさせず、この後に来た呼び出しは新しく取得する。
+          if (this.running.get(key) === entry) this.running.delete(key);
+          shared.abort();
+        },
+        { once: true },
+      );
+    };
+    join(signal);
+    const promise = runCancellableBy(shared.signal, () => operation(notify)).finally(() => {
+      if (this.running.get(key) === entry) this.running.delete(key);
+    });
+    const entry = { promise, listeners, join };
+    this.running.set(key, entry);
     return promise;
   }
 }
@@ -699,9 +730,11 @@ async function loadPdfDocument(url: string, notify: (message: string) => void, p
   if (cached?.lastModified) conditionalHeaders["If-Modified-Since"] = cached.lastModified;
 
   const checkRobots = politeness.robotsCheckForThisCall();
+  const signal = currentCancellation();
   let binary = await httpGetBinary(url, {
     maxBytes: DEFAULT_PDF_MAX_BYTES,
     checkRobots,
+    signal,
     ...(Object.keys(conditionalHeaders).length > 0 ? { headers: conditionalHeaders } : {}),
   });
 
@@ -718,7 +751,7 @@ async function loadPdfDocument(url: string, notify: (message: string) => void, p
       return { kind: "cached" };
     }
     await politeness.guard(url, notify);
-    binary = await httpGetBinary(url, { maxBytes: DEFAULT_PDF_MAX_BYTES, checkRobots });
+    binary = await httpGetBinary(url, { maxBytes: DEFAULT_PDF_MAX_BYTES, checkRobots, signal });
     if (binary.status === 304) throw new UnexpectedNotModifiedError(url);
   }
 
