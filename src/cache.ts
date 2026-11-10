@@ -42,7 +42,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { AmenboError } from "./errors.js";
-import { DEFAULT_ROBOTS_TTL_MS } from "./ttl.js";
+import { DEFAULT_ROBOTS_TTL_MS, MAX_ROBOTS_TTL_MS } from "./ttl.js";
 
 export type CacheStatus = "fresh" | "revalidated" | "miss";
 export type ScreenshotCacheStatus = "fresh" | "miss";
@@ -481,13 +481,15 @@ export class PageCache {
   private pruneExpired(): void {
     const now = this.now();
     const cutoff = now - this.ttlMs;
-    const robotsCutoff = now - this.robotsTtlMs;
+    // robots.txtとホストごとの最終要求時刻は、Crawl-delayが長いとrobotsTtlMsより長く要る(期間はpolitenessが行ごとに
+    // 判定する)ので、RFC 9309の上限まで残す。
+    const robotsCutoff = now - Math.max(this.robotsTtlMs, MAX_ROBOTS_TTL_MS);
 
     this.statements.deletePagesExpired.run({ ttlMs: this.ttlMs, now, retentionMs: VALIDATOR_RETENTION_MS });
     this.statements.deleteDomainPagesExpired.run(cutoff);
     // code-reviewer指摘: host_requestsもM3の対象から漏れていた(訪問ホスト毎に1行増える
     // 無制限増加テーブルという点でdomain_pages等と同じ性質を持つため、他テーブルと一貫させる)。
-    this.statements.deleteHostRequestsExpired.run(cutoff);
+    this.statements.deleteHostRequestsExpired.run(robotsCutoff);
     this.statements.deleteRobotsExpired.run(robotsCutoff);
     this.statements.deleteHostRefusalsExpired.run(now);
 

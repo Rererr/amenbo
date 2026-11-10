@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CacheFileUnreadableError, computeScreenshotCacheKey, PageCache } from "../src/cache.js";
+import { MAX_ROBOTS_TTL_MS } from "../src/ttl.js";
 
 let dir: string;
 let dbPath: string;
@@ -439,16 +440,21 @@ describe("PageCache - host_requests(politenessのプロセス間レート制御�
     cache.close();
   });
 
-  it("code-reviewer指摘: M3と一貫させ、起動時にTTL超過したhost_requestsエントリを削除する", () => {
+  it("起動時に、RFC 9309の上限(24時間)を超えたhost_requestsエントリを削除する(Crawl-delayが長いホストの間隔を守るため、ページのTTLでは消さない)", () => {
     let now = 1_000_000;
     const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
     cache1.setHostLastRequestAt("old.example.com", now);
     cache1.close();
 
-    now += 20 * 60 * 1000; // TTL(15分)超過
+    now += 20 * 60 * 1000; // ページのTTL(15分)は超過
     const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
-    expect(cache2.getHostLastRequestAt("old.example.com")).toBeNull();
+    expect(cache2.getHostLastRequestAt("old.example.com")).toBe(1_000_000);
     cache2.close();
+
+    now += MAX_ROBOTS_TTL_MS;
+    const cache3 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, now: () => now });
+    expect(cache3.getHostLastRequestAt("old.example.com")).toBeNull();
+    cache3.close();
   });
 
   it("M3: TTL内のhost_requestsエントリは起動時に削除されない", () => {
@@ -533,16 +539,21 @@ describe("PageCache - robots_cache(politenessのプロセス間robots.txtキャ�
     cache2.close();
   });
 
-  it("M3: TTL超過したrobots_cacheエントリは起動時に削除される(オリジン毎に増える他テーブルと同じ扱い)", () => {
+  it("M3: RFC 9309の上限(24時間)を超えたrobots_cacheエントリは起動時に削除される(使えるかの判定はpolitenessが行ごとにする)", () => {
     let now = 1_000_000;
     const cache1 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, robotsTtlMs: 15 * 60 * 1000, now: () => now });
     cache1.setRobotsCache("https://old.example.com", "body", now);
     cache1.close();
 
-    now += 20 * 60 * 1000; // TTL(15分)超過
+    now += 20 * 60 * 1000; // robotsTtlMs(15分)は超過しても、Crawl-delayが長いと要るので残す
     const cache2 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, robotsTtlMs: 15 * 60 * 1000, now: () => now });
-    expect(cache2.getRobotsCache("https://old.example.com")).toBeNull();
+    expect(cache2.getRobotsCache("https://old.example.com")).not.toBeNull();
     cache2.close();
+
+    now += MAX_ROBOTS_TTL_MS;
+    const cache3 = new PageCache({ dbPath, ttlMs: 15 * 60 * 1000, robotsTtlMs: 15 * 60 * 1000, now: () => now });
+    expect(cache3.getRobotsCache("https://old.example.com")).toBeNull();
+    cache3.close();
   });
 
   it("M3: TTL内のrobots_cacheエントリは起動時に削除されない", () => {
@@ -557,23 +568,17 @@ describe("PageCache - robots_cache(politenessのプロセス間robots.txtキャ�
     cache2.close();
   });
 
-  it("robots_cacheはページTTLではなくrobotsTtlMsで削除する", () => {
+  it("robots_cacheはrobotsTtlMsが上限(24時間)より長ければ、そちらまで残す", () => {
     let now = 1_000_000;
-    const pageTtlMs = 15 * 60 * 1000;
-    const robotsTtlMs = 60 * 60 * 1000;
-    const cache1 = new PageCache({ dbPath, ttlMs: pageTtlMs, robotsTtlMs, now: () => now });
+    const robotsTtlMs = 2 * MAX_ROBOTS_TTL_MS;
+    const cache1 = new PageCache({ dbPath, robotsTtlMs, now: () => now });
     cache1.setRobotsCache("https://example.com", "body", now);
     cache1.close();
 
-    now += 20 * 60 * 1000;
-    const cache2 = new PageCache({ dbPath, ttlMs: pageTtlMs, robotsTtlMs, now: () => now });
+    now += MAX_ROBOTS_TTL_MS + 60_000;
+    const cache2 = new PageCache({ dbPath, robotsTtlMs, now: () => now });
     expect(cache2.getRobotsCache("https://example.com")).not.toBeNull();
     cache2.close();
-
-    now += 41 * 60 * 1000;
-    const cache3 = new PageCache({ dbPath, ttlMs: pageTtlMs, robotsTtlMs, now: () => now });
-    expect(cache3.getRobotsCache("https://example.com")).toBeNull();
-    cache3.close();
   });
 });
 

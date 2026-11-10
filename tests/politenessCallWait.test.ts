@@ -134,6 +134,49 @@ describe("呼び出しの途中の待ち", () => {
   });
 });
 
+describe("Crawl-delayがrobots.txtの既定の保存期間(1時間)より長いホスト", () => {
+  it("案内された時刻を過ぎて取り直せば、robots.txt を取り直さずに完了する", async () => {
+    httpGetMock.mockResolvedValue(robots("User-agent: *\nCrawl-delay: 7200\n"));
+    const clock = createClock();
+    const pm = new PolitenessManager({ now: clock.now, sleep: clock.sleep });
+
+    await expect(pm.rememberRefusals(() => pm.guard(`${SITE}/page`))).rejects.toThrow(WaitTooLongError);
+    clock.advance(7_300_000); // 案内の時刻(2時間後)を少し過ぎてから取り直す
+    await expect(pm.rememberRefusals(() => pm.guard(`${SITE}/page`))).resolves.toBeUndefined();
+
+    expect(httpGetMock).toHaveBeenCalledTimes(1); // robots.txt は最初の1回だけ
+  });
+
+  it("別プロセスが記録したrobots.txtも、同じ期間だけストアから使う", async () => {
+    const clock = createClock();
+    const fetchedAt = clock.now();
+    clock.advance(7_300_000);
+    const pm = new PolitenessManager({
+      now: clock.now,
+      sleep: clock.sleep,
+      robotsStore: { get: () => ({ body: "User-agent: *\nCrawl-delay: 7200\n", fetchedAt }), set: () => {} },
+    });
+
+    await expect(pm.rememberRefusals(() => pm.guard(`${SITE}/page`))).resolves.toBeUndefined();
+    expect(httpGetMock).not.toHaveBeenCalled();
+  });
+
+  it("延ばしてもRFC 9309の上限(24時間)を超えては使わない", async () => {
+    const clock = createClock();
+    const fetchedAt = clock.now();
+    clock.advance(24 * 60 * 60_000);
+    httpGetMock.mockResolvedValue(robots(""));
+    const pm = new PolitenessManager({
+      now: clock.now,
+      sleep: clock.sleep,
+      robotsStore: { get: () => ({ body: "User-agent: *\nCrawl-delay: 100000\n", fetchedAt }), set: () => {} },
+    });
+
+    await pm.rememberRefusals(() => pm.guard(`${SITE}/page`));
+    expect(httpGetMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("WaitTooLongError - 次に取得できる時刻の示し方", () => {
   const now = Date.UTC(2026, 10, 10, 1, 0, 0);
 

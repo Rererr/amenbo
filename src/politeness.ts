@@ -23,7 +23,7 @@ import {
   WaitTooLongError,
 } from "./errors.js";
 import { httpGet, USER_AGENT } from "./fetcher/http.js";
-import { DEFAULT_ROBOTS_TTL_MS } from "./ttl.js";
+import { DEFAULT_ROBOTS_TTL_MS, MAX_ROBOTS_TTL_MS } from "./ttl.js";
 
 /** 利用者が許可したページのオリジン。許可の範囲を、利用者が確認画面で見たサイトに限る。 */
 const robotsOverrideScope = new AsyncLocalStorage<ReadonlySet<string>>();
@@ -191,6 +191,11 @@ function describeUnreachableRobots(error: unknown): string | null {
 }
 
 /** 取り消されたらタイマーを止める。そのときは解決しない(待ち終わりと区別できず要求を送ってしまうため)。 */
+function crawlDelayMsOf(robots: Robot): number {
+  const delaySec = robots.getCrawlDelay(USER_AGENT);
+  return typeof delaySec === "number" && Number.isFinite(delaySec) ? delaySec * 1000 : 0;
+}
+
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -426,7 +431,7 @@ export class PolitenessManager {
     }
 
     for (const [origin, entry] of this.robotsCache) {
-      if (entry.fetchedAt < cutoff) {
+      if (this.now() - entry.fetchedAt >= (entry.ttlMs ?? this.robotsTtlFor(entry.robots))) {
         this.robotsCache.delete(origin);
       }
     }
@@ -434,8 +439,15 @@ export class PolitenessManager {
 
   private async getCrawlDelayMs(url: string): Promise<number> {
     const robots = await this.getRobots(url);
-    const delaySec = robots?.getCrawlDelay(USER_AGENT);
-    return typeof delaySec === "number" && Number.isFinite(delaySec) ? delaySec * 1000 : 0;
+    return robots ? crawlDelayMsOf(robots) : 0;
+  }
+
+  /**
+   * robots.txt を持つ期間。robots.txt の取得も1要求に数えるので、既定の期間がCrawl-delayより短いと、案内した時刻に
+   * 取り直すたびに robots.txt を取り直してその1要求を使い、いつまでも完了しない。Crawl-delayの分だけ延ばす。
+   */
+  private robotsTtlFor(robots: Robot): number {
+    return Math.max(this.robotsTtlMs, Math.min(MAX_ROBOTS_TTL_MS, this.robotsTtlMs + crawlDelayMsOf(robots)));
   }
 
   private async getRobots(url: string): Promise<Robot | null> {
@@ -453,7 +465,7 @@ export class PolitenessManager {
 
     const origin = parsed.origin;
     const cached = this.robotsCache.get(origin);
-    if (cached && this.now() - cached.fetchedAt < (cached.ttlMs ?? this.robotsTtlMs)) {
+    if (cached && this.now() - cached.fetchedAt < (cached.ttlMs ?? this.robotsTtlFor(cached.robots))) {
       return cached.robots;
     }
 
@@ -474,10 +486,12 @@ export class PolitenessManager {
     // CLIバルク収集時の再取得(=先方への追加負荷)を避けられる。空bodyの記録(robots.txt
     // 不在=制限なし)もfetchedAtの有無で「未記録」と区別して正しく復元する。
     const stored = this.robotsStore?.get(origin);
-    if (stored && this.now() - stored.fetchedAt < this.robotsTtlMs) {
+    if (stored) {
       const robots = robotsParser(`${origin}/robots.txt`, stored.body);
-      this.robotsCache.set(origin, { robots, fetchedAt: stored.fetchedAt });
-      return robots;
+      if (this.now() - stored.fetchedAt < this.robotsTtlFor(robots)) {
+        this.robotsCache.set(origin, { robots, fetchedAt: stored.fetchedAt });
+        return robots;
+      }
     }
 
     const robotsUrl = `${origin}/robots.txt`;
