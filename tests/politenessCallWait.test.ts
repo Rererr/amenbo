@@ -79,7 +79,7 @@ describe("呼び出しの途中の待ち", () => {
     expect(result).toMatchObject({ tier: "browser" });
     expect(httpGetRoutedMock).toHaveBeenCalledTimes(1);
     expect(fetchWithBrowserMock).toHaveBeenCalledTimes(1);
-    expect(clock.sleep).toHaveBeenCalledWith(90_000);
+    expect(clock.sleep).toHaveBeenCalledWith(90_000, undefined);
   });
 
   it("linksでsitemapからページへフォールバックするときも、途中の待ちは断らずに完了する", async () => {
