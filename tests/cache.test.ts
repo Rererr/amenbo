@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CacheFileUnreadableError, computeScreenshotCacheKey, PageCache } from "../src/cache.js";
 
@@ -375,6 +375,7 @@ describe("PageCache - Phase 4 テンプレート学習(定型ブロック判定)
     const cache2 = new PageCache({ dbPath, cacheDir: dir, ttlMs: 15 * 60 * 1000, now: () => now });
     expect(cache2.getScreenshot(cacheKey)).toBeUndefined();
     expect(existsSync(tilePath)).toBe(false); // PNGファイルもディスクから削除されている
+    expect(existsSync(dirname(tilePath))).toBe(false); // 空のディレクトリも残さない
     cache2.close();
   });
 

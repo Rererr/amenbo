@@ -488,9 +488,10 @@ export class PageCache {
     const expiredScreenshots = this.statements.selectScreenshotsExpired.all(cutoff) as unknown as ScreenshotRow[];
     for (const row of expiredScreenshots) {
       const tilePaths = JSON.parse(row.tile_paths) as string[];
-      for (const filePath of tilePaths) {
+      // タイルのディレクトリはcacheKey単位(setScreenshot参照)なので、ファイルと一緒に消す。
+      for (const filePath of [...tilePaths, join(this.cacheDir, "screenshots", row.cache_key)]) {
         try {
-          rmSync(filePath, { force: true });
+          rmSync(filePath, { recursive: true, force: true });
         } catch {
           // 既に削除済み等のファイルシステムエラーはベストエフォートで無視する
         }
