@@ -12,8 +12,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  computePdfImageCacheKey,
   computeScreenshotCacheKey,
   PageCache,
+  parseCacheControl,
   withoutDocumentFragment,
   type CacheStatus,
   type ScreenshotCacheStatus,
@@ -131,7 +133,8 @@ const DEFAULT_PAGE = 1;
 const DEFAULT_SCREENSHOT_SCALE = 1.0;
 
 /**
- * そのURLがPDFとしてキャッシュ済みか(pdfPageCountはPDF経路だけが書くメタデータ)。
+ * そのURLがPDFとしてキャッシュ済みか(pdfPageCountはPDF経路だけが書くメタデータ。
+ * 文字の層が無いPDFは、描画した画像を画面写真の表に持つ)。
  *
  * 「解析中でまだキャッシュに現れていない間に届いた同一URLの要求が、HTML経路へ入って
  * 取得をやり直す」という窓は無い。pdf.jsの解析はマクロタスクを一切譲らないため
@@ -139,7 +142,7 @@ const DEFAULT_SCREENSHOT_SCALE = 1.0;
  * 解析が終わってキャッシュが書かれた後になる。
  */
 function isCachedAsPdf(url: string): boolean {
-  return typeof cache.get(url)?.metadata.pdfPageCount === "number";
+  return typeof cache.get(url)?.metadata.pdfPageCount === "number" || cache.getScreenshot(computePdfImageCacheKey(url)) !== undefined;
 }
 
 /** URLのhostnameを安全に取り出す(不正URLならnull)。Phase 4テンプレート学習のドメインキーに使う。 */
@@ -620,6 +623,8 @@ async function handlePdfFetch(
     if (cached && cache.isFresh(cached)) {
       return [{ type: "text", text: formatPdfResponseFromCache(url, cached, maxTokens, page) }];
     }
+    const cachedImages = readCachedPdfImages(url);
+    if (cachedImages) return cachedImages;
   }
 
   const document = await pdfOperations.run(url, onProgress, (notify) => loadPdfDocument(url, notify, prefetched));
@@ -642,13 +647,38 @@ async function handlePdfFetch(
     ];
   }
 
+  return pdfImageBlocks(document.title, document.finalUrl, document.pageCount, document.extractedPageCount, document.images.map((image) => image.png), "miss");
+}
+
+function pdfImageBlocks(
+  title: string | null,
+  finalUrl: string,
+  pageCount: number,
+  extractedPageCount: number,
+  pngs: Buffer[],
+  cacheStatus: "fresh" | "miss",
+): Array<TextBlock | ImageBlock> {
   return [
-    {
-      type: "text",
-      text: formatPdfImageResponse(document.title, document.finalUrl, document.pageCount, document.extractedPageCount, document.images.length),
-    },
-    ...document.images.map((image) => ({ type: "image" as const, data: image.png.toString("base64"), mimeType: "image/png" })),
+    { type: "text", text: formatPdfImageResponse(title, finalUrl, pageCount, extractedPageCount, pngs.length, cacheStatus) },
+    ...pngs.map((png) => ({ type: "image" as const, data: png.toString("base64"), mimeType: "image/png" })),
   ];
+}
+
+/** 文字の層が無いPDFの画像をキャッシュから返す(新鮮でないか、タイルのファイルが欠けていればnull)。 */
+function readCachedPdfImages(url: string): Array<TextBlock | ImageBlock> | null {
+  const cached = cache.getScreenshot(computePdfImageCacheKey(url));
+  if (!cached || !cache.isFresh(cached)) return null;
+  const tiles = readCachedTiles(cached.tilePaths);
+  if (!tiles) return null;
+  const { title, pdfPageCount, pdfExtractedPageCount } = cached.metadata;
+  return pdfImageBlocks(
+    typeof title === "string" ? title : null,
+    cached.url,
+    Number(pdfPageCount ?? 0),
+    Number(pdfExtractedPageCount ?? pdfPageCount ?? 0),
+    tiles.map((tile) => tile.data),
+    "fresh",
+  );
 }
 
 /** PDFの取得(必要なら)と解析。同一URLではこれが1本にまとめられる。 */
@@ -736,8 +766,17 @@ async function parsePdfDocument(url: string, source: PrefetchedPdf, notify: (mes
     };
   }
 
-  // テキスト層が実質無い(スキャンPDF): 先頭ページから画像タイルとして返す(キャッシュ非対象)
+  // テキスト層が実質無い(スキャンPDF): 先頭ページから画像タイルとして返す。描画した画像は画面写真と
+  // 同じ仕組みで保存し、同じPDFを求められるたびに最大20MBを取り直して描画し直さないようにする。
   const images = await renderPdfPages(source.bytes);
+  if (!parseCacheControl(source.cacheControl).noStore) {
+    cache.setScreenshot({
+      cacheKey: computePdfImageCacheKey(url),
+      url: source.finalUrl,
+      tiles: images.map((image) => image.png),
+      metadata: { title: textResult.title, pdfPageCount: textResult.pageCount, pdfExtractedPageCount: textResult.extractedPageCount },
+    });
+  }
   return {
     kind: "images",
     title: textResult.title,
