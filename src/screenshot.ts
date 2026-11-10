@@ -98,7 +98,7 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   // C1: SSRF/スキーム検証(guardPublicAddress)+リダイレクト再検証込みのナビゲーション。
-  const { context, page } = await openPageAndNavigate(
+  const { context, page, assertNotBlocked } = await openPageAndNavigate(
     url,
     timeoutMs,
     { userAgent: USER_AGENT, viewport: { width, height: DEFAULT_TILE_HEIGHT }, deviceScaleFactor: scale },
@@ -157,6 +157,7 @@ export async function captureTiledScreenshot(url: string, options: ScreenshotOpt
       return { geometry, png: canvas.toBuffer("image/png") };
     });
 
+    assertNotBlocked();
     return { finalUrl: page.url(), pageWidth: dimensions.width, pageHeight: dimensions.height, tiles, truncated };
   } finally {
     await context.close();

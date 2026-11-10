@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 process.env.PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK = "1";
 
 const { BrowserUnavailableError, RobotsDeniedError } = await import("../src/errors.js");
-const { closeBrowser, fetchWithBrowser, getBrowser } = await import("../src/fetcher/browser.js");
+const { closeBrowser, fetchWithBrowser, getBrowser, openPageAndNavigate } = await import("../src/fetcher/browser.js");
 const { setAddressPolicyForTests } = await import("../src/fetcher/http.js");
 const { PolitenessManager } = await import("../src/politeness.js");
 
@@ -80,6 +80,31 @@ describe("ブラウザ経路のrobots.txt確認(実Chromium)", () => {
 
     await expect(fetchWithBrowser(`${origin}/js`, 10_000, { checkRobots: checkRobots() })).rejects.toThrow(RobotsDeniedError);
     expect(arrivals).not.toContain("/private/js");
+  }, 30_000);
+
+  itWithBrowser("gotoが返った後のページ内の遷移も、contextを閉じるまでrobots.txtで止めて、理由を返せる", async () => {
+    arrivals.length = 0;
+    const navigation = await openPageAndNavigate(`${origin}/plain`, 10_000, {}, { checkRobots: checkRobots() });
+    try {
+      expect(() => navigation.assertNotBlocked()).not.toThrow();
+      // 読み込みが終わった後で、ページのスクリプトが遷移する(setTimeoutでの遷移と同じ)
+      await navigation.page.evaluate(() => {
+        location.href = "/private/late";
+      });
+      let blocked: unknown = null;
+      for (let i = 0; i < 100 && blocked === null; i++) {
+        try {
+          navigation.assertNotBlocked();
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } catch (error) {
+          blocked = error;
+        }
+      }
+      expect(blocked).toBeInstanceOf(RobotsDeniedError);
+      expect(arrivals).not.toContain("/private/late");
+    } finally {
+      await navigation.context.close();
+    }
   }, 30_000);
 
   itWithBrowser("許可されたパスだけを通る複数段のリダイレクトは、最後まで辿って本文を返す", async () => {

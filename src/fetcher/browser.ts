@@ -341,7 +341,7 @@ export async function navigateSafely(
   url: string,
   timeoutMs: number,
   options: SafeNavigationOptions = {},
-): Promise<PlaywrightResponse | null> {
+): Promise<SafeNavigation> {
   await guardPublicAddress(url);
 
   let blockedError: AmenboError | null = null;
@@ -375,21 +375,33 @@ export async function navigateSafely(
     blockedError = error;
   });
   await page.route(NAVIGATION_ROUTE_PATTERN, handler);
+  // ページ内からの遷移(location.href・meta refresh)を止めると、gotoは成功したままエラー画面に置き換わる。
+  const assertNotBlocked = (): void => {
+    if (blockedError) throw blockedError as AmenboError;
+  };
   try {
     const response = await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
-    // ページ内からの遷移(location.href・meta refresh)を止めると、gotoは成功したままエラー画面に置き換わる。
-    if (blockedError) throw blockedError as AmenboError;
-    return response;
+    assertNotBlocked();
+    // 成功しても検証は外さない。gotoが返った後のページ内の遷移も止めるため(外すのはcontextを閉じるとき)。
+    return { response, assertNotBlocked };
   } catch (cause) {
-    if (blockedError) throw blockedError as AmenboError;
+    await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
+    await stopGuardingRedirects();
+    assertNotBlocked();
     if (cause instanceof Error && /timeout/i.test(cause.message)) {
       throw new FetchTimeoutError(url, timeoutMs, "browser");
     }
     throw cause;
-  } finally {
-    await page.unroute(NAVIGATION_ROUTE_PATTERN, handler).catch(() => {});
-    await stopGuardingRedirects();
   }
+}
+
+export interface SafeNavigation {
+  response: PlaywrightResponse | null;
+  /**
+   * 遷移の検証が止めた遷移があれば、その理由で投げる。検証はcontextを閉じるまで働くので、本文や画像を
+   * 返す直前にも呼ぶ(gotoが返った後のページ内の遷移が止められると、ページはエラー画面に置き換わっている)。
+   */
+  assertNotBlocked(): void;
 }
 
 /**
@@ -427,10 +439,9 @@ async function guardMainFrameRedirects(
   };
 }
 
-export interface BrowserNavigation {
+export interface BrowserNavigation extends SafeNavigation {
   context: BrowserContext;
   page: Page;
-  response: PlaywrightResponse | null;
 }
 
 export interface SafeNavigationOptions {
@@ -452,12 +463,12 @@ export async function openPageAndNavigate(
   const context = await browser.newContext(contextOptions);
   try {
     const page = await context.newPage();
-    const response = await navigateSafely(page, url, timeoutMs, navigationOptions);
+    const { response, assertNotBlocked } = await navigateSafely(page, url, timeoutMs, navigationOptions);
     // HTTP経路(httpGet)と同じく非2xxは失敗にする。bot対策の画面(429等)を取得成功として返さないため。
     if (response && response.status() >= 400) {
       throw new HttpStatusError(page.url(), response.status(), response.statusText(), response.headers()["retry-after"]);
     }
-    return { context, page, response };
+    return { context, page, response, assertNotBlocked };
   } catch (error) {
     await context.close().catch(() => {});
     throw error;
@@ -470,7 +481,7 @@ export async function fetchWithBrowser(
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
   navigationOptions: SafeNavigationOptions = {},
 ): Promise<BrowserFetchResult> {
-  const { context, page, response } = await openPageAndNavigate(url, timeoutMs, { userAgent: USER_AGENT }, navigationOptions);
+  const { context, page, response, assertNotBlocked } = await openPageAndNavigate(url, timeoutMs, { userAgent: USER_AGENT }, navigationOptions);
   try {
     await hideConsentBanners(page).catch(() => {
       // ページ評価に失敗しても取得自体は継続する(ベストエフォート)
@@ -479,6 +490,7 @@ export async function fetchWithBrowser(
     // page.content()より必ず先に行う
     const geometry = await collectPageGeometry(page).catch(() => EMPTY_GEOMETRY);
     const html = await page.content();
+    assertNotBlocked();
     return { finalUrl: page.url(), html, status: response?.status() ?? 200, geometry };
   } finally {
     await context.close();
