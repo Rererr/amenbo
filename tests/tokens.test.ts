@@ -139,4 +139,27 @@ describe("paginateMarkdown", () => {
       expect(result.exceededBudget).toBe(false);
     });
   });
+
+  describe("予算を超える1つのコードフェンス(文書全体が1つのpreに入るページ)", () => {
+    const paragraph = (i: number): string => `   ${i}. This is paragraph ${i} of a plain-text document.\n   It explains the protocol behaviour in detail.`;
+    const bigFence = ["```", ...Array.from({ length: 200 }, (_, i) => `${paragraph(i)}\n`), "```"].join("\n");
+
+    it("フェンスの中の空行で分け、各ページを予算に収めてフェンスで閉じ直す", () => {
+      const first = paginateMarkdown(bigFence, 500, 1);
+      expect(first.totalPages).toBeGreaterThan(1);
+      for (let page = 1; page <= first.totalPages; page++) {
+        const result = paginateMarkdown(bigFence, 500, page);
+        expect(result.exceededBudget).toBe(false);
+        expect(result.content.startsWith("```\n")).toBe(true);
+        expect(result.content.endsWith("\n```")).toBe(true);
+      }
+      expect(paginateMarkdown(bigFence, 500, first.totalPages).content).toContain("paragraph 199 ");
+    });
+
+    it("空行の無い巨大なフェンスは割らずに返す", () => {
+      const result = paginateMarkdown("```\n" + "x = 1;\n".repeat(400) + "```", 50, 1);
+      expect(result.totalPages).toBe(1);
+      expect(result.exceededBudget).toBe(true);
+    });
+  });
 });
