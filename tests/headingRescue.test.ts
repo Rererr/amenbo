@@ -290,6 +290,33 @@ describe("extractMarkdown 見出し救出(Readability経路)", () => {
     expect(idxTable).toBeGreaterThan(idxHeading);
     expect(idxTable).toBeLessThan(idxNext);
   });
+
+  // Readabilityが捨てる要素の中身は、採取した見出しの側にだけ残る。
+  it.each([
+    ["パーマリンクのボタンの中のアイコンフォントの文字(platform.claude.com)", '<button type="button"><span>\uE09A</span></button>'],
+    ["パーマリンクのボタンの中の読み上げ用の文字", '<button type="button"><span class="sr-only">Copy link to $</span></button>'],
+    ["パーマリンクのボタンの中の絵文字", '<button type="button">🔗</button>'],
+    ['パーマリンクのaria-hidden="true"の「#」(Hugo系のテーマ)', '<a class="anchor" href="#$"><span aria-hidden="true">#</span></a>'],
+    ["hiddenの要素", "<span hidden>リンクをコピー</span>"],
+    ["版を選ぶselect", "<select><option>v1</option><option>v2</option></select>"],
+    [
+      "display:noneのMathML(Wikipediaの数式)",
+      '<span class="mwe-math-element"><span style="display: none;"><math><mi>x</mi></math></span><img class="mwe-math-fallback-image-inline" aria-hidden="true" alt="x" src="x.svg"></span>',
+    ],
+    ["visibility:hiddenの「コピー済み」", '<span style="visibility:hidden">コピー済み</span>'],
+  ])("%sを持つ見出しを二重に戻さない", (_name, inner) => {
+    const heading = (text: string): string => `<h2 id="${text}">${text}${inner.replaceAll("$", text)}</h2>`;
+    const html =
+      `<!DOCTYPE html><html><head><title>タイトル無関係語</title></head><body><article>` +
+      `<p>導入部。${LONG}${LONG}</p>` +
+      `${heading("概要")}<p>概要の説明。${LONG}</p>` +
+      `${heading("歴史")}<p>歴史の説明。${LONG}</p>` +
+      `</article></body></html>`;
+    const md = extractMarkdown(html, { url }).markdown;
+    // 数式の見出しでは、Readabilityが残す代わりの画像が見出しの中に残る。
+    expect(md.split("\n").filter((line) => line.startsWith("#"))).toEqual([expect.stringMatching(/^## 概要/), expect.stringMatching(/^## 歴史/)]);
+  });
+
 });
 
 // extractMarkdownの実順序(見出し復元→表復元→見出し復元)を実関数で合成し、Readabilityが
