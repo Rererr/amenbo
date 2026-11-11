@@ -305,3 +305,101 @@ describe("pruneLowValueBlocks(fit-pruning)", () => {
     expect(root.textContent).not.toContain("それでもまだ残る単独");
   });
 });
+
+describe("pruneLowValueBlocks のデータ表", () => {
+  // devguide.python.orgの「Unsupported versions」の表(2026-11-12取得)の行と、Sphinxが出す
+  // セルの間の改行。文の区切りが無く、日付と版番号と改行で文字の比率が下がるため、リンクの列が
+  // 1つあるだけで囲みのdivと節が負のスコアになっていた。
+  const versionRows = [
+    ["3.10", "619", "2021-10-04", "2026-10-01", "Pablo Galindo Salgado"],
+    ["3.9", "596", "2020-10-05", "2025-10-31", "Łukasz Langa"],
+    ["3.8", "569", "2019-10-14", "2024-10-07", "Łukasz Langa"],
+    ["3.7", "537", "2018-06-27", "2023-06-27", "Ned Deily"],
+    ["3.6", "494", "2016-12-23", "2021-12-23", "Ned Deily"],
+    ["3.5", "478", "2015-09-13", "2020-09-30", "Larry Hastings"],
+    ["3.4", "429", "2014-03-16", "2019-03-18", "Larry Hastings"],
+    ["3.3", "398", "2012-09-29", "2017-09-29", "Georg Brandl &amp; Ned Deily (3.3.7)"],
+    ["3.2", "392", "2011-02-20", "2016-02-20", "Georg Brandl"],
+    ["3.1", "375", "2009-06-27", "2012-04-09", "Benjamin Peterson"],
+    ["3.0", "361", "2008-12-03", "2009-06-27", "Barry Warsaw"],
+    ["2.7", "373", "2010-07-03", "2020-01-01", "Benjamin Peterson"],
+    ["2.6", "361", "2008-10-01", "2013-10-29", "Barry Warsaw"],
+  ]
+    .map(
+      ([branch, pep, first, end, manager]) =>
+        `<tr><td><p>${branch}</p></td>\n<td><p><a href="/pep-0${pep}/"><strong>PEP ${pep}</strong></a></p></td>\n<td><p>end-of-life</p></td>\n<td><p>${first}</p></td>\n<td><p>${end}</p></td>\n<td><p>${manager}</p></td>\n</tr>\n`,
+    )
+    .join("");
+
+  it("リンクの列を持つ版と日付の表は、囲みのdivと節ごと刈らない", () => {
+    const root = makeElement(`
+      <section id="unsupported-versions">
+        <h2>Unsupported versions</h2>
+        <div class="table-wrapper"><table><thead><tr><th><p>Branch</p></th>\n<th><p>Schedule</p></th>\n<th><p>Status</p></th>\n<th><p>First release</p></th>\n<th><p>End of life</p></th>\n<th><p>Release manager</p></th>\n</tr></thead>
+        <tbody>${versionRows}</tbody></table></div>
+      </section>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(0);
+    expect(root.textContent).toContain("Unsupported versions");
+    expect(root.textContent).toContain("Pablo Galindo Salgado");
+  });
+
+  it("空のセルは、文字を含むセルの割合に数えない", () => {
+    // 空の列を2つ足すと、空のセルを数えた割合は45/112で過半を割る。数えなければ45/84。
+    const rows = versionRows.replaceAll("</tr>", "<td></td><td><p></p></td></tr>");
+    const head = "<thead><tr><th>Branch</th><th>Schedule</th><th>Status</th><th>First release</th><th>End of life</th><th>Release manager</th><th></th><th></th></tr></thead>";
+    const root = makeElement(`<section><h2>Unsupported versions</h2><div class="table-wrapper"><table>${head}<tbody>${rows}</tbody></table></div></section>`);
+    expect(pruneLowValueBlocks(root)).toBe(0);
+  });
+
+  it("リンクばかりの表を包むdivは刈る", () => {
+    const links = Array.from({ length: 12 }, (_, i) => `<a href="/topic/${i}">関連する話題その${i}</a>`).join(" ");
+    const root = makeElement(`
+      <div class="navbox"><table><tr><th>関連項目</th><td>${links}</td></tr><tr><th>その他</th><td>${links}</td></tr></table></div>
+      <p>本文の段落です。十分な長さの文章として認識されるように句読点を含めておきます。もう少し足します。</p>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(1);
+    expect(root.textContent).not.toContain("関連する話題");
+    expect(root.textContent).toContain("本文の段落です");
+  });
+
+  it("数字だけのセルが並ぶ表(ブログのカレンダー)の数字は文字として数えない", () => {
+    // WordPressのカレンダーのウィジェットの形。投稿のある日だけリンクになる。数字を文字として数えると、
+    // ウィジェットが刈られずに残り、表の救出で本文の末尾に足される。
+    const days = Array.from({ length: 30 }, (_, i) => i + 1);
+    const weeks = Array.from({ length: 5 }, (_, w) =>
+      `<tr>${days.slice(w * 7, w * 7 + 7).map((d) => `<td>${[5, 12, 20].includes(d) ? `<a href="/2026/11/${d}/">${d}</a>` : d}</td>`).join("")}</tr>`,
+    ).join("");
+    const root = makeElement(`
+      <div id="secondary"><section class="widget widget_calendar"><h2 class="widget-title">カレンダー</h2><div class="calendar_wrap">
+        <table id="wp-calendar"><caption>2026年11月</caption><thead><tr><th>月</th><th>火</th><th>水</th><th>木</th><th>金</th><th>土</th><th>日</th></tr></thead>
+        <tbody>${weeks}</tbody></table></div></section></div>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(1);
+    expect(root.textContent).not.toContain("2026年11月");
+  });
+
+  it("入れ子の表の数字・記号は一度だけ数える", () => {
+    // 内側の表の日付を外側の表の分と二重に数えると、文字の比率が上がってスコアが-0.15から0.54になり、
+    // リンクの見出しと日付だけの囲みが残る。
+    const root = makeElement(
+      `<div><table><tr><th><a href="/a">Release notes</a></th><td><table><tr><td>v1 2021-10-04 2026-10-01</td><td>v2 2020-01-01 2019-03-18</td></tr></table></td></tr></table></div>`,
+    );
+    expect(pruneLowValueBlocks(root)).toBe(1);
+  });
+
+  it("表の中のリンクでない数字・記号は文字として数え、リンクの中は数えない", () => {
+    const table = { text: "3.10 2021-10-04 PEP 619", linkText: "PEP 619" };
+    const withTable = scoreBlock({ text: table.text, linkText: table.linkText, table });
+    // 文字は「PEP」の3字と、リンクの外の「3.10」「2021-10-04」の14字。リンクの中の「619」は数えない。
+    expect(withTable.letterRatio).toBeCloseTo(17 / [...table.text].length);
+    expect(scoreBlock({ text: table.text, linkText: table.linkText }).letterRatio).toBeCloseTo(3 / [...table.text].length);
+  });
+
+  it("表の外の数字・記号は文字として数えない", () => {
+    const table = { text: "3.10 2021-10-04 PEP 619", linkText: "PEP 619" };
+    const text = `1,234 views ${table.text}`;
+    // 文字は「views」「PEP」の8字と、表の中のリンクの外の14字。表の外の「1,234」は数えない。
+    expect(scoreBlock({ text, linkText: table.linkText, table }).letterRatio).toBeCloseTo(22 / [...text].length);
+  });
+});
