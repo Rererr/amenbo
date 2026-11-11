@@ -4,7 +4,7 @@
  * Readabilityの本文判定ヒューリスティック(英語の単語数/カンマ数前提)は、
  * スペース区切りの無い日本語では機能しにくい。代わりに
  *   - 文・節の区切り(、。,.等)の語あたりの個数(「文」で書かれているかの指標)
- *   - Unicode文字比率(\p{L}。英字・CJK等を問わない)
+ *   - Unicode文字比率(\p{L}。英字・CJK等を問わない。表の中のリンクでない数字・記号も文字として数える)
  *   - リンク密度(ナビ/ランキング/広告枠ほど高くなる)
  * でブロックをスコアリングし、低価値ブロック(ナビ/ランキング/広告枠/フッター相当:
  * リンク密度高・区切り密度低)をMarkdown化前にDOMから除去する。
@@ -20,12 +20,14 @@ interface BlockTextStats {
   text: string;
   /** ブロック内のリンク(<a>)テキストのみ。 */
   linkText: string;
+  /** ブロック内の表(最も外側の表)のテキストと、その中のリンクのテキスト。text・linkTextの一部。 */
+  table?: { text: string; linkText: string };
 }
 
 export interface BlockScore {
   /** 文・節の区切り(、。,.!?等)の語あたりの個数(0-1に丸める)。 */
   clauseBreaksPerWord: number;
-  /** Unicode文字(英字・CJK等、\p{L}に一致する文字)がテキストに占める割合(0-1)。 */
+  /** Unicode文字(英字・CJK等、\p{L}に一致する文字)がテキストに占める割合(0-1)。表の中のリンクでない数字・記号も文字として数える。 */
   letterRatio: number;
   /** リンクテキストが全体テキストに占める割合(0-1)。 */
   linkDensity: number;
@@ -46,6 +48,7 @@ const CLAUSE_BREAK_PATTERN = new RegExp(
 );
 // 結合文字(\p{M})も文字として数える(NFD分解形のアクセント記号等で比率が不当に下がらないように)。
 const LETTER_PATTERN = /[\p{L}\p{M}]/gu;
+const NON_LETTER_MARK_PATTERN = /[^\s\p{L}\p{M}]/gu;
 // UAX#29の語分割。スペース区切りの無い言語(日本語/中国語/タイ語等)にはICUの辞書分割が働くため、
 // 「語」を分母に取れば文字あたり情報量の言語差を通さずに済む。
 const WORD_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "word" });
@@ -58,6 +61,10 @@ const WORD_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "word" });
 const CLAUSE_BREAK_WEIGHT = 22;
 const LETTER_WEIGHT = 1;
 const LINK_WEIGHT = 5;
+
+function countNonLetterMarks(text: string): number {
+  return (text.match(NON_LETTER_MARK_PATTERN) ?? []).length;
+}
 
 export function countWords(text: string): number {
   let count = 0;
@@ -81,7 +88,12 @@ export function scoreBlock(stats: BlockTextStats): BlockScore {
   const wordCount = countWords(text);
   const clauseBreaksPerWord = wordCount === 0 ? 0 : Math.min(clauseBreakCount / wordCount, 1);
 
-  const letterCount = (text.match(LETTER_PATTERN) ?? []).length;
+  // 表のセルの数字・日付・記号は値で、文字の比率が下げるべき飾りではない(版や料金の表が、リンクの列を
+  // 1つ持つだけで負のスコアになっていた)。表の中のリンクでない数字・記号は文字として数える。
+  // リンクの中まで数えない: リンク集の表(Wikipediaのnavbox)の注の番号や区切りまで数えると、
+  // 際どいところで刈られていたリンク集が残る。
+  const letterCount =
+    (text.match(LETTER_PATTERN) ?? []).length + countNonLetterMarks(stats.table?.text ?? "") - countNonLetterMarks(stats.table?.linkText ?? "");
   const letterRatio = letterCount / length;
 
   const linkTextLength = [...stats.linkText.trim()].length;
@@ -120,6 +132,12 @@ const ARTICLE_CONTAINER_TAGS = new Set(["ARTICLE", "SECTION", "MAIN"]);
 /** J4スコアで評価する候補タグ(div soup対応: セマンティックタグを持たない場合)。 */
 const SCORE_CANDIDATE_TAGS = new Set(["DIV", "SECTION", "UL", "OL"]);
 
+interface PruneTableElement {
+  textContent: string;
+  parentElement: { closest(selector: string): unknown } | null;
+  querySelectorAll(selector: string): ArrayLike<{ textContent: string }>;
+}
+
 /** pruneLowValueBlocksが要求するDOM要素の最小インターフェース(linkedom/ブラウザDOM双方と構造的に互換)。 */
 export interface PruneHostElement {
   tagName: string;
@@ -127,9 +145,29 @@ export interface PruneHostElement {
   textContent: string;
   remove(): void;
   querySelectorAll(selector: string): ArrayLike<{ textContent: string }>;
+  getElementsByTagName(name: "table"): ArrayLike<PruneTableElement>;
 }
 
-function collectLinkText(element: PruneHostElement): string {
+/**
+ * 文字を含むセルが過半の表か。数字だけのセルが並ぶ表(ブログのカレンダー)の数字は値でなく飾りで、
+ * 文字として数えると、サイドバーのカレンダーが刈られずに表の救出で本文の末尾に足される。
+ */
+function hasWordCellMajority(table: PruneTableElement): boolean {
+  const cells = Array.from(table.querySelectorAll("td, th")).filter((cell) => cell.textContent.trim() !== "");
+  const wordCells = cells.filter((cell) => /\p{L}/u.test(cell.textContent)).length;
+  return wordCells * 2 > cells.length;
+}
+
+/** 数字・記号を文字として数える表(最も外側の表)のテキストとリンクのテキスト。無ければnull。入れ子の表は外側の表に含まれる。 */
+function collectTableText(element: PruneHostElement): { text: string; linkText: string } | null {
+  const tables = Array.from(element.getElementsByTagName("table"));
+  const set = new Set<unknown>(tables);
+  const counted = tables.filter((table) => !set.has(table.parentElement?.closest("table")) && hasWordCellMajority(table));
+  if (counted.length === 0) return null;
+  return { text: counted.map((table) => table.textContent).join(""), linkText: counted.map(collectLinkText).join("") };
+}
+
+function collectLinkText(element: Pick<PruneHostElement, "querySelectorAll">): string {
   return Array.from(element.querySelectorAll("a"))
     .map((a) => a.textContent)
     .join("");
@@ -189,11 +227,15 @@ export function pruneLowValueBlocks(root: PruneHostElement, options: PruneOption
         const text = child.textContent ?? "";
         if (text.trim().length >= minTextLength) {
           const stats: BlockTextStats = { text, linkText: collectLinkText(child) };
+          // 表の数字・記号の加点はスコアを上げる向きにしか働かないので、加点の無いスコアで残るブロックでは表を数えない。
           if (scoreBlock(stats).score < scoreThreshold) {
-            child.remove();
-            // 子自身が丸ごと除去されるため、内部の個別除去数は合算しない(二重カウント回避)。
-            prunedCount++;
-            continue;
+            const table = collectTableText(child);
+            if (table === null || scoreBlock({ ...stats, table }).score < scoreThreshold) {
+              child.remove();
+              // 子自身が丸ごと除去されるため、内部の個別除去数は合算しない(二重カウント回避)。
+              prunedCount++;
+              continue;
+            }
           }
         }
       }
