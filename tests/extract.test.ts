@@ -563,6 +563,75 @@ describe("extractMarkdown - asideで書かれた脚注(Readability経路)", () =
   });
 });
 
+describe("extractMarkdown - 表のセルのbutton(Readability経路)", () => {
+  it("セルにbuttonで書かれた値を残し、記号だけのbuttonは入れない", () => {
+    // platform.claude.comのModel status表の形。モデルIDはコピー用のbuttonに書かれている。表の救出の
+    // 照合には長い日付の列が使われ、Readabilityが残した表を「本文にある」とみなすので、救出では戻らない。
+    const copyButton = (id: string): string => `<button type="button" aria-label="Copy model ID ${id}">${id}</button>`;
+    const sortButton = '<button type="button" aria-label="Sort">▲</button>';
+    const paragraph = "<p>Current and recently retired models are listed in the following table with their status, so applications can plan migrations before a model retires.</p>";
+    const html = `<!DOCTYPE html><html><head><title>Model deprecations</title></head><body><article>
+      ${paragraph}${paragraph}
+      <table><thead><tr><th>API model name ${sortButton}</th><th>Current state</th><th>Tentative retirement date</th></tr></thead>
+      <tbody>
+        <tr><td>${copyButton("claude-fable-5-2")}</td><td>Active</td><td>Not sooner than November 9, 2027</td></tr>
+        <tr><td>${copyButton("claude-haiku-5-5")}</td><td>Active</td><td>Not sooner than September 1, 2027</td></tr>
+      </tbody></table>
+      ${paragraph}
+    </article></body></html>`;
+    const result = extractMarkdown(html, { url: "https://example.com/docs/model-deprecations" });
+    expect(result.extractionMethod).toBe("readability");
+    expect(result.markdown).toContain("| claude-fable-5-2 | Active | Not sooner than November 9, 2027 |");
+    expect(result.markdown).toContain("| claude-haiku-5-5 | Active | Not sooner than September 1, 2027 |");
+    expect(result.markdown).toContain("| API model name | Current state | Tentative retirement date |");
+  });
+
+  it("見出しのセルの無いレイアウト用の表では、操作のbuttonの文字を入れない", () => {
+    const paragraph = `<p>${"年末年始は休診いたします。急患の方は市の休日診療所をご利用ください。".repeat(6)}</p>`;
+    const html = `<!DOCTYPE html><html><head><title>お知らせ</title></head><body><table><tr><td>
+      <h2>休診のお知らせ</h2>${paragraph}${paragraph}
+      <button type="button">このページを印刷する</button><button type="button">前のページへ戻る</button>
+    </td></tr></table></body></html>`;
+    const result = extractMarkdown(html, { url: "https://example.jp/news/closed" });
+    expect(result.markdown).toContain("休診のお知らせ");
+    expect(result.markdown).not.toContain("印刷する");
+  });
+
+  it("1つのセルに並んだbuttonの値を分けて残し、表を二重に出さない", () => {
+    const paragraph = "<p>The following table lists packages with their release tags, so readers can pick a channel before installing anything.</p>";
+    const html = `<!DOCTYPE html><html><head><title>Packages</title></head><body><article>${paragraph}${paragraph}
+      <table><tr><th>Package</th><th>Tags</th></tr>
+      <tr><td>alpha</td><td><button>stable</button><button>lts</button></td></tr>
+      <tr><td>beta</td><td><button>beta</button><button>experimental</button></td></tr></table>
+      ${paragraph}</article></body></html>`;
+    const markdown = extractMarkdown(html, { url: "https://example.com/packages" }).markdown;
+    expect(markdown.match(/\| alpha \| stable lts \|/g)).toHaveLength(1);
+  });
+
+  it("文字に挟まれたbuttonの値を、空白を足さずに1回だけ残す", () => {
+    // platform.claude.comの料金表の「Claude Consumption Unit (CCU)」の形。
+    const paragraph = "<p>The following table lists the prices for each model, so readers can estimate the cost of a batch job before running it.</p>";
+    const row = (model: string, price: string): string => `<tr><td>${model} batch input (<button type="button">CCU</button>)</td><td>${price}</td></tr>`;
+    const html = `<!DOCTYPE html><html><head><title>Pricing</title></head><body><article>${paragraph}${paragraph}
+      <table><tr><th>Model</th><th>Price</th></tr>${row("Claude Fable 5.2", "$1.50")}${row("Claude Haiku 5.5", "$0.50")}${row("Claude Opus 5.5", "$7.50")}</table>
+      ${paragraph}</article></body></html>`;
+    const markdown = extractMarkdown(html, { url: "https://example.com/pricing" }).markdown;
+    expect(markdown.match(/\| Claude Fable 5\.2 batch input \(CCU\) \| \$1\.50 \|/g)).toHaveLength(1);
+  });
+
+  it("レイアウト用の表の中にthを持つ表があっても、外側の表の操作のbuttonの文字は入れない", () => {
+    const paragraph = `<p>${"年末年始は休診いたします。急患の方は市の休日診療所をご利用ください。".repeat(6)}</p>`;
+    const html = `<!DOCTYPE html><html><head><title>お知らせ</title></head><body><table><tr><td>
+      <h2>休診のお知らせ</h2>${paragraph}
+      <table><tr><th>日付</th><th>診療</th></tr><tr><td>12月29日</td><td>休診</td></tr><tr><td>1月4日</td><td>通常</td></tr></table>
+      ${paragraph}<button type="button">このページを印刷する</button>
+    </td></tr></table></body></html>`;
+    const markdown = extractMarkdown(html, { url: "https://example.jp/news/closed" }).markdown;
+    expect(markdown).toContain("12月29日");
+    expect(markdown).not.toContain("印刷する");
+  });
+});
+
 describe("文字情報を持たない画像・リンクの除去", () => {
   const paragraph = `<p>${"本文の段落です。".repeat(20)}</p>`;
 

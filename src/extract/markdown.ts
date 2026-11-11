@@ -1223,6 +1223,43 @@ function keepFootnoteAsides(document: NoteAsideHostDocument): void {
   }
 }
 
+interface CellButtonTable {
+  querySelectorAll(selector: string): ArrayLike<{ closest(selector: string): unknown }>;
+}
+interface CellButtonElement {
+  textContent: string | null;
+  childNodes: ArrayLike<unknown>;
+  nextSibling: { nodeType: number } | null;
+  closest(selector: string): CellButtonTable | null;
+  replaceWith(...nodes: unknown[]): void;
+}
+interface CellButtonHostDocument {
+  body: { querySelectorAll(selector: string): ArrayLike<CellButtonElement> };
+}
+
+function hasOwnHeaderCell(table: CellButtonTable): boolean {
+  return Array.from(table.querySelectorAll("th")).some((th) => th.closest("table") === table);
+}
+
+/**
+ * Readabilityは本文を決めた後、buttonを中身ごと捨てる。表のセルに値をbuttonで書くページ(コピー用の
+ * ボタンにモデルIDを書くplatform.claude.com)では列が空になるため、文字を持つセルの中のbuttonを
+ * parse前に中身へ置き換える。記号だけのbutton(並べ替えの▲等)は残してReadabilityに捨てさせる。
+ * 見出しのセル(th)を持たない表では置き換えない: 本文全体を1つのセルに置くレイアウト用の表では、
+ * 印刷・戻る・メニューのボタンの文字まで本文に入る。
+ * 次に要素が続くときだけ中身の後に空白を置く。隣のbuttonの値とつながらないようにするためで、文字が
+ * 続くときに置くと「(CCU )」になる。
+ */
+function unwrapCellButtons(document: CellButtonHostDocument): void {
+  for (const button of Array.from(document.body.querySelectorAll("td button, th button"))) {
+    if (!/[\p{L}\p{N}]/u.test(button.textContent ?? "")) continue;
+    const table = button.closest("table");
+    if (!table || !hasOwnHeaderCell(table)) continue;
+    const separator = button.nextSibling?.nodeType === ELEMENT_NODE_TYPE ? [" "] : [];
+    button.replaceWith(...Array.from(button.childNodes), ...separator);
+  }
+}
+
 // コードブロックの容れ物が持つ飾り(言語のタブ・ファイル名・コピーのボタン)の文字数の上限。
 const CODE_CHROME_MAX_LENGTH = 100;
 
@@ -1400,6 +1437,10 @@ export function extractMarkdown(html: string, options: ExtractOptions = {}): Ext
       if (document.body) {
         prunedBlockCount = pruneLowValueBlocks(document.body);
       }
+
+      // 表の救出の照合の材料は、Readabilityに渡すのと同じ表から作る。置き換えの前の表から作ると、
+      // 「(<button>CCU</button>)」が材料では「( CCU )」、本文では「(CCU)」になり、残った表を二重に戻す。
+      if (document.body) unwrapCellButtons(document as unknown as CellButtonHostDocument);
 
       // Readabilityはリンク密度の高いデータ表(各国人口ソート表等)を本文から丸ごと落とし、
       // 見出しをラッパー要素ごと剥ぐこともある。parseは渡したdocumentを破壊的に変更するため、
