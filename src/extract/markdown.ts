@@ -358,7 +358,7 @@ const PROBE_MAX_LENGTH = 60;
 const PROBE_FALLBACK_MAX_LENGTH = 80;
 
 /** collapsed/rowspan/多段ヘッダを持つ表を正規化するためのDOM最小インターフェース。 */
-interface NormCell {
+interface NormCell extends SpanHostCell {
   tagName: string;
   getAttribute(name: string): string | null;
   innerHTML: string;
@@ -389,6 +389,20 @@ function clampSpan(value: string | null): number {
   const n = Number.parseInt(value ?? "1", 10);
   if (!Number.isFinite(n) || n < 1) return 1;
   return Math.min(n, MAX_SPAN);
+}
+
+interface SpanHostCell {
+  attributes: ArrayLike<{ name: string; value: string }>;
+}
+
+/**
+ * セルのcolspan/rowspan。linkedomはHTMLの属性名を小文字に揃えない(ブラウザは揃える)ので、
+ * `rowSpan="2"`(platform.claude.comの料金表)や`ROWSPAN=2`(古いサイト)を小文字の名前のgetAttributeで
+ * 読めず、spanが無いものとして列がずれる。
+ */
+function cellSpan(cell: SpanHostCell, name: "colspan" | "rowspan"): number {
+  const attribute = Array.from(cell.attributes).find((candidate) => candidate.name.toLowerCase() === name);
+  return clampSpan(attribute?.value ?? null);
 }
 
 /**
@@ -432,8 +446,8 @@ export function normalizeTableHtml(tableHtml: string): string {
     let c = 0;
     for (const cell of cells) {
       while (grid[r]![c] !== undefined) c++;
-      const colspan = clampSpan(cell.getAttribute("colspan"));
-      const rowspan = clampSpan(cell.getAttribute("rowspan"));
+      const colspan = cellSpan(cell, "colspan");
+      const rowspan = cellSpan(cell, "rowspan");
       const filled: GridCell = { html: cell.innerHTML.trim(), originRow: r, originCol: c };
       for (let i = 0; i < rowspan && r + i < rowCount; i++) {
         for (let j = 0; j < colspan; j++) {
@@ -931,9 +945,8 @@ export function reinsertDroppedHeadings(contentHtml: string, headings: DroppedHe
 }
 
 /** normalizeRetainedTablesが本文HTMLの表を走査・置換するためのDOM最小インターフェース。 */
-interface RetainedCell {
+interface RetainedCell extends SpanHostCell {
   tagName: string;
-  getAttribute(name: string): string | null;
 }
 interface RetainedRow {
   closest(selector: string): unknown;
@@ -972,7 +985,7 @@ function needsTableNormalization(table: RetainedTableEl): boolean {
     const cells = Array.from(row.children).filter((el) => el.tagName === "TD" || el.tagName === "TH");
     if (cells.length > maxCells) maxCells = cells.length;
     for (const cell of cells) {
-      if (clampSpan(cell.getAttribute("colspan")) > 1 || clampSpan(cell.getAttribute("rowspan")) > 1) hasSpan = true;
+      if (cellSpan(cell, "colspan") > 1 || cellSpan(cell, "rowspan") > 1) hasSpan = true;
     }
     const isColumnHeader = cells.length >= 2 && cells.every((cell) => cell.tagName === "TH");
     if (inLeadingHeaders && isColumnHeader) leadingHeaderRows++;

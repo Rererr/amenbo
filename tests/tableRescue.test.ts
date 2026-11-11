@@ -383,6 +383,19 @@ describe("normalizeRetainedTables", () => {
     expect(out).toContain("<th>人口 女</th>");
   });
 
+  // linkedomは属性名を小文字に揃えない。
+  it.each([
+    ["rowSpan・colSpan(platform.claude.comの料金表)", "rowSpan", "colSpan"],
+    ["ROWSPAN・COLSPAN(古いサイト)", "ROWSPAN", "COLSPAN"],
+  ])("大文字を含む属性名%sのspanも正規化する", (_name, rowspan, colspan) => {
+    const out = normalizeRetainedTables(
+      `<table><tr><th>地域</th><th>値</th><th>注</th></tr><tr><td ${rowspan}='2'>アジア</td><td>1</td><td>a</td></tr><tr><td>2</td><td>b</td></tr>` +
+        `<tr><td ${colspan}='2'>合計</td><td>c</td></tr></table>`,
+    );
+    expect(out).toContain("<tr><td></td><td>2</td><td>b</td></tr>");
+    expect(out).toContain("<tr><td>合計</td><td></td><td>c</td></tr>");
+  });
+
   it("2回適用しても結果が変わらない(冪等)", () => {
     const once = normalizeRetainedTables(`<p>説明</p>${COMPLEX}`);
     expect(normalizeRetainedTables(once)).toBe(once);
