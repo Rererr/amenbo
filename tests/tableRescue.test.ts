@@ -48,6 +48,13 @@ describe("collectDataTables", () => {
     expect(tables[0]?.anchor).toBe("各国の人口");
   });
 
+  it("見出しの中のbuttonの文字はアンカーに含めない(Readabilityがbuttonごと落とすため)", () => {
+    const heading = '<h2>人口<button type="button"><span class="sr-only">Copy link to 人口</span></button></h2>';
+    const [table] = collectDataTables(body(`${heading}${DATA_TABLE}`));
+    expect(table?.anchor).toBe("人口");
+    expect(table?.anchorKind).toBe("heading");
+  });
+
   it("見出しが無ければ直前の十分長い段落をアンカーにする", () => {
     const tables = collectDataTables(
       body(`<p>これは三十文字を確実に超える十分な長さの直前段落テキストで、アンカーとして使えます。</p>${DATA_TABLE}`),

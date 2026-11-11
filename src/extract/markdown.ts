@@ -299,7 +299,7 @@ function extractByGeometry(document: GeometryHostDocument, geometry: PageGeometr
 
 /** HTML文字列をMarkdownへ変換する。 */
 /** collectDataTables/救出が必要とするDOM要素の最小インターフェース(linkedom/ブラウザDOM双方と互換)。 */
-interface TableCandidate {
+interface TableCandidate extends HeadingTextHostElement {
   tagName: string;
   outerHTML: string;
   innerHTML: string;
@@ -532,6 +532,52 @@ export function normalizeTableHtml(tableHtml: string): string {
   return out.join("");
 }
 
+interface HeadingDescendant {
+  style?: { display?: string; visibility?: string } | null;
+  matches(selector: string): boolean;
+  hasAttribute(name: string): boolean;
+  getAttribute(name: string): string | null;
+  remove(): void;
+}
+interface HeadingTextHostElement {
+  textContent: string;
+  querySelector(selector: string): unknown;
+  cloneNode(deep: boolean): { textContent: string; querySelectorAll(selector: string): ArrayLike<HeadingDescendant> };
+}
+
+// Readabilityが中身ごと捨てるフォームの部品(_prepArticleの_clean)。
+const READABILITY_DROPPED_CONTROLS = "button, select, input, textarea";
+// Readabilityが捨てる要素を持ちうる見出しだけをcloneするための絞り込み。
+const MAY_HOLD_READABILITY_DROPPED = `${READABILITY_DROPPED_CONTROLS}, [hidden], [aria-hidden="true"], [style]`;
+
+/**
+ * Readabilityが捨てる要素か。見えない要素の判定は_isProbablyVisibleと同じ。aria-hiddenのfallback-imageを
+ * 残す例外(Wikipediaの数式の画像)は写さない: 画像は文字を持たないので、見出しの文字は変わらない。
+ */
+function isDroppedByReadability(el: HeadingDescendant): boolean {
+  return (
+    el.matches(READABILITY_DROPPED_CONTROLS) ||
+    el.style?.display === "none" ||
+    el.style?.visibility === "hidden" ||
+    el.hasAttribute("hidden") ||
+    el.getAttribute("aria-hidden") === "true"
+  );
+}
+
+/**
+ * 見出しの文字。Readabilityが捨てる要素の中(パーマリンクのボタンのアイコンの文字、読み上げ用の
+ * 「Copy link to …」、aria-hidden="true"の「#」、display:noneの数式のMathML)は数えない。数えると本文に
+ * 残った同じ見出しと照合が外れ、見出しを二重に戻し、表を元の節へ戻せなくなる。
+ */
+function headingTextKeptByReadability(heading: HeadingTextHostElement): string {
+  if (!heading.querySelector(MAY_HOLD_READABILITY_DROPPED)) return heading.textContent;
+  const clone = heading.cloneNode(true);
+  for (const el of Array.from(clone.querySelectorAll("*"))) {
+    if (isDroppedByReadability(el)) el.remove();
+  }
+  return clone.textContent;
+}
+
 /** テキストからタグを除きシグネチャ用に空白正規化する。 */
 function normalizeForSignature(text: string): string {
   // \sはゼロ幅空白(U+200B)等の書式文字を含まない。見出しのパーマリンクが持つ書式文字は
@@ -554,8 +600,9 @@ function findTableAnchor(seq: TableCandidate[], tableIndex: number): TableAnchor
   for (let i = tableIndex - 1; i >= 0; i--) {
     const el = seq[i];
     if (!el || el.tagName === "TABLE") continue; // 別の表は飛ばす。
-    const text = normalizeForSignature(el.textContent);
-    if (/^H[1-6]$/.test(el.tagName)) {
+    const isHeading = /^H[1-6]$/.test(el.tagName);
+    const text = normalizeForSignature(isHeading ? headingTextKeptByReadability(el) : el.textContent);
+    if (isHeading) {
       if (text.length > 0) return { text: text.slice(0, ANCHOR_MAX_LENGTH), kind: "heading" }; // 見出し優先。
     } else if (!paragraph && text.length >= ANCHOR_MIN_PARAGRAPH_LENGTH) {
       paragraph = text.slice(0, ANCHOR_MAX_LENGTH);
@@ -716,7 +763,7 @@ export interface HeadingAnchorCandidate {
 }
 
 /** collectHeadingsが走査するDOM要素の最小インターフェース。 */
-interface HeadingCandidate {
+interface HeadingCandidate extends HeadingTextHostElement {
   tagName: string;
   textContent: string;
   parentElement: HeadingCandidate | null;
@@ -795,7 +842,7 @@ export function collectHeadings(body: HeadingQueryHost): DroppedHeading[] {
     if (!el) continue;
     const level = headingLevel(el.tagName);
     if (level < 2) continue; // h1(title二重化)と非見出し(p/表/リスト)を除外。
-    const text = normalizeForSignature(el.textContent);
+    const text = normalizeForSignature(headingTextKeptByReadability(el));
     if (text.length === 0) continue; // 空見出しは捨てる。
     result.push({ level, text, anchors: findHeadingAnchor(seq, i) });
   }
