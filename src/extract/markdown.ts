@@ -30,7 +30,7 @@ import { removeConsentBanners, type ConsentBannerHostDocument } from "../jp/cons
 import { estimateTokens } from "../tokens.js";
 import { computeVisualAreaRatio, selectMainContentCluster, type PageGeometrySnapshot } from "./geometry.js";
 import { type QualityScoreInput } from "./qualityScore.js";
-import { pruneLowValueBlocks, type PruneHostElement } from "./pruning.js";
+import { hasOwnHeaderCell, pruneLowValueBlocks, type PruneHostElement } from "./pruning.js";
 
 export interface ExtractOptions {
   url?: string;
@@ -1295,10 +1295,6 @@ interface CellButtonElement {
 }
 interface CellButtonHostDocument {
   body: { querySelectorAll(selector: string): ArrayLike<CellButtonElement> };
-}
-
-function hasOwnHeaderCell(table: CellButtonTable): boolean {
-  return Array.from(table.querySelectorAll("th")).some((th) => th.closest("table") === table);
 }
 
 /**

@@ -363,9 +363,9 @@ describe("pruneLowValueBlocks のデータ表", () => {
     expect(root.textContent).toContain("本文の段落です");
   });
 
-  it("数字だけのセルが並ぶ表(ブログのカレンダー)の数字は文字として数えない", () => {
-    // WordPressのカレンダーのウィジェットの形。投稿のある日だけリンクになる。数字を文字として数えると、
-    // ウィジェットが刈られずに残り、表の救出で本文の末尾に足される。
+  it("数字だけのセルが並ぶ表(ブログのカレンダー)は、数字を文字として数えず、リンクも数えて刈る", () => {
+    // WordPressのカレンダーのウィジェットの形。投稿のある日だけリンクになる。数字を文字として数えたり、値の表とみなして
+    // リンクを数えなかったりすると、ウィジェットが刈られずに残り、表の救出で本文の末尾に足される。
     const days = Array.from({ length: 30 }, (_, i) => i + 1);
     const weeks = Array.from({ length: 5 }, (_, w) =>
       `<tr>${days.slice(w * 7, w * 7 + 7).map((d) => `<td>${[5, 12, 20].includes(d) ? `<a href="/2026/11/${d}/">${d}</a>` : d}</td>`).join("")}</tr>`,
@@ -383,7 +383,7 @@ describe("pruneLowValueBlocks のデータ表", () => {
     // 内側の表の日付を外側の表の分と二重に数えると、文字の比率が上がってスコアが-0.15から0.54になり、
     // リンクの見出しと日付だけの囲みが残る。
     const root = makeElement(
-      `<div><table><tr><th><a href="/a">Release notes</a></th><td><table><tr><td>v1 2021-10-04 2026-10-01</td><td>v2 2020-01-01 2019-03-18</td></tr></table></td></tr></table></div>`,
+      `<div><p><a href="/a">Release notes</a></p><table><tr><td><table><tr><td>v1 2021-10-04 2026-10-01</td><td>v2 2020-01-01 2019-03-18</td></tr></table></td></tr></table></div>`,
     );
     expect(pruneLowValueBlocks(root)).toBe(1);
   });
@@ -401,5 +401,172 @@ describe("pruneLowValueBlocks のデータ表", () => {
     const text = `1,234 views ${table.text}`;
     // 文字は「views」「PEP」の8字と、表の中のリンクの外の14字。表の外の「1,234」は数えない。
     expect(scoreBlock({ text, linkText: table.linkText, table }).letterRatio).toBeCloseTo(22 / [...text].length);
+  });
+
+  it("セルの中のページ送りを刈った後の形で、文字を含むセルが過半かを数える", () => {
+    // 数字だけのリンクの並び(ページ送り)のdivは先に刈られて、空のセルになる。刈る前の形で数えると、文字を含むセルが
+    // 過半に届かず、表の数字・記号が文字として数えられないので、表を包むdivごと刈られる。
+    const pager = (row: number) => `<div class="pager">${Array.from({ length: 10 }, (_, i) => `<a href="/p${row}/${i + 1}">${i + 1}</a>`).join(" ")}</div>`;
+    const rows = ["東京都", "神奈川県", "大阪府"]
+      .map((name, i) => `<tr><td><a href="/w/${name}">${name}</a></td><td>${pager(i)}</td><td>1,234,567</td><td>1,234,567</td></tr>`)
+      .join("");
+    const root = makeElement(`<div class="table-box"><table><tr><th>名前</th><th>ページ</th><th>値</th><th>前年</th></tr>${rows}</table></div>`);
+    expect(pruneLowValueBlocks(root)).toBe(3);
+    expect(root.textContent).toContain("大阪府");
+  });
+
+  it("数字の多い表と、表の外の出典のリンクを包むブロックは刈らない", () => {
+    // 表の中にリンクが無くても、表の外のリンクは数える。数字と単位で文字の比率が0.38まで下がるので、
+    // 表の数字・記号を文字として数えないと、リンク密度0.09で負のスコアになる。
+    const months = [["1月", "5.4℃", "59.7mm", "192.6時間"], ["2月", "6.1℃", "56.5mm", "170.4時間"], ["3月", "9.4℃", "116.0mm", "175.3時間"], ["4月", "14.3℃", "133.7mm", "178.8時間"], ["5月", "18.8℃", "139.7mm", "179.6時間"], ["6月", "21.9℃", "167.8mm", "124.0時間"]];
+    const rows = months.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
+    const root = makeElement(
+      `<div class="table-box"><table><thead><tr><th>月</th><th>平均気温</th><th>降水量</th><th>日照時間</th></tr></thead><tbody>${rows}</tbody></table><p>出典: <a href="https://www.data.jma.go.jp/">気象庁 過去の気象データ検索</a></p></div>`,
+    );
+    expect(pruneLowValueBlocks(root)).toBe(0);
+    expect(root.textContent).toContain("167.8mm");
+  });
+
+  // platform.claude.comの料金表(2026-11-12取得)のモデル名のセル。リンクの名前と句点の無い一言の説明で、
+  // リンク密度0.23、スコア-0.33になり、セルの中のdivが刈られていた。
+  const pricingRows = [
+    ["fable-5-2", "Claude Fable 5.2", "For demanding reasoning and long-horizon agentic work", "$8", "$40"],
+    ["opus-5-5", "Claude Opus 5.5", "For long-running agentic coding and knowledge work", "$4", "$20"],
+    ["sonnet-5-5", "Claude Sonnet 5.5", "The best combination of speed and intelligence", "$2", "$10"],
+  ]
+    .map(
+      ([id, name, caption, input, output]) =>
+        `<tr><td><div><div class="flex"><div aria-hidden="true"><img alt=""></div><div class="flex-col"><a href="/docs/en/models/${id}/overview">${name}</a><span>${caption}</span></div></div></div></td><td>${input}<br>/ MTok</td><td>${output}<br>/ MTok</td></tr>`,
+    )
+    .join("");
+
+  it("値の表のセルの、リンクの名前と句点の無い説明は刈らない", () => {
+    const root = makeElement(
+      `<div class="docs-table"><table><thead><tr><th>Model</th><th>Input</th><th>Output</th></tr></thead><tbody>${pricingRows}</tbody></table></div>`,
+    );
+    expect(pruneLowValueBlocks(root)).toBe(0);
+    expect(root.textContent).toContain("Claude Fable 5.2");
+    expect(root.textContent).toContain("The best combination of speed and intelligence");
+  });
+
+  it("名前の列がリンクの値の表を包むdivは刈らない", () => {
+    // 料金表のバッチの表の形。全てのリンクを数えるとリンク密度0.34で、表の数字・記号を文字として数えてもスコア-0.88になる。
+    const rows = [
+      ["mythos-5-2", "Claude Mythos 5.2", "$4", "$20"],
+      ["fable-5-1", "Claude Fable 5.1", "$5", "$25"],
+      ["opus-5", "Claude Opus 5", "$2.50", "$12.50"],
+    ]
+      .map(([id, name, input, output]) => `<tr><td><a href="/docs/en/models/${id}/overview">${name}</a></td><td>${input} / MTok</td><td>${output} / MTok</td></tr>`)
+      .join("");
+    const root = makeElement(
+      `<div class="docs-table"><table><thead><tr><th>Model</th><th>Batch input</th><th>Batch output</th></tr></thead><tbody>${rows}</tbody></table></div>`,
+    );
+    expect(pruneLowValueBlocks(root)).toBe(0);
+    expect(root.textContent).toContain("Claude Mythos 5.2");
+  });
+
+  it("表は中のリンク集を刈る前の形で判定し、navboxを値の表とみなさない", () => {
+    // リストに入ったリンク集のセルが先に刈られると、残ったセルではリンクを含むセルが少数になる。
+    const list = (prefectures: string[]) => `<ul>${prefectures.map((name) => `<li><a href="/wiki/${name}">${name}</a></li>`).join("")}</ul>`;
+    const links = (prefectures: string[]) => prefectures.map((name) => `<a href="/wiki/${name}">${name}</a>`).join(" ");
+    const root = makeElement(`
+      <div class="navbox"><table>
+        <tr><th>東北地方</th><td>${list(["青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "新潟県"])}</td></tr>
+        <tr><th>関東地方</th><td>${list(["茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県"])}</td></tr>
+        <tr><th>中部地方</th><td>${links(["富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県", "静岡県", "愛知県"])}</td></tr>
+        <tr><th>近畿地方</th><td>${links(["三重県", "滋賀県", "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県"])}</td></tr>
+      </table></div>
+      <p>本文の段落です。十分な長さの文章として認識されるように句読点を含めておきます。もう少し足します。</p>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(1);
+    expect(root.textContent).not.toContain("中部地方");
+    expect(root.textContent).toContain("本文の段落です");
+  });
+
+  it("グループ名のセルとリンクを並べたセルが交互の表(navbox)は、区切りの文字がリンクの外にあっても刈る", () => {
+    // navboxの行はグループ名とリンクの並びの2つのセルなので、リンクを含むセルがちょうど半数になる。
+    // 区切りの「 · 」で、リンクの文字は表の文字の半分を下回る。
+    const groups: [string, string[]][] = [
+      ["東北地方", ["青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県"]],
+      ["関東地方", ["茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県"]],
+      ["中部地方", ["富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県", "静岡県", "愛知県"]],
+    ];
+    const rows = groups.map(([group, names]) => `<tr><th>${group}</th><td>${names.map((name) => `<a href="/wiki/${name}">${name}</a>`).join(" · ")}</td></tr>`).join("");
+    const root = makeElement(`
+      <div class="navbox"><table>${rows}</table></div>
+      <p>本文の段落です。十分な長さの文章として認識されるように句読点を含めておきます。もう少し足します。</p>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(1);
+    expect(root.textContent).not.toContain("中部地方");
+  });
+
+  it("空のセルは、リンクを含むセルの割合に数えない", () => {
+    // 空のセルを数えると、リンクを含むセルが3/9で半数を割り、navboxが値の表に見える。数えなければ3/6。
+    const groups: [string, string[]][] = [
+      ["東北地方", ["青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県"]],
+      ["関東地方", ["茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県"]],
+      ["中部地方", ["富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県", "静岡県", "愛知県"]],
+    ];
+    const rows = groups.map(([group, names]) => `<tr><th>${group}</th><td>${names.map((name) => `<a href="/wiki/${name}">${name}</a>`).join(" · ")}</td><td></td></tr>`).join("");
+    const root = makeElement(`
+      <div class="navbox"><table>${rows}</table></div>
+      <p>本文の段落です。十分な長さの文章として認識されるように句読点を含めておきます。もう少し足します。</p>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(1);
+    expect(root.textContent).not.toContain("中部地方");
+  });
+
+  it("見出しの行があっても、リンクの文字が大半の表(サイドバーの最近の投稿)は刈る", () => {
+    const titles = ["新しいキーボードを買った話", "週末の京都旅行の記録", "Rustで書き直した感想", "今年読んだ本のまとめ", "家庭菜園を始めました"];
+    const rows = titles.map((title, i) => `<tr><td><a href="/p${i}">${title}</a></td><td>2026-10-${10 + i}</td></tr>`).join("");
+    const root = makeElement(`
+      <div class="widget"><table><tr><th>記事</th><th>日付</th></tr>${rows}</table></div>
+      <p>本文の段落です。十分な長さの文章として認識されるように句読点を含めておきます。もう少し足します。</p>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(1);
+    expect(root.textContent).not.toContain("週末の京都旅行");
+  });
+
+  it("値の表のセルの中に入れ子にしたリンク集の表は、リンクを数えて刈る", () => {
+    const related = ["関連する記事その一", "関連する記事その二", "関連する記事その三"].map((title, i) => `<td><a href="/r${i}">${title}</a></td>`).join("");
+    const rows = [["東京都", "1,400万人"], ["神奈川県", "923万人"], ["大阪府", "877万人"], ["愛知県", "748万人"], ["埼玉県", "734万人"]]
+      .map(([name, population]) => `<tr><td>${name}</td><td>${population}</td></tr>`)
+      .join("");
+    const root = makeElement(`
+      <table><tr><th>都道府県</th><th>人口</th></tr>${rows}
+        <tr><td>関連</td><td><div class="related"><table><tr>${related}</tr></table></div></td></tr>
+      </table>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(1);
+    expect(root.textContent).not.toContain("関連する記事");
+    expect(root.textContent).toContain("1,400万人");
+  });
+
+  it("見出しのセルの無いレイアウト用の表では、セルのリンク集を刈る", () => {
+    const menu = ["トップページ", "会社概要", "製品情報", "導入事例", "よくある質問", "お問い合わせ"].map((label, i) => `<a href="/m${i}">${label}</a>`).join(" ");
+    const root = makeElement(`
+      <table><tr>
+        <td><div class="menu">${menu}</div></td>
+        <td><div>本文の段落です。十分な長さの文章として認識されるように、句読点を含めておきます。</div></td>
+        <td>最終更新 2026年11月12日</td>
+      </tr></table>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(1);
+    expect(root.textContent).not.toContain("会社概要");
+    expect(root.textContent).toContain("本文の段落です");
+  });
+
+  it("見出しのセルを持つ表を入れ子にしたレイアウト用の表でも、セルのリンク集を刈る", () => {
+    const menu = ["トップページ", "会社概要", "製品情報", "導入事例", "よくある質問", "お問い合わせ"].map((label, i) => `<a href="/m${i}">${label}</a>`).join(" ");
+    const root = makeElement(`
+      <table><tr>
+        <td><div class="menu">${menu}</div></td>
+        <td><div>本文の段落です。十分な長さの文章として認識されるように、句読点を含めておきます。</div>
+          <table><tr><th>項目</th><th>値</th></tr><tr><td>人口</td><td>1,400万人</td></tr><tr><td>面積</td><td>2,194 km²</td></tr></table></td>
+      </tr></table>
+    `);
+    expect(pruneLowValueBlocks(root)).toBe(1);
+    expect(root.textContent).not.toContain("会社概要");
+    expect(root.textContent).toContain("1,400万人");
   });
 });

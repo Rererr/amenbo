@@ -5,7 +5,7 @@
  * スペース区切りの無い日本語では機能しにくい。代わりに
  *   - 文・節の区切り(、。,.等)の語あたりの個数(「文」で書かれているかの指標)
  *   - Unicode文字比率(\p{L}。英字・CJK等を問わない。表の中のリンクでない数字・記号も文字として数える)
- *   - リンク密度(ナビ/ランキング/広告枠ほど高くなる)
+ *   - リンク密度(ナビ/ランキング/広告枠ほど高くなる。値の表の中のリンクは値として数えない)
  * でブロックをスコアリングし、低価値ブロック(ナビ/ランキング/広告枠/フッター相当:
  * リンク密度高・区切り密度低)をMarkdown化前にDOMから除去する。
  *
@@ -18,9 +18,9 @@
 interface BlockTextStats {
   /** ブロック内の全テキスト。 */
   text: string;
-  /** ブロック内のリンク(<a>)テキストのみ。 */
+  /** リンク密度に数えるリンク(<a>)のテキスト。 */
   linkText: string;
-  /** ブロック内の表(最も外側の表)のテキストと、その中のリンクのテキスト。text・linkTextの一部。 */
+  /** ブロック内の表(最も外側の表)のテキストと、その中のリンクのテキスト。textの一部。 */
   table?: { text: string; linkText: string };
 }
 
@@ -74,29 +74,49 @@ export function countWords(text: string): number {
   return count;
 }
 
-/** J4: ブロックのテキスト統計からスコアを算出する(純関数)。 */
-export function scoreBlock(stats: BlockTextStats): BlockScore {
-  const text = stats.text.trim();
+/** ブロックのテキストだけで決まる量。リンクの扱いだけを変えて採点し直すときに、テキストを数え直さないために分ける。 */
+interface BlockTextMeasure {
+  /** 前後の空白を除いたテキストのコードポイント数。 */
+  length: number;
+  clauseBreaksPerWord: number;
+  /** \p{L}・\p{M}に一致する文字の数。 */
+  letterCount: number;
+}
+
+function measureBlockText(text: string): BlockTextMeasure {
+  const trimmed = text.trim();
   // 分母はコードポイント数で数える。正規表現matchの分子(コードポイント単位)と単位を揃えないと、
   // 補助面の文字(CJK拡張B等のサロゲートペア)を含むテキストで比率が過小評価される。
-  const length = [...text].length;
+  const length = [...trimmed].length;
+  if (length === 0) return { length: 0, clauseBreaksPerWord: 0, letterCount: 0 };
+
+  const clauseBreakCount = (trimmed.match(CLAUSE_BREAK_PATTERN) ?? []).length;
+  const wordCount = countWords(trimmed);
+  return {
+    length,
+    clauseBreaksPerWord: wordCount === 0 ? 0 : Math.min(clauseBreakCount / wordCount, 1),
+    letterCount: (trimmed.match(LETTER_PATTERN) ?? []).length,
+  };
+}
+
+/** J4: ブロックのテキスト統計からスコアを算出する(純関数)。 */
+export function scoreBlock(stats: BlockTextStats): BlockScore {
+  return scoreMeasuredBlock(measureBlockText(stats.text), stats.linkText, stats.table);
+}
+
+function scoreMeasuredBlock(measure: BlockTextMeasure, linkText: string, table?: { text: string; linkText: string } | null): BlockScore {
+  const { length, clauseBreaksPerWord } = measure;
   if (length === 0) {
     return { clauseBreaksPerWord: 0, letterRatio: 0, linkDensity: 0, score: 0 };
   }
-
-  const clauseBreakCount = (text.match(CLAUSE_BREAK_PATTERN) ?? []).length;
-  const wordCount = countWords(text);
-  const clauseBreaksPerWord = wordCount === 0 ? 0 : Math.min(clauseBreakCount / wordCount, 1);
 
   // 表のセルの数字・日付・記号は値で、文字の比率が下げるべき飾りではない(版や料金の表が、リンクの列を
   // 1つ持つだけで負のスコアになっていた)。表の中のリンクでない数字・記号は文字として数える。
   // リンクの中まで数えない: リンク集の表(Wikipediaのnavbox)の注の番号や区切りまで数えると、
   // 際どいところで刈られていたリンク集が残る。
-  const letterCount =
-    (text.match(LETTER_PATTERN) ?? []).length + countNonLetterMarks(stats.table?.text ?? "") - countNonLetterMarks(stats.table?.linkText ?? "");
-  const letterRatio = letterCount / length;
+  const letterRatio = (measure.letterCount + countNonLetterMarks(table?.text ?? "") - countNonLetterMarks(table?.linkText ?? "")) / length;
 
-  const linkTextLength = [...stats.linkText.trim()].length;
+  const linkTextLength = [...linkText.trim()].length;
   const linkDensity = Math.min(linkTextLength / length, 1);
 
   const score = clauseBreaksPerWord * CLAUSE_BREAK_WEIGHT + letterRatio * LETTER_WEIGHT - linkDensity * LINK_WEIGHT;
@@ -135,7 +155,14 @@ const SCORE_CANDIDATE_TAGS = new Set(["DIV", "SECTION", "UL", "OL"]);
 interface PruneTableElement {
   textContent: string;
   parentElement: { closest(selector: string): unknown } | null;
-  querySelectorAll(selector: string): ArrayLike<{ textContent: string }>;
+  querySelectorAll(
+    selector: string,
+  ): ArrayLike<{ textContent: string; closest(selector: string): unknown; querySelector(selector: string): unknown }>;
+}
+
+interface PruneLinkElement {
+  textContent: string;
+  closest(selector: "table"): PruneTableElement | null;
 }
 
 /** pruneLowValueBlocksが要求するDOM要素の最小インターフェース(linkedom/ブラウザDOM双方と構造的に互換)。 */
@@ -145,12 +172,14 @@ export interface PruneHostElement {
   textContent: string;
   remove(): void;
   querySelectorAll(selector: string): ArrayLike<{ textContent: string }>;
+  getElementsByTagName(name: "a"): ArrayLike<PruneLinkElement>;
   getElementsByTagName(name: "table"): ArrayLike<PruneTableElement>;
 }
 
 /**
- * 文字を含むセルが過半の表か。数字だけのセルが並ぶ表(ブログのカレンダー)の数字は値でなく飾りで、
- * 文字として数えると、サイドバーのカレンダーが刈られずに表の救出で本文の末尾に足される。
+ * 文字を含むセルが過半の表か。数字だけのセルが並ぶ表(ブログのカレンダー)の数字とリンクは値でなく飾りで、
+ * 数字を文字として数えたり、投稿のある日のリンクを値として数えなかったりすると、サイドバーのカレンダーが
+ * 刈られずに表の救出で本文の末尾に足される。
  */
 function hasWordCellMajority(table: PruneTableElement): boolean {
   const cells = Array.from(table.querySelectorAll("td, th")).filter((cell) => cell.textContent.trim() !== "");
@@ -169,6 +198,39 @@ function collectTableText(element: PruneHostElement): { text: string; linkText: 
 
 function collectLinkText(element: Pick<PruneHostElement, "querySelectorAll">): string {
   return Array.from(element.querySelectorAll("a"))
+    .map((a) => a.textContent)
+    .join("");
+}
+
+/** 表が自身の見出しのセル(th)を持つか。入れ子の表のthは数えない。 */
+export function hasOwnHeaderCell(table: { querySelectorAll(selector: string): ArrayLike<{ closest(selector: string): unknown }> }): boolean {
+  return Array.from(table.querySelectorAll("th")).some((th) => th.closest("table") === table);
+}
+
+/**
+ * 値を並べた表(値の表)か。値の表のリンクは値の1つ(料金表のモデル名、国の一覧の国名)で、ナビゲーションではない。
+ * - 見出しのセルの無い表は、レイアウト用の表とみなす(サイドバーのリンク集をセルに置く古いサイトがある)
+ * - リンクを含むセルが半数以上の表は、リンク集とみなす。navboxの行はグループ名とリンクの並びの2つのセルなので、
+ *   ちょうど半数になる
+ * - リンクの文字が表の文字の半分以上の表も、リンク集とみなす。見出しの行を持つサイドバーの最近の投稿の表は、
+ *   リンクを含むセルが半数を下回る
+ * 題の行にリンクが無く、区切りの文字をリンクの外に置くnavboxは、どちらの条件も下回って値の表に見える。行あたりの
+ * リンクの本数でも、navboxと値の表が重なって見分けられなかった。
+ */
+function isValueTable(table: PruneTableElement): boolean {
+  if (!hasOwnHeaderCell(table) || !hasWordCellMajority(table)) return false;
+  const cells = Array.from(table.querySelectorAll("td, th")).filter((cell) => cell.textContent.trim() !== "");
+  const linkCells = cells.filter((cell) => cell.querySelector("a") !== null).length;
+  return linkCells * 2 < cells.length && collectLinkText(table).trim().length * 2 < table.textContent.trim().length;
+}
+
+/** 値の表の中のリンクを除いたリンクのテキスト。 */
+function collectNavigationLinkText(element: PruneHostElement, valueTables: ReadonlySet<PruneTableElement>): string {
+  return Array.from(element.getElementsByTagName("a"))
+    .filter((a) => {
+      const table = a.closest("table");
+      return table === null || !valueTables.has(table);
+    })
     .map((a) => a.textContent)
     .join("");
 }
@@ -192,6 +254,10 @@ function collectLinkText(element: Pick<PruneHostElement, "querySelectorAll">): s
 export function pruneLowValueBlocks(root: PruneHostElement, options: PruneOptions = {}): number {
   const minTextLength = options.minTextLength ?? DEFAULT_MIN_TEXT_LENGTH;
   const scoreThreshold = options.scoreThreshold ?? DEFAULT_SCORE_THRESHOLD;
+  // 値の表は刈り込みの前に判定する。刈り込みの途中で判定すると、中のリンク集を先に刈られたnavboxが、リンクの少ない
+  // 値の表に見える。加点の表(collectTableText)は逆に途中の形で判定する: セルの中の数字だけのリンクの並び(ページ送り)が
+  // 先に刈られて空のセルになるまで待たないと、文字を含むセルが過半に届かない表がある。
+  const valueTables = new Set(Array.from(root.getElementsByTagName("table")).filter(isValueTable));
 
   const walk = (element: PruneHostElement, insideArticle: boolean): number => {
     let prunedCount = 0;
@@ -226,16 +292,21 @@ export function pruneLowValueBlocks(root: PruneHostElement, options: PruneOption
       if (SCORE_CANDIDATE_TAGS.has(tag)) {
         const text = child.textContent ?? "";
         if (text.trim().length >= minTextLength) {
-          const stats: BlockTextStats = { text, linkText: collectLinkText(child) };
-          // 表の数字・記号の加点はスコアを上げる向きにしか働かないので、加点の無いスコアで残るブロックでは表を数えない。
-          if (scoreBlock(stats).score < scoreThreshold) {
-            const table = collectTableText(child);
-            if (table === null || scoreBlock({ ...stats, table }).score < scoreThreshold) {
-              child.remove();
-              // 子自身が丸ごと除去されるため、内部の個別除去数は合算しない(二重カウント回避)。
-              prunedCount++;
-              continue;
-            }
+          const measure = measureBlockText(text);
+          // 表の数字・記号の加点と、値の表のリンクを数えないことは、スコアを上げる向きにしか働かないので、
+          // それらの無いスコアで残るブロックでは表を調べない。
+          if (
+            scoreMeasuredBlock(measure, collectLinkText(child)).score < scoreThreshold &&
+            scoreMeasuredBlock(
+              measure,
+              collectNavigationLinkText(child, valueTables),
+              collectTableText(child),
+            ).score < scoreThreshold
+          ) {
+            child.remove();
+            // 子自身が丸ごと除去されるため、内部の個別除去数は合算しない(二重カウント回避)。
+            prunedCount++;
+            continue;
           }
         }
       }
